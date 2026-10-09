@@ -71,17 +71,20 @@ class SafetyProfile(BaseModel):
     """用户安全档案（模型类）。
 
     说明：
-        阶段一无家庭档案（spec D8），默认空集合 / 无难度上限；
-        硬过滤（hard_filter）以此为准：过敏原/忌口命中即整条排除，绝不做降权。
+        阶段一默认无家庭档案（spec D8），默认空集合 / 无难度上限 / 无设备清单；
+        硬过滤（hard_filter）以此为准：过敏原/忌口/设备命中即整条排除，绝不做降权。
 
     属性：
         user_allergen_codes：用户过敏原代码集合（GB 7718 八类 code，如 ["peanut"]）。
         dietary_restrictions：忌口标记集合（对应 recipe.dietary_flags，如 ["vegetarian"]）。
         special_population：特殊人群标记（pregnant / infant / elderly 等，阶段一默认空）。
         difficulty_cap：厨艺难度上限（1~5，None 表示无上限）。
+        equipment：用户已有设备清单（对齐 user_skill_profile.equipment 白名单编码，
+            如 ["炒锅"]；空列表表示未设置——设备维度硬过滤不生效，避免新用户全空结果）。
     """
 
     user_allergen_codes: list[str] = Field(default_factory=list)
     dietary_restrictions: list[str] = Field(default_factory=list)
     special_population: list[str] = Field(default_factory=list)
     difficulty_cap: int | None = None
+    equipment: list[str] = Field(default_factory=list)

@@ -15,6 +15,9 @@ import type { ApiError } from '@/api/types'
 /** 个人中心等外部入口打开弹窗的自定义事件名（与 MeView 约定一致） */
 const OPEN_FEEDBACK_EVENT = 'aicook:open-feedback'
 
+/** 反馈内容最大长度（与后端 /v1/feedback 上限一致，超限提交会被 400 拒绝） */
+const FEEDBACK_MAX_LENGTH = 500
+
 /** 个人中心 store（submitFeedback 动作） */
 const meStore = useMeStore()
 
@@ -49,16 +52,26 @@ function open(): void {
 
 /**
  * 提交反馈：走 me store；成功后切成功态展示回执号。
+ * - 空内容（trim 后为空）：warning 提示，不发请求、弹窗不关（修复 M4 空提交静默无响应）；
+ * - 内容不足 5 字：warning 提示补充描述；
+ * - 提交前统一 slice(0, FEEDBACK_MAX_LENGTH) 兜底（修复 H5 超限入库：
+ *   textarea maxlength 仅约束手动输入，程序化赋值仍可能超后端 500 字上限）。
  * @returns 无
+ * @throws 不向外抛出（接口异常已就地转为错误 toast）
  */
 async function onSubmit(): Promise<void> {
-  if (content.value.trim().length < 5) {
+  const text = content.value.trim()
+  if (!text) {
+    ElMessage.warning('请填写反馈内容')
+    return
+  }
+  if (text.length < 5) {
     ElMessage.warning('请至少输入 5 个字，方便我们定位问题')
     return
   }
   submitting.value = true
   try {
-    receiptNo.value = await meStore.submitFeedback(content.value.trim(), type.value)
+    receiptNo.value = await meStore.submitFeedback(text.slice(0, FEEDBACK_MAX_LENGTH), type.value)
   } catch (e) {
     ElMessage.error((e as ApiError).message || '提交失败，请稍后重试')
   } finally {
@@ -106,7 +119,7 @@ onBeforeUnmount(() => {
             v-model="content"
             type="textarea"
             :rows="5"
-            maxlength="500"
+            :maxlength="FEEDBACK_MAX_LENGTH"
             show-word-limit
             placeholder="描述你遇到的问题或建议（至少 5 个字）"
           />

@@ -12,6 +12,7 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { ApiError, MemberPlan } from '@/api/types'
 import { useMeStore } from '@/stores/me'
+import { MEMBER_QUOTA_LABEL } from '@/constants/copy'
 
 /** 个人中心 store（会员区数据与购买链路） */
 const meStore = useMeStore()
@@ -138,7 +139,7 @@ onMounted(() => {
           </span>
         </div>
         <div v-if="meStore.memberMe" class="status-line quota-line">
-          <span class="status-label">本周期识别额度</span>
+          <span class="status-label">{{ MEMBER_QUOTA_LABEL }}</span>
           <el-progress
             class="quota-bar"
             :percentage="quotaPercent"

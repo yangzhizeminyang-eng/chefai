@@ -44,10 +44,15 @@ ALLERGEN_ALIASES: dict[str, str] = {
 # 年龄段枚举（family_member.chk_age_group 表级 CHECK 对齐）
 MemberAgeGroup = Literal["0-3", "4-12", "13-17", "18-59", "60+"]
 
-# 13 项厨房设备白名单（与前端 EQUIPMENT_OPTIONS 逐项对齐）
+# 厨房设备白名单（与前端 EQUIPMENT_OPTIONS 逐项对齐）：
+# 原 13 项基础上补齐「燃气灶/电磁炉/炖锅/砂锅」（缺陷 M2/P6/S8 修复）——
+# 以 seed/corpus_howtocook.py 工具词表 + seed/recipes.py equipment 实际词表的并集，
+# 减去豁免的基础工具（碗/盘/碟/刀/砧板/勺/筷等）后对齐灶具/电器/锅具类可声明清单；
+# 菜刀/砧板等基础工具由 ability.ranking.BASIC_TOOLS_EXEMPT 豁免，不依赖声明。
 EQUIPMENT_WHITELIST: tuple[str, ...] = (
     "炒锅", "蒸锅", "电饭煲", "空气炸锅", "烤箱", "微波炉", "破壁机",
     "高压锅", "平底锅", "汤锅", "刨丝器", "厨房秤", "砧板",
+    "燃气灶", "电磁炉", "炖锅", "砂锅",
 )
 
 # API 饮食目标编码（前端契约）→ DB diet_goal.goal_type（CHECK 枚举）映射
@@ -284,7 +289,7 @@ class SkillProfileOut(BaseModel):
 
     属性：
         cooking_level：厨艺水平 1~5（1 新手 / 5 大厨；无档案时默认 1）。
-        equipment：已有设备列表（13 项白名单编码）。
+        equipment：已有设备列表（设备白名单编码，见 EQUIPMENT_WHITELIST）。
     """
 
     cooking_level: int
@@ -296,7 +301,7 @@ class SkillProfileUpdate(BaseModel):
 
     属性：
         cooking_level：厨艺水平 1~5。
-        equipment：设备列表（逐项须在 13 项白名单内，路由层校验）。
+        equipment：设备列表（逐项须在设备白名单 EQUIPMENT_WHITELIST 内，路由层校验）。
     """
 
     cooking_level: int = Field(ge=1, le=5)

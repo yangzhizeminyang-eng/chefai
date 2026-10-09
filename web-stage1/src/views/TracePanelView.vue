@@ -3,6 +3,9 @@
  * 文件职责：W-06 Agent 调度可视化面板（/trace）。
  * 阶段一专属交付物：按 request_id 展示多智能体调度证据（agent_trace 落库数据）。
  * - 查询区：request_id 输入 + 查询按钮 + 「最近请求」下拉（listTraces 拉最近 20 条，支持演示场景切换）；
+ *   挂载时若路由带 ?request_id=（来自 W-02「查看调度详情」入口）自动填入查询框并执行查询（M6/T3 ID 串联）；
+ *   挂载时先确保匿名 ID 就绪（sessionStore.ensureAnonymousId）再拉最近列表，
+ *   避免匿名 ID 懒初始化与首屏请求竞态导致列表为空（T1/L2 修复）。
  * - 概览区：request_id / 总耗时（sum duration_ms）/ 总 token（prompt+completion）/ 总成本（sum cost_cents，元=分/100 保留 4 位）；
  * - 风控判定卡：hit / category / rule_id / message_id；
  * - 一票否决大横幅：veto=true 时 el-alert error 高亮「一票否决已触发：其余 N 个节点未执行」；
@@ -11,10 +14,17 @@
  * 数据一律本地 state + 直接调 endpoints（不改动 store）。
  */
 import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { getTrace, listTraces } from '@/api/endpoints'
 import type { ApiError, TraceDetail, TraceListItem, TraceSpan } from '@/api/types'
+import { useSessionStore } from '@/stores/session'
 import { formatCost } from '@/utils/recipe'
+
+/** 路由（读取 ?request_id= 查询参数，W-02「查看调度详情」入口串联用） */
+const route = useRoute()
+/** 会话 store（挂载时先确保匿名 ID 就绪，再拉最近列表，T1/L2 竞态修复） */
+const sessionStore = useSessionStore()
 
 /* ── 查询区状态 ── */
 /** 输入框中的 request_id */
@@ -35,11 +45,20 @@ const listLoading = ref(false)
 const recentSelected = ref('')
 
 /**
- * 挂载即拉取最近 20 条 trace（演示场景切换用；失败不阻塞主查询，下拉展示占位）。
+ * 挂载初始化（T1/L2 + M6/T3 修复）：
+ * 1. 先确保匿名 ID 就绪（懒获取并持久化 localStorage），再拉最近列表——
+ *    避免「首屏列表请求先于匿名 ID 创建发出 → 后端无该匿名用户的 trace 记录」的竞态，
+ *    该竞态此前表现为首次进入列表为空、手动刷新才加载；
+ * 2. 路由带 ?request_id= 时（W-02「查看调度详情」入口进入）自动填入查询框并执行查询。
  * @returns 无
  */
-onMounted(() => {
+onMounted(async () => {
+  // ensureAnonymousId 内部已兜底（后端不可用时本地生成），不会向调用方抛出异常
+  await sessionStore.ensureAnonymousId()
   void loadRecent()
+  // 从推荐结果页串联进入：?request_id= 自动填入查询框（queryTrace 内回填）并查询
+  const fromQuery = typeof route.query.request_id === 'string' ? route.query.request_id.trim() : ''
+  if (fromQuery) void queryTrace(fromQuery)
 })
 
 /**

@@ -1,7 +1,9 @@
 <script setup lang="ts">
 /**
  * 视图职责：首页（Task 9 / 路由 /）。
- * 区块：① 顶部搜索框（回车调 POST /v1/ask，命中一票否决写入 recommend store 后跳 W-05）；
+ * 区块：① 顶部搜索框（回车走统一 ask 消费链路 stores/ask.submitQuestion：
+ *          空输入单条提示；blocked 跳 W-05；recipe_search 落推荐态跳 W-02；
+ *          chat 就地展示结果卡 AskChatCard）；
  *       ② 未建档黄条（el-alert warning → 跳 /profile 建档引导）；
  *       ③ 「继续上次的菜」卡（未完成会话 → /cook/{sessionId} 断点续做）；
  *       ④ 临期提醒条（el-alert 可关闭，localStorage aicook_expiry_dismissed_{date} 当日不再显示）；
@@ -12,12 +14,11 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { postAsk } from '@/api/endpoints'
-import type { ApiError } from '@/api/types'
 import { useHomeStore } from '@/stores/home'
 import { useConfigStore } from '@/stores/config'
-import { useRecommendStore } from '@/stores/recommend'
+import { useAskStore } from '@/stores/ask'
+import { toastInfo } from '@/utils/toast'
+import AskChatCard from '@/components/AskChatCard.vue'
 import DisclaimerBar from '@/components/DisclaimerBar.vue'
 
 /** 路由（入口跳转 / 拦截页跳转） */
@@ -26,19 +27,25 @@ const router = useRouter()
 const homeStore = useHomeStore()
 /** 远程开关 store（AI 创新入口置灰用） */
 const configStore = useConfigStore()
-/** 推荐 store（ask 命中阻断时写入 blockedPayload，W-05 数据源） */
-const recommendStore = useRecommendStore()
+/** 统一 ask 消费 store（空输入提示 / 意图分流 / chat 态 / asking 标记） */
+const askStore = useAskStore()
 
 /** 搜索关键词（回车提问语义，同 W-01 约定） */
 const keyword = ref('')
-/** ask 请求进行中 */
-const asking = ref(false)
 
 /** 提问意图判定正则（与 SelectIngredientView 同源：疑问词/问号/长文本视为提问） */
 const QUESTION_PATTERN = /[?？]|吗|呢|怎么|怎样|如何|什么|哪些|多少|能不能|可不可以|行不行|可以|推荐/
 
 /** AI 创新入口是否可用（switches.innovation 未返回时默认放开） */
 const innovationEnabled = computed(() => configStore.switches.innovation !== false)
+
+/** 问答模块是否可用（§5.8：switch.qa=false → 搜索框降级为菜名/食材名精确搜索） */
+const qaEnabled = computed(() => configStore.switches.qa !== false)
+
+/** 搜索框占位文案（问答开关关闭时如实降级说明，§5.8 问答模块） */
+const searchPlaceholder = computed(() =>
+  qaEnabled.value ? '想吃什么或有什么食材？回车问厨娘' : '问答维护中：输入食材名，回车去精确搜索',
+)
 
 /** 临期提醒是否已被今日关闭（localStorage 当日记忆） */
 const expiryDismissed = ref(false)
@@ -79,39 +86,33 @@ function dismissExpiry(): void {
 }
 
 /**
- * 搜索框回车：非空且像提问时调 POST /v1/ask。
- * - 命中一票否决 → 写入 recommend store 后跳 W-05；
- * - 受限问答 → 弹窗展示；搜索/推荐意图 → 引导去推荐页。
+ * 搜索框回车：统一走 ask store 消费链路（stores/ask.submitQuestion）。
+ * - 空输入 → 单条「请输入内容」提示（store 内守卫），不发请求（修复 A1 静默无响应）；
+ * - qa 开关关闭（§5.8 问答模块）→ 降级为食材名精确搜索：跳食材选择页并回填关键词；
+ * - 短且无疑问词 → 引导去食材选择页（保留既有产品分流，非 ask 范畴）；
+ * - 其余 → submitQuestion：blocked 跳 W-05 / recipe_search 落推荐态跳 W-02 /
+ *   chat 就地展示（AskChatCard）/ 失败单一降级 toast（修复 H2 闭环断裂）。
  * @returns 无
  */
-async function onSearchEnter(): Promise<void> {
+function onSearchEnter(): void {
   const text = keyword.value.trim()
-  if (!text || asking.value) return
+  // 空输入：交给 store 统一出单条提示（文案单点维护），不跳转不发请求
+  if (!text) {
+    void askStore.submitQuestion(text)
+    return
+  }
+  // 问答开关关闭（§5.8）：不走 ask，降级为食材名精确搜索（/select 页本地+远程搜索）
+  if (!qaEnabled.value) {
+    toastInfo('问答功能维护中，已切换为食材名精确搜索')
+    void router.push({ path: '/select', query: { q: text } })
+    return
+  }
+  // 短且无疑问词 → 引导去食材选择页搜索
   if (!QUESTION_PATTERN.test(text) && text.length <= 4) {
-    // 短且无疑问词 → 引导去食材选择页搜索
     void router.push('/select')
     return
   }
-  asking.value = true
-  try {
-    const res = await postAsk(text)
-    if (res.blocked) {
-      recommendStore.blockedPayload = res.blocked
-      recommendStore.traceId = res.blocked.trace_id || res.trace_id
-      void router.push('/blocked')
-      return
-    }
-    if (res.intent === 'free_qa' && res.answer) {
-      ElMessage.success('厨娘已准备好回答')
-      void router.push({ path: '/select', query: { q: text } })
-      return
-    }
-    void router.push('/recommend')
-  } catch (e) {
-    ElMessage.error((e as ApiError).message)
-  } finally {
-    asking.value = false
-  }
+  void askStore.submitQuestion(text)
 }
 
 /** 六大入口卡配置（enabled 动态判定，避免静态数据写死开关） */
@@ -179,7 +180,7 @@ const entries = computed(() => [
  */
 function goEntry(entry: { to: string; enabled: boolean; disabledTip: string }): void {
   if (!entry.enabled) {
-    ElMessage.info(entry.disabledTip)
+    toastInfo(entry.disabledTip)
     return
   }
   void router.push(entry.to)
@@ -208,20 +209,25 @@ onMounted(() => {
   <section class="page-card home-page">
     <h1 class="page-title">今天想吃什么？</h1>
 
-    <!-- ① 顶部搜索框：回车提问 -->
+    <!-- ① 顶部搜索框：回车提问（统一 ask 消费链路；qa 关闭时降级为精确搜索入口） -->
     <el-input
       v-model="keyword"
       class="home-search"
       size="large"
       clearable
-      placeholder="想吃什么或有什么食材？回车问厨娘"
+      :placeholder="searchPlaceholder"
       :suffix-icon="undefined"
       @keyup.enter="onSearchEnter"
     >
       <template #append>
-        <el-button :loading="asking" @click="onSearchEnter">问厨娘</el-button>
+        <el-button :loading="askStore.asking" @click="onSearchEnter">
+          {{ qaEnabled ? '问厨娘' : '搜索' }}
+        </el-button>
       </template>
     </el-input>
+
+    <!-- chat 就地展示卡：受限问答结果（含问句回显与免责小字），无内容不渲染 -->
+    <AskChatCard class="home-chat" />
 
     <!-- 异常态：聚合数据加载失败（入口卡仍可用） -->
     <el-alert
@@ -309,6 +315,12 @@ onMounted(() => {
 
 <style scoped>
 .home-search {
+  max-width: 560px;
+  margin-bottom: 16px;
+}
+
+/* ── chat 结果卡（AskChatCard）与搜索框间距 ── */
+.home-chat {
   max-width: 560px;
   margin-bottom: 16px;
 }

@@ -2,11 +2,18 @@
 /**
  * 视图职责：我的冰箱 + 购物清单页（Task 9 / 路由 /inventory，双 Tab）。
  * Tab1 我的冰箱：库存列表（档位 tag 有/少量/充足、到期倒计时、致敏原红字、
- *   编辑/删除/标记用完）、临期置顶排序、新增条目（食材选择器复用分类接口）；
+ *   编辑/删除/标记用完）、临期置顶排序、新增条目（食材远程搜索选择器）；
  * Tab2 购物清单：勾选、删除、一键转入库存、清空已购、新增条目；
  * 扣减建议：「烹饪后记录消耗」入口 → deduct-suggest 拉建议 → 用户勾选 →
  *   deduct-confirm 确认（会话 ID 可从烹饪历史查看）。
  * 三态：加载 = 骨架；空 = 引导文案；异常 = el-alert + 重试；深色模式全变量适配。
+ * P0 修复（2026-10-09 测试报告）：
+ *   H1 —— 存放位置改为后端枚举 fridge/freezer/room/dry 提交（原提交中文标签必现 422），
+ *         选项/提交/回显统一走 utils/inventory 的 LOCATION_OPTIONS；
+ *   L4-2 —— 列表位置列经 locationLabel() 转中文展示；
+ *   H1b —— 库存/购物清单食材选择改远程搜索（GET /v1/ingredients?q=，≥300ms 去抖，
+ *         首屏仍加载默认列表，仅用户输入时走远程，支持别名如「柴鸡蛋」）；
+ *   1.3 —— 422 时经 format422Detail() 解析后端 detail 拼进 toast 透出具体字段信息。
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -22,9 +29,12 @@ import type {
   DeductSuggestion,
   Ingredient,
   InventoryItem,
+  StorageLocation,
 } from '@/api/types'
 import { useInventoryStore } from '@/stores/inventory'
 import { allergenLabel } from '@/utils/recipe'
+import { LOCATION_OPTIONS, locationLabel } from '@/utils/inventory'
+import { format422Detail } from '@/utils/apiError'
 
 /** 库存 store */
 const inventoryStore = useInventoryStore()
@@ -84,23 +94,110 @@ const sortedItems = computed(() =>
 const itemDialogVisible = ref(false)
 /** 正在编辑的条目 ID（null = 新增） */
 const editingId = ref<number | null>(null)
-/** 食材候选列表（分类接口拉取） */
+/** 食材候选列表（首屏默认列表，GET /v1/ingredients 无参拉取常用/分类数据） */
 const ingredientOptions = ref<Ingredient[]>([])
-/** 食材候选加载中 */
+/** 食材候选加载中（首屏拉取与远程搜索共用） */
 const ingredientsLoading = ref(false)
 /** 提交中 */
 const itemSubmitting = ref(false)
+
+/** 远程搜索关键词（非空 = 下拉展示远程搜索结果，空 = 回落默认列表） */
+const searchKeyword = ref('')
+/** 远程搜索结果列表 */
+const searchResults = ref<Ingredient[]>([])
+/** 搜索去抖计时器（模块内私有，无需响应式） */
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+/** 搜索请求序号（竞态守卫：仅最新一次请求的结果允许写入，防慢响应覆盖新结果） */
+let searchSeq = 0
+
+/**
+ * 下拉实际展示的食材候选：用户输入过关键词时展示远程搜索结果，否则展示首屏默认列表。
+ */
+const ingredientDisplayOptions = computed<Ingredient[]>(() =>
+  searchKeyword.value ? searchResults.value : ingredientOptions.value,
+)
 
 /** 条目表单 */
 const itemForm = reactive({
   ingredient_id: undefined as number | undefined,
   quantity_level: 'mid' as InventoryItem['quantity_level'],
   expire_date: '',
-  location: '冷藏',
+  // 存放位置必须提交后端枚举（fridge/freezer/room/dry），中文标签仅由 LOCATION_OPTIONS 渲染
+  location: 'fridge' as StorageLocation,
 })
 
-/** 存放位置选项 */
-const LOCATION_OPTIONS = ['冷藏', '冷冻', '常温']
+/**
+ * 重置食材远程搜索状态（清去抖计时器与关键词，下拉回落默认列表）。
+ * 弹窗打开时调用，避免上一次搜索结果残留影响本次选择。
+ * @returns 无
+ */
+function resetIngredientSearch(): void {
+  if (searchTimer) {
+    clearTimeout(searchTimer)
+    searchTimer = null
+  }
+  searchKeyword.value = ''
+  searchResults.value = []
+}
+
+/**
+ * 食材远程搜索（el-select 的 remote-method 回调，≥300ms 去抖）。
+ * 空关键词（如打开下拉未输入）直接回落默认列表，不发请求；
+ * 非空关键词去抖后走 doSearch 调 GET /v1/ingredients?q=（后端含别名匹配，如「柴鸡蛋」）。
+ * @param query 用户在下拉框输入的关键词（Element Plus 传入，可能为空串）
+ * @returns 无
+ */
+function searchIngredients(query: string): void {
+  if (searchTimer) {
+    clearTimeout(searchTimer)
+    searchTimer = null
+  }
+  const keyword = query.trim()
+  if (!keyword) {
+    searchKeyword.value = ''
+    searchResults.value = []
+    return
+  }
+  searchKeyword.value = keyword
+  // 去抖 300ms：连续输入只发最后一次请求
+  searchTimer = setTimeout(() => {
+    void doSearch(keyword)
+  }, 300)
+}
+
+/**
+ * 执行远程食材检索（GET /v1/ingredients?q=keyword）。
+ * @param keyword 已去抖的搜索关键词
+ * @returns 无
+ */
+async function doSearch(keyword: string): Promise<void> {
+  const seq = ++searchSeq
+  ingredientsLoading.value = true
+  try {
+    const res: IngredientListResponse = await getIngredients({ q: keyword })
+    // 竞态守卫：仅最新一次请求的结果允许写入
+    if (seq === searchSeq) searchResults.value = res.items ?? []
+  } catch (e) {
+    if (seq === searchSeq) {
+      searchResults.value = []
+      ElMessage.error((e as ApiError).message || '食材搜索失败，请重试')
+    }
+  } finally {
+    if (seq === searchSeq) ingredientsLoading.value = false
+  }
+}
+
+/**
+ * 编辑回显兜底：条目食材可能不在当前候选列表（如不在首屏 100 条内），
+ * 补入最小候选项，避免 el-select 只显示食材 ID 而非名称。
+ * @param id 食材 ID
+ * @param name 食材名称（取自库存条目冗余字段 ingredient_name）
+ * @returns 无
+ */
+function ensureIngredientOption(id: number, name: string): void {
+  if (ingredientOptions.value.some((i) => i.id === id)) return
+  ingredientOptions.value = [...ingredientOptions.value, { id, name, category: '' }]
+}
 
 /**
  * 打开新增/编辑弹窗并拉取食材候选（按当前食材库分类接口）。
@@ -109,16 +206,20 @@ const LOCATION_OPTIONS = ['冷藏', '冷冻', '常温']
  */
 async function openItemDialog(item: InventoryItem | null): Promise<void> {
   editingId.value = item ? item.id : null
+  resetIngredientSearch()
   if (item) {
     itemForm.ingredient_id = item.ingredient_id
     itemForm.quantity_level = item.quantity_level
     itemForm.expire_date = item.expire_date
-    itemForm.location = item.location || '冷藏'
+    // 位置枚举直接回显，与 LOCATION_OPTIONS 的 value 一一对应即可正确选中
+    itemForm.location = item.location || 'fridge'
+    // 编辑回显兜底：条目食材可能不在默认候选里，补入避免只显示 ID
+    ensureIngredientOption(item.ingredient_id, item.ingredient_name)
   } else {
     itemForm.ingredient_id = undefined
     itemForm.quantity_level = 'mid'
     itemForm.expire_date = ''
-    itemForm.location = '冷藏'
+    itemForm.location = 'fridge'
   }
   itemDialogVisible.value = true
   if (ingredientOptions.value.length === 0) {
@@ -135,7 +236,7 @@ async function openItemDialog(item: InventoryItem | null): Promise<void> {
 }
 
 /**
- * 提交新增/编辑条目。
+ * 提交新增/编辑条目（位置字段提交后端枚举值）。
  * @returns 无
  */
 async function onItemSubmit(): Promise<void> {
@@ -150,20 +251,23 @@ async function onItemSubmit(): Promise<void> {
         ingredient_id: itemForm.ingredient_id,
         quantity_level: itemForm.quantity_level,
         expire_date: itemForm.expire_date || undefined,
-        location: itemForm.location || undefined,
+        location: itemForm.location,
       })
       ElMessage.success('已加入冰箱')
     } else {
       await inventoryStore.patchItem(editingId.value, {
         quantity_level: itemForm.quantity_level,
         expire_date: itemForm.expire_date || undefined,
-        location: itemForm.location || undefined,
+        location: itemForm.location,
       })
       ElMessage.success('已更新')
     }
     itemDialogVisible.value = false
   } catch (e) {
-    ElMessage.error((e as ApiError).message || '保存失败，请重试')
+    const apiErr = e as ApiError
+    // 422 时透传后端 detail 的具体字段信息（如「存放位置：值必须是 fridge/freezer/room/dry 之一」）
+    const extra = format422Detail(apiErr)
+    ElMessage.error(extra ? `${apiErr.message || '保存失败，请重试'}：${extra}` : apiErr.message || '保存失败，请重试')
   } finally {
     itemSubmitting.value = false
   }
@@ -218,12 +322,13 @@ const shoppingForm = reactive({
 const shoppingDialogVisible = ref(false)
 
 /**
- * 打开购物新增弹窗（复用食材候选）。
+ * 打开购物新增弹窗（复用食材候选与远程搜索）。
  * @returns 无
  */
 async function openShoppingDialog(): Promise<void> {
   shoppingForm.ingredient_id = undefined
   shoppingForm.quantity_note = ''
+  resetIngredientSearch()
   shoppingDialogVisible.value = true
   if (ingredientOptions.value.length === 0) {
     ingredientsLoading.value = true
@@ -247,7 +352,7 @@ async function onShoppingSubmit(): Promise<void> {
     ElMessage.warning('请选择食材')
     return
   }
-  const ing = ingredientOptions.value.find((i) => i.id === shoppingForm.ingredient_id)
+  const ing = ingredientDisplayOptions.value.find((i) => i.id === shoppingForm.ingredient_id)
   try {
     await inventoryStore.addShopping({
       items: [
@@ -261,7 +366,10 @@ async function onShoppingSubmit(): Promise<void> {
     ElMessage.success(`已把「${ing?.name ?? '食材'}」加入购物清单`)
     shoppingDialogVisible.value = false
   } catch (e) {
-    ElMessage.error((e as ApiError).message || '添加失败，请重试')
+    const apiErr = e as ApiError
+    // 422 时透传后端 detail 的具体字段信息（如数量备注超长）
+    const extra = format422Detail(apiErr)
+    ElMessage.error(extra ? `${apiErr.message || '添加失败，请重试'}：${extra}` : apiErr.message || '添加失败，请重试')
   }
 }
 
@@ -450,7 +558,8 @@ onMounted(() => {
                 <span v-else class="inv-expire">到期 {{ item.expire_date }}（{{ expireText(item.expire_date) }}）</span>
               </div>
               <div class="inv-line inv-meta">
-                <span>{{ item.location || '位置未记录' }}</span>
+                <!-- L4-2：位置枚举经 locationLabel 统一转中文展示 -->
+                <span>{{ locationLabel(item.location) }}</span>
                 <span v-if="item.allergen_codes.length > 0" class="inv-allergen">
                   ⚠ 致敏原：{{ item.allergen_codes.map((c) => allergenLabel(c)).join('、') }}
                 </span>
@@ -544,15 +653,18 @@ onMounted(() => {
     >
       <el-form label-position="top">
         <el-form-item label="食材" required>
+          <!-- H1b：远程搜索（filterable + remote），输入去抖 300ms 后调 /v1/ingredients?q=，支持别名匹配 -->
           <el-select
             v-model="itemForm.ingredient_id"
             filterable
+            remote
+            :remote-method="searchIngredients"
             :loading="ingredientsLoading"
             placeholder="搜索或选择食材"
             :disabled="editingId != null"
           >
             <el-option
-              v-for="ing in ingredientOptions"
+              v-for="ing in ingredientDisplayOptions"
               :key="ing.id"
               :label="ing.name"
               :value="ing.id"
@@ -575,9 +687,10 @@ onMounted(() => {
           />
         </el-form-item>
         <el-form-item label="存放位置">
+          <!-- H1：value 用后端枚举（fridge/freezer/room/dry），仅 label 展示中文，避免中文标签直传 422 -->
           <el-radio-group v-model="itemForm.location">
-            <el-radio-button v-for="loc in LOCATION_OPTIONS" :key="loc" :value="loc">
-              {{ loc }}
+            <el-radio-button v-for="loc in LOCATION_OPTIONS" :key="loc.value" :value="loc.value">
+              {{ loc.label }}
             </el-radio-button>
           </el-radio-group>
         </el-form-item>
@@ -592,14 +705,17 @@ onMounted(() => {
     <el-dialog v-model="shoppingDialogVisible" title="添加要买的食材" width="440px" align-center>
       <el-form label-position="top">
         <el-form-item label="食材" required>
+          <!-- H1b：购物清单同样走远程搜索，与库存弹窗共用 searchIngredients / 去抖与竞态守卫 -->
           <el-select
             v-model="shoppingForm.ingredient_id"
             filterable
+            remote
+            :remote-method="searchIngredients"
             :loading="ingredientsLoading"
             placeholder="搜索或选择食材"
           >
             <el-option
-              v-for="ing in ingredientOptions"
+              v-for="ing in ingredientDisplayOptions"
               :key="ing.id"
               :label="ing.name"
               :value="ing.id"

@@ -12,20 +12,46 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 
+class NutritionTotalOut(BaseModel):
+    """按份数合计营养（模型类）。
+
+    说明：
+        全部字段 = 每份值 × 份数（同源换算），保证「合计 = 单份 × N」闭环一致。
+
+    属性：
+        kcal：合计热量（kcal）。
+        protein：合计蛋白质（g）。
+        fat：合计脂肪（g）。
+        carbs：合计碳水化合物（g）。
+        sodium：合计钠（mg）。
+    """
+
+    kcal: float | None = None
+    protein: float | None = None
+    fat: float | None = None
+    carbs: float | None = None
+    sodium: float | None = None
+
+
 class NutritionOut(BaseModel):
     """营养估算结果（模型类）。
 
     说明：
         对齐前端 types.ts NutritionResult；缺失营养数据不按 0 计，
         以 excluded_items 标注「XX 未纳入统计」。
+        口径统一（M5/R4/S9）：唯一口径 = 每份；kcal 优先取菜谱库 calories_kcal
+        （recipe_seed），缺失时 LLM 回退（llm_estimate，校验通过后落定），
+        再缺失走食材聚合确定性回退（deterministic_fallback）。
 
     属性：
-        kcal：每份估算热量（kcal，None 表示未纳入统计）。
+        kcal：每份热量（kcal，None 表示未纳入统计）。
         protein：蛋白质（g/份）。
         fat：脂肪（g/份）。
         carbs：碳水化合物（g/份）。
         sodium：钠（mg/份）。
         per_serving：当前计算份数。
+        total：按份数合计（每份 × 份数，同源换算）。
+        kcal_source：每份 kcal 数据来源（recipe_seed / llm_estimate / deterministic_fallback）。
         excluded_items：未纳入统计的食材说明列表（不按 0 计）。
         estimate_note：估算说明（固定含「估算值，非实测值，误差约 ±15%」）。
     """
@@ -36,6 +62,8 @@ class NutritionOut(BaseModel):
     carbs: float | None = None
     sodium: float | None = None
     per_serving: int = 2
+    total: NutritionTotalOut | None = None
+    kcal_source: str | None = None
     excluded_items: list[str] = Field(default_factory=list)
     estimate_note: str = "估算值，非实测值，误差约 ±15%"
 

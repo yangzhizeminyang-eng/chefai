@@ -89,18 +89,39 @@ class SpeechAsrResponse(BaseModel):
     message: str | None = None
 
 
+class FilteredReason(BaseModel):
+    """单条过滤原因（模型类）。
+
+    说明：
+        设备维度新增（缺陷 M2/P6/S8 修复）：被过滤条目的 reasons 数组元素结构，
+        沿用既有原因类型码并扩展 equipment；detail 为中文明细（如「缺少设备：燃气灶」）。
+
+    属性：
+        type：原因类型码（allergen 致敏原 / taboo 忌口 / difficulty 难度超限 /
+            equipment 缺少设备）。
+        detail：中文明细说明（设备维度形如「缺少设备：燃气灶」）。
+    """
+
+    type: str
+    detail: str
+
+
 class FilteredItem(BaseModel):
     """被过滤菜谱条目（模型类）。
 
     属性：
         recipe_id：菜谱 ID。
         recipe_name：菜名。
-        reason：过滤原因（allergen 致敏原 / taboo 忌口 / difficulty 难度超限）。
+        reason：主过滤原因类型码（allergen / taboo / difficulty / equipment；
+            多原因并存时按优先级取首项，兼容既有前端契约保留）。
+        reasons：全部过滤原因列表（{type, detail} 结构，设备维度 detail 形如
+            「缺少设备：燃气灶」；缺省空列表向后兼容）。
     """
 
     recipe_id: int
     recipe_name: str
     reason: str
+    reasons: list[FilteredReason] = Field(default_factory=list)
 
 
 class FilteredResponse(BaseModel):
@@ -139,6 +160,7 @@ __all__ = [
     "VisionConfirmResponse",
     "SpeechAsrResponse",
     "FilteredItem",
+    "FilteredReason",
     "FilteredResponse",
     "EmptyResultSuggestions",
 ]

@@ -47,7 +47,7 @@ const SPECIAL_DIET_OPTIONS = ['素食', '纯素', '清真', '低 GI', '生酮', 
 /** 特殊人群 5 类 */
 const SPECIAL_POPULATION_OPTIONS = ['孕期', '哺乳期', '婴幼儿辅食', '老年人', '慢病人群']
 
-/** 13 项厨房设备（对齐契约） */
+/** 厨房设备选项（对齐后端 EQUIPMENT_WHITELIST；含燃气灶/电磁炉/炖锅/砂锅补齐项） */
 const EQUIPMENT_OPTIONS = [
   '炒锅',
   '蒸锅',
@@ -62,6 +62,10 @@ const EQUIPMENT_OPTIONS = [
   '刨丝器',
   '厨房秤',
   '砧板',
+  '燃气灶',
+  '电磁炉',
+  '炖锅',
+  '砂锅',
 ]
 
 /** 饮食目标 5 类 */

@@ -94,3 +94,22 @@ html.dark .page-card {
   font-weight: 600;
   margin: 0 0 16px;
 }
+
+/* ── checkbox 原生热区修复（L3-2）──
+   Element Plus 默认将原生 input 置为 0×0 + z-index:-1（.el-checkbox__original），
+   指针命中完全依赖 label 原生转发，免责声明门 / 过敏原勾选等场景实测不可直接命中。
+   此处让原生 input 绝对定位铺满可视方块（.el-checkbox__input 自带 position:relative）：
+   opacity:0 保留视觉不变、cursor:pointer 手型、z-index:1 高于装饰层，指针直接命中 input；
+   input 仍在 DOM 且可聚焦，键盘 Tab 聚焦与空格切换（:focus-visible 焦点环经 JS is-focus
+   类作用于装饰层）不受影响。 */
+.el-checkbox__input .el-checkbox__original {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+  z-index: 1;
+  outline: none;
+}

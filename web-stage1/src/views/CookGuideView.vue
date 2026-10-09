@@ -14,6 +14,15 @@
  *       ⑧ 屏幕常亮（Wake Lock API：进入页面申请、离开/隐藏释放，try/catch 静默降级）；
  *       ⑨「求助」按钮（弹窗输入问题 → POST /v1/cooking/sessions/{id}/help →
  *          三态展示：回答列表 / 拦截话术 / 429 当日超限提示）。
+ * Task 6b 修复：
+ *       ⑩ R5/L4 完成态落地：最后一步「完成」后停留本页展示收尾面板（恭喜完成 +
+ *          本次菜谱名 + 「再做一次 / 返回首页 / 查看营养」），不再直接跳回 /select；
+ *          结束会话的后端调用（finishCookingSession）保持不变。
+ *       ⑪ R7/L3-3 计时器抽屉关闭修复：Element Plus 内置关闭按钮为无名称图标按钮
+ *          （仅 SVG、无 aria-label，可点击区域极小），自动化测试按可访问性快照
+ *          无法按名称定位/命中，表现为「点击关闭无效、JS 直调可关」；改为自定义
+ *          header + aria-label="关闭此对话框" 的显式按钮，并 append-to-body 置顶
+ *          弹层（详见模板处注释）。
  * 断点续做恢复策略：内存 store（同会话 id 直接复用）→ localStorage
  * cook_session_{id}（会话实体）+ cook_steps_{id}（步骤快照与步骤号）→ 都无则提示并回 /select
  * （endpoints 无「查询会话」GET 接口，阶段一不做远端兜底）。
@@ -22,10 +31,11 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import { Timer as TimerIcon } from '@element-plus/icons-vue'
-import { finishCookingSession, postCookingHelp } from '@/api/endpoints'
-import type { ApiError } from '@/api/types'
+import { finishCookingSession, getRecipe, postCookingHelp } from '@/api/endpoints'
+import type { ApiError, RecipeStep } from '@/api/types'
 import { useCookingStore } from '@/stores/cooking'
 import { MultiTimer, formatCountdown, type TimerSnapshot } from '@/utils/timer'
+import { scaleStepHint } from '@/utils/scaling'
 import AllergenAlertBar from '@/components/AllergenAlertBar.vue'
 
 /** 路由（取 :sessionId 与退出/完成跳转） */
@@ -54,6 +64,26 @@ const progressPercent = computed(() => {
   if (cookingStore.totalSteps === 0) return 0
   return Math.round((cookingStore.currentStepNo / cookingStore.totalSteps) * 100)
 })
+
+/**
+ * 本步用量缩放系数（M3/R3 修复：本步用量随会话份数缩放）。
+ * = 会话份数 / 菜谱基准份数；基准份数缺失/非法时以会话份数兜底（系数 1 = 不缩放）。
+ * @returns 缩放系数
+ */
+const hintFactor = computed<number>(() => {
+  const sessionServings = cookingStore.session?.servings ?? 1
+  const base = cookingStore.baseServings || sessionServings
+  if (!base || base < 1) return 1
+  return sessionServings / base
+})
+
+/**
+ * 当前步骤缩放后的本步用量提示（响应式：随当前步骤与份数联动重算）。
+ * @returns 缩放后的提示文案；无提示返回空串
+ */
+const scaledAmountHint = computed<string>(() =>
+  scaleStepHint(currentStep.value?.amount_hint, hintFactor.value),
+)
 
 /**
  * 秒数转可读耗时（步骤展示）。
@@ -87,24 +117,120 @@ function onExit(): void {
     })
 }
 
+/** ═══ R5/L4 完成态落地 ═══ */
+
+/** 完成态标记：true = 展示本页收尾面板（不再直接跳回 /select） */
+const finished = ref(false)
+
+/** 「再做一次」重建会话请求进行中 */
+const restarting = ref(false)
+
 /**
- * 最后一步点「完成」：调 finishCookingSession 结束会话 → 提示成功 →
- * 清理本地缓存与 store → 回食材选择页。
+ * 完成态快照：完成面板展示与「再做一次」所需数据。
+ * 在 clearSession 清空 store 前保存（菜名需临时拉取菜谱详情补齐）。
+ */
+const finishedInfo = ref<{
+  /** 关联菜谱 ID（「再做一次」重建会话 /「查看营养」跳详情页用） */
+  recipeId: number
+  /** 菜谱名（详情拉取失败时模板兜底「本次菜谱」） */
+  title: string
+  /** 本次份数（再做一次沿用） */
+  servings: number
+  /** 步骤快照（再做一次重建会话的步骤数据源） */
+  steps: RecipeStep[]
+  /** 菜谱基准份数（再做一次沿用，保证用量缩放系数一致） */
+  baseServings: number
+} | null>(null)
+
+/**
+ * 完成面板副标题（菜名 + 份数）。
+ * @returns 形如「本次完成：番茄炒蛋（2 份）」；无快照返回空串
+ */
+const finishSubTitle = computed<string>(() => {
+  const info = finishedInfo.value
+  if (!info) return ''
+  return `本次完成：${info.title || '本次菜谱'}（${info.servings} 份）`
+})
+
+/**
+ * 是否允许「再做一次」（步骤快照存在才可重建会话，异常空快照时按钮禁用兜底）。
+ * @returns 可重建返回 true
+ */
+const canRestart = computed<boolean>(() => (finishedInfo.value?.steps.length ?? 0) > 0)
+
+/**
+ * 最后一步点「完成」：调 finishCookingSession 结束会话（完成记录照旧落库）→
+ * 保存完成态快照（并行拉取菜名，失败不阻塞）→ 清理本地缓存与 store →
+ * 停留本页进入完成态面板（R5/L4：不再直接 push('/select')）。
  * @returns 无
+ * @throws finishCookingSession 失败时以 ElMessage 提示并保持当前步骤
  */
 async function onFinish(): Promise<void> {
   if (!cookingStore.session || finishing.value) return
   finishing.value = true
+  const session = cookingStore.session
   try {
-    await finishCookingSession(cookingStore.session.id)
+    // 并行：结束会话（后端完成记录）+ 拉取菜名（完成面板展示用；失败兜底空串不阻塞完成流程）
+    const [, detail] = await Promise.all([
+      finishCookingSession(session.id),
+      getRecipe(session.recipe_id).catch(() => null),
+    ])
     ElMessage.success('做菜完成')
+    // clearSession 会清空 store，完成面板与「再做一次」所需数据先落快照
+    //（steps 为引用替换式清空，此处保存的旧数组引用内容不受影响）
+    finishedInfo.value = {
+      recipeId: session.recipe_id,
+      title: detail?.title ?? '',
+      servings: session.servings ?? 1,
+      steps: cookingStore.steps,
+      baseServings: cookingStore.baseServings,
+    }
     cookingStore.clearSession()
-    void router.push('/select')
+    finished.value = true
   } catch (e) {
     ElMessage.error((e as ApiError).message || '完成失败，请重试')
   } finally {
     finishing.value = false
   }
+}
+
+/**
+ * 完成态「再做一次」：以本次份数/步骤快照重新创建烹饪会话（后端新会话从步骤 1 开始），
+ * 成功后退出完成态并 replace 到新会话地址（刷新后仍可断点续做）。
+ * @returns 无
+ * @throws startSession 失败时以 ElMessage 提示，保持完成态面板
+ */
+async function onCookAgain(): Promise<void> {
+  const info = finishedInfo.value
+  if (!info || restarting.value) return
+  restarting.value = true
+  try {
+    await cookingStore.startSession(info.recipeId, info.servings, info.steps, info.baseServings)
+    finished.value = false
+    finishedInfo.value = null
+    void router.replace(`/cook/${cookingStore.session?.id ?? ''}`)
+  } catch (e) {
+    ElMessage.error((e as ApiError).message || '重新开始失败，请重试')
+  } finally {
+    restarting.value = false
+  }
+}
+
+/**
+ * 完成态「返回首页」：跳转首页（/）。
+ * @returns 无
+ */
+function goHome(): void {
+  void router.push('/')
+}
+
+/**
+ * 完成态「查看营养」：跳转本菜谱详情页（营养估算入口在详情页内，一步可达的最小路径）。
+ * @returns 无
+ */
+function goNutrition(): void {
+  const id = finishedInfo.value?.recipeId
+  if (id != null) void router.push(`/recipe/${id}`)
 }
 
 /**
@@ -383,6 +509,27 @@ onBeforeUnmount(() => {
       <el-button type="primary" @click="goSelect">返回选食材</el-button>
     </el-empty>
 
+    <!-- ⑩ R5/L4 完成态落地：完成后停留本页展示收尾面板（注意分支顺序必须位于
+         totalSteps === 0 兜底之前——完成时 store 已清空，totalSteps 为 0） -->
+    <div v-else-if="finished" class="cook-finish">
+      <el-result icon="success" title="恭喜，这道菜完成了！" :sub-title="finishSubTitle">
+        <template #extra>
+          <el-button
+            type="primary"
+            size="large"
+            class="cook-finish-btn"
+            :loading="restarting"
+            :disabled="!canRestart"
+            @click="onCookAgain"
+          >
+            再做一次
+          </el-button>
+          <el-button size="large" class="cook-finish-btn" @click="goHome">返回首页</el-button>
+          <el-button size="large" class="cook-finish-btn" @click="goNutrition">查看营养</el-button>
+        </template>
+      </el-result>
+    </div>
+
     <!-- 步骤数据缺失兜底：会话在但步骤快照为空 -->
     <el-empty v-else-if="cookingStore.totalSteps === 0" description="步骤数据缺失，无法继续引导">
       <el-button type="primary" @click="goSelect">返回选食材</el-button>
@@ -416,9 +563,9 @@ onBeforeUnmount(() => {
         <p class="cook-step-no">第 {{ currentStep?.no }} 步</p>
         <!-- 大字 ≥32px：灶台 50cm 可读 -->
         <p class="cook-step-text">{{ currentStep?.description }}</p>
-        <!-- 本步用量提示 ≥20px -->
+        <!-- 本步用量提示 ≥20px（已按会话份数缩放） -->
         <p v-if="currentStep?.amount_hint" class="cook-amount-hint">
-          本步用量：{{ currentStep.amount_hint }}
+          本步用量：{{ scaledAmountHint }}
         </p>
         <p class="cook-duration">⏱ 预计耗时：{{ formatDuration(currentStep?.duration_sec ?? 0) }}</p>
 
@@ -473,8 +620,35 @@ onBeforeUnmount(() => {
         </div>
       </el-drawer>
 
-      <!-- ⑦ 多路计时器抽屉（右下，≥3 路并行倒计时） -->
-      <el-drawer v-model="timerDrawerVisible" title="并行计时器" size="380px" direction="rtl">
+      <!-- ⑦ 多路计时器抽屉（右下，≥3 路并行倒计时）
+           R7/L3-3 修复说明：
+           根因 —— Element Plus 内置关闭按钮（.el-drawer__close-btn）内部仅有 SVG 图标，
+           无 aria-label / 无文本，可访问名称为空且可点击区域只有右上角小图标；自动化
+           测试依赖可访问性快照按名称定位控件，无法命中该按钮，表现为「两次点击无效、
+           弹窗仍在前台（JS 直调可关闭）」。事件绑定与 v-model 链路本身正常（JS 直调
+           可关即证明），属可访问命名/命中区域缺陷，与 L3-1 同族。
+           修复 —— ① :show-close="false" 移除内置无名按钮，避免双关闭控件混淆定位；
+           ② 自定义 #header 放显式「关闭」按钮并标注 aria-label="关闭此对话框"，
+           直绑 timerDrawerVisible=false，首次点击即关闭；③ append-to-body 将弹层
+           teleport 到 body 顶层，规避宿主容器层叠上下文对遮罩与命中的干扰。 -->
+      <el-drawer
+        v-model="timerDrawerVisible"
+        title="并行计时器"
+        size="380px"
+        direction="rtl"
+        append-to-body
+        :show-close="false"
+      >
+        <!-- 自定义 header：标题 + 具名关闭按钮（aria-label 供自动化/读屏精准定位） -->
+        <template #header>
+          <div class="timer-header">
+            <span class="timer-header-title">并行计时器</span>
+            <el-button text aria-label="关闭此对话框" @click="timerDrawerVisible = false">
+              关闭
+            </el-button>
+          </div>
+        </template>
+
         <!-- 快捷预设 -->
         <p class="timer-label">快捷计时：</p>
         <div class="timer-presets">
@@ -738,6 +912,34 @@ onBeforeUnmount(() => {
 .drawer-step-desc {
   font-size: var(--font-md);
   line-height: 1.6;
+  color: var(--text-main);
+}
+
+/* ── R5/L4 完成态落地面板 ── */
+.cook-finish {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 完成面板按钮：与烹饪页大按钮一致的舒适点击区域 */
+.cook-finish-btn {
+  min-width: 132px;
+  min-height: 44px;
+}
+
+/* ── R7 修复：计时器抽屉自定义 header（标题 + 具名关闭按钮）── */
+.timer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.timer-header-title {
+  font-size: var(--font-lg);
+  font-weight: 600;
   color: var(--text-main);
 }
 

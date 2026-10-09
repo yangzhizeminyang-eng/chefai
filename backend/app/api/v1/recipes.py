@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.ability.nutrition import estimate_recipe_nutrition
+from app.ability.nutrition import estimate_recipe_nutrition, resolve_per_serving_kcal
 from app.api.v1.deps import (
     ERR_NOT_FOUND,
     api_error,
@@ -26,7 +26,7 @@ from app.api.v1.deps import (
 )
 from app.core.db import get_db
 from app.models import Ingredient, Recipe, RecipeFeedback, RecipeIngredient, RecipeStep
-from app.schemas.recipes import NutritionOut, RecipeIngredientItem, RecipeStepItem
+from app.schemas.recipes import NutritionOut, NutritionTotalOut, RecipeIngredientItem, RecipeStepItem
 
 router = APIRouter(prefix="/recipes", tags=["recipes"])
 
@@ -205,7 +205,7 @@ def get_recipe_detail(
     }
 
 
-@router.get("/{recipe_id}/nutrition", response_model=NutritionOut, summary="营养估算（缺失标注，不按 0 计）")
+@router.get("/{recipe_id}/nutrition", response_model=NutritionOut, summary="营养估算（每份口径；缺失标注，不按 0 计）")
 def get_recipe_nutrition(
     recipe_id: int,
     servings: int | None = Query(default=None, ge=_MIN_SERVINGS, le=_MAX_SERVINGS),
@@ -214,8 +214,11 @@ def get_recipe_nutrition(
     """营养估算端点（函数）。
 
     说明：
-        复用 ability.nutrition.estimate_recipe_nutrition（无营养数据食材列入
-        excluded_items 标「未纳入统计」）；营养值随份数线性重算。
+        唯一口径 = 每份（M5/R4/S9 修复）：kcal 走 resolve_per_serving_kcal
+        （DB calories_kcal 优先 → LLM 回退校验落定 → 食材聚合确定性回退），
+        其余营养素沿用食材聚合每份值；total 为「每份 × 份数」同源换算，
+        保证前端头部 kcal/份 与营养估算区口径一致、多次请求结果稳定。
+        无营养数据食材列入 excluded_items 标「未纳入统计」（不按 0 计）。
 
     参数：
         recipe_id：菜谱 ID。
@@ -223,7 +226,7 @@ def get_recipe_nutrition(
         session：请求级数据库会话。
 
     返回值：
-        NutritionOut：每份营养估算（前端 NutritionResult 结构）。
+        NutritionOut：每份营养 + 按份数合计 + 数据来源标注。
 
     异常：
         HTTPException 404：菜谱不存在或未发布。
@@ -232,13 +235,25 @@ def get_recipe_nutrition(
     target_servings = int(servings or recipe.servings or 2)
     estimate = estimate_recipe_nutrition(session, recipe_id, target_servings)
     per = estimate.get("per_serving") or {}
+    # 每份 kcal 唯一口径解析（DB → LLM 校验落定 → 确定性聚合）
+    kcal, kcal_source = resolve_per_serving_kcal(session, recipe, target_servings)
+    # 合计 = 每份 × 份数（同源换算：与每份值严格闭环，前端「按 N 份合计」展示一致）
+    total = NutritionTotalOut(
+        kcal=round(kcal * target_servings, 1) if kcal is not None else None,
+        protein=round(float(per.get("protein_g") or 0) * target_servings, 1) if per.get("protein_g") is not None else None,
+        fat=round(float(per.get("fat_g") or 0) * target_servings, 1) if per.get("fat_g") is not None else None,
+        carbs=round(float(per.get("carbs_g") or 0) * target_servings, 1) if per.get("carbs_g") is not None else None,
+        sodium=round(float(per.get("sodium_mg") or 0) * target_servings, 1) if per.get("sodium_mg") is not None else None,
+    )
     return NutritionOut(
-        kcal=per.get("kcal"),
+        kcal=kcal,
         protein=per.get("protein_g"),
         fat=per.get("fat_g"),
         carbs=per.get("carbs_g"),
         sodium=per.get("sodium_mg"),
         per_serving=target_servings,
+        total=total,
+        kcal_source=kcal_source,
         excluded_items=list(estimate.get("excluded_items") or []),
         estimate_note=estimate.get("estimate_note") or "估算值，非实测值，误差约 ±15%",
     )

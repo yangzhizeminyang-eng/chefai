@@ -45,9 +45,12 @@ function createApiClient(): AxiosInstance {
     if (config.method?.toLowerCase() === 'post' && !config._hasRequestId) {
       const rid = generateRequestId()
       config._hasRequestId = true
-      // 请求体为 JSON 时注入 request_id；FormData 等场景仅放请求头
+      // 请求体为 JSON 时注入 request_id；FormData 等场景仅放请求头。
+      // 注意顺序：显式传入的非空 request_id 优先保留（幂等重试场景）；
+      // 调用方用空串占位（如 recommend store）时注入生成的 rid，避免 spread 覆盖导致幂等键断链。
       if (config.data && typeof config.data === 'object' && !(config.data instanceof FormData)) {
-        config.data = { request_id: rid, ...config.data }
+        const body = config.data as Record<string, unknown>
+        config.data = { ...body, request_id: (body.request_id as string) || rid }
       }
       config.headers.set('X-Request-Id', rid)
     } else if (config.headers.get('X-Request-Id')) {
@@ -84,7 +87,8 @@ function normalizeError(error: AxiosError): ApiError {
     const status = error.response.status
     const payload = error.response.data as { message?: string; detail?: string } | undefined
     const msg = payload?.message ?? payload?.detail ?? `请求失败（${status}）`
-    return { code: status, message: msg }
+    // 透传后端原始 detail（422 校验错误时由 format422Detail 解析为可读文案）
+    return { code: status, message: msg, detail: payload?.detail }
   }
   // 请求已发出但未收到响应：区分超时与网络不可用
   if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {

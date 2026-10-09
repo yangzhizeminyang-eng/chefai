@@ -3,7 +3,7 @@
 职责：
     GET/PUT /v1/profile/family：家庭档案（无家庭自动建档 name=我的家庭）；
     POST/PUT/DELETE /v1/profile/members[/{id}]：家庭成员增删改（过敏原三选一必选校验）；
-    GET/PUT /v1/profile/skill：厨艺与设备（13 项设备白名单）；
+    GET/PUT /v1/profile/skill：厨艺与设备（设备白名单校验，含燃气灶等灶具）；
     GET/PUT /v1/profile/diet-goal：饮食目标（疾病相关目标附加健康提示语）。
 
 身份与存储约定：
@@ -461,7 +461,7 @@ def get_skill_profile(
     return SkillProfileOut(cooking_level=int(row.difficulty_cap), equipment=list(row.equipment or []))
 
 
-@router.put("/skill", response_model=SkillProfileOut, summary="保存厨艺与设备（13 项设备白名单）")
+@router.put("/skill", response_model=SkillProfileOut, summary="保存厨艺与设备（设备白名单校验）")
 def update_skill_profile(
     payload: SkillProfileUpdate,
     user: User = Depends(get_current_user),
@@ -470,9 +470,9 @@ def update_skill_profile(
     """保存厨艺与设备档案端点（函数）。
 
     说明：
-        equipment 逐项校验 13 项白名单（白名单外 422）；DB skill_level 枚举
-        （beginner/skilled/expert）由 cooking_level 映射（1-2/3/4-5），
-        difficulty_cap 同步存 cooking_level（GET 以此回读）。
+        equipment 逐项校验设备白名单（EQUIPMENT_WHITELIST，白名单外 422）；
+        DB skill_level 枚举（beginner/skilled/expert）由 cooking_level 映射
+        （1-2/3/4-5），difficulty_cap 同步存 cooking_level（GET 以此回读）。
 
     参数：
         payload：{cooking_level, equipment}。

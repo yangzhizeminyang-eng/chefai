@@ -18,7 +18,7 @@
     - assemble_context：解析食材（名称/别名/ID → ingredient_id），文本无显式食材时
       从输入文本确定性匹配（match_ingredients_in_text）；
     - recipe_retrieve：混合召回（食材覆盖数降序 + 菜名 ILIKE/别名，向量召回阶段二接入）；
-    - hard_filter：SQL 布尔 WHERE（过敏原/忌口/难度，禁止降权）；
+    - hard_filter：布尔过滤（过敏原/忌口/难度 SQL WHERE + 设备差集，禁止降权）；
     - recipe_rank：7 因子加权 + rank_reasons + 三档 match_level，Top 8；
       E.9 反馈接线：state 带数字 user_id 时加载 feedback_penalty（dislike 菜谱 -0.5）
       传入 weighted_rank（state 无 user_id 时跳过，空惩罚不影响排序）。

@@ -9,7 +9,8 @@
  *       ⑤ 营养汇总分区：近 7 天 kcal 柱状（el-progress）+ 三大营养素合计，
  *          缺失项灰字「未纳入统计」，底部估算值免责（DisclaimerBar nutrition 档）；
  *          手动补录外食弹窗（meal_type + 描述，命中风控展示拦截话术）；
- *       ⑥ 设置分区：字号 3 档（立即作用于本页 font-size CSS var）/ 单位 / 语音 / 提醒；
+ *       ⑥ 设置分区：字号 3 档（保存后经 App.vue watch + useFontSize 全局写根级 CSS 变量，
+ *          全站生效）/ 单位 / 语音 / 提醒；
  *       ⑦ 数据权利：导出 JSON 下载 / 注销（二次确认 + 输入「注销」文字）。
  * 三态：各分区独立加载/空/异常；深色模式全变量适配。
  */
@@ -24,6 +25,7 @@ import type {
 } from '@/api/types'
 import { useMeStore } from '@/stores/me'
 import { useIngredientsStore } from '@/stores/ingredients'
+import { useConfigStore } from '@/stores/config'
 import DisclaimerBar from '@/components/DisclaimerBar.vue'
 
 /** 路由（外跳与「再做一次」） */
@@ -32,6 +34,14 @@ const router = useRouter()
 const meStore = useMeStore()
 /** 食材 store（「再做一次」判断是否可直接去推荐） */
 const ingredientsStore = useIngredientsStore()
+/** 远程开关 store（payment 开关控制会员中心入口显隐，§5.8 支付模块） */
+const configStore = useConfigStore()
+
+/** 宫格可见入口（§5.8 支付模块：switch.payment=false → 会员入口隐藏；
+ *  已购权益查看依托 /member 路由页自身的状态/订单区，阶段一不在本页注入会员数据） */
+const visibleGridEntries = computed(() =>
+  GRID_ENTRIES.filter((e) => e.key !== 'member' || configStore.switches.payment !== false),
+)
 
 /** 页内激活分区（宫格点选切换；external 类入口直接路由跳转） */
 type SectionKey = 'favorites' | 'history' | 'signature' | 'nutrition' | 'settings'
@@ -217,19 +227,6 @@ async function onManualSubmit(): Promise<void> {
 
 /* ── 设置 ── */
 
-/** 字号档位 → 像素映射（本页 CSS var 立即生效） */
-const FONT_SIZE_MAP: Record<'normal' | 'large' | 'xlarge', string> = {
-  normal: '16px',
-  large: '18px',
-  xlarge: '20px',
-}
-
-/** 本页根字号（CSS var --me-font-size，随设置即时变化） */
-const meFontSize = computed(() => {
-  const fs = meStore.settings?.font_size ?? 'normal'
-  return FONT_SIZE_MAP[fs] ?? '16px'
-})
-
 /** 设置本地缓冲 */
 const settingsForm = ref({
   font_size: 'normal' as 'normal' | 'large' | 'xlarge',
@@ -239,8 +236,10 @@ const settingsForm = ref({
 })
 
 /**
- * 保存设置（PUT /v1/settings；字号档位经由 computed 即时生效）。
+ * 保存设置（PUT /v1/settings；字号档位经 App.vue watch meStore.settings
+ * → useFontSize 全局写根级 CSS 变量，保存成功后全站即时生效）。
  * @returns 无
+ * @throws 不向外抛出（接口异常已就地转为错误 toast）
  */
 async function onSaveSettings(): Promise<void> {
   try {
@@ -325,13 +324,13 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="page-card me-page" :style="{ '--me-font-size': meFontSize }">
+  <section class="page-card me-page">
     <h1 class="page-title">我的</h1>
 
-    <!-- ① 9 入口宫格 -->
+    <!-- ① 入口宫格（switch.payment=false 时隐藏会员中心入口，§5.8 支付模块） -->
     <div class="me-grid">
       <button
-        v-for="entry in GRID_ENTRIES"
+        v-for="entry in visibleGridEntries"
         :key="entry.key"
         type="button"
         class="me-grid-item"
@@ -644,11 +643,6 @@ onMounted(() => {
 </template>
 
 <style scoped>
-/* 本页字号 var（字号档位立即生效） */
-.me-page {
-  font-size: var(--me-font-size, 16px);
-}
-
 /* ── 宫格 ── */
 .me-grid {
   display: grid;
@@ -892,7 +886,7 @@ onMounted(() => {
 }
 
 .setting-label {
-  font-size: var(--me-font-size, 16px);
+  font-size: var(--font-md);
   color: var(--text-main);
 }
 

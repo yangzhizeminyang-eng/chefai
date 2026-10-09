@@ -5,8 +5,10 @@
  *       ③ 份数缩放（1~8，变更后重拉详情与营养，用量与营养同步重算）
  *       ④ 食材清单三段（主料/辅料/调味，量化值 + 勺参照）⑤ 过敏原标注 ⑥ 设备要求
  *       ⑦ 步骤列表（el-timeline：描述+时长+要点+失败补救折叠）⑧ 替代食材 ⑨ 小贴士
- *       ⑩ 营养入口（五大数值 + per_serving + excluded_items + 估算值标注）
- *       ⑪ 来源标注 ⑫ 底部固定条（免责 + 开始做菜，冲突时二次确认）。
+ *       ⑩ 营养入口（五大数值 + per_serving + excluded_items + 估算值标注；
+ *          L4-1 去重后不再单独渲染免责条，估算口径说明由后端 estimate_note 承担）
+ *       ⑪ 来源标注 ⑫ 底部固定条（免责 + 开始做菜，冲突时二次确认；
+ *          L4-1 去重：免责声明全页仅此 1 处渲染）。
  * 三态：加载 = 详情骨架屏；异常 = el-alert + 重试（404 → 「菜谱不存在」）；空态仅 404 场景。
  */
 import { computed, ref, watch } from 'vue'
@@ -15,6 +17,7 @@ import { ElMessage } from 'element-plus'
 import { getNutrition, getRecipe } from '@/api/endpoints'
 import type { ApiError, NutritionResult, RecipeDetail, RecipeIngredientItem } from '@/api/types'
 import { useCookingStore } from '@/stores/cooking'
+import { scaleStepHint } from '@/utils/scaling'
 import AllergenAlertBar from '@/components/AllergenAlertBar.vue'
 import DisclaimerBar from '@/components/DisclaimerBar.vue'
 
@@ -32,6 +35,8 @@ const loading = ref(false)
 const error = ref<ApiError | null>(null)
 /** 当前份数（初值 1，详情加载后同步为菜谱基准份数） */
 const servings = ref(1)
+/** 菜谱基准份数（首次加载时的 servings，作为步骤提示缩放系数的分母；缩放变更不改动） */
+const baseServings = ref(1)
 /** 份数缩放重算进行中（内容区 v-loading，不整页遮挡） */
 const scaling = ref(false)
 /** 请求序号（份数快速变更时丢弃过期响应） */
@@ -83,6 +88,25 @@ const INGREDIENT_SECTIONS = [
 ] as const
 
 /**
+ * 步骤用量提示缩放系数（当前份数 / 菜谱基准份数）。
+ * 食材表用量由后端按同一比例缩放，步骤文本提示在前端按同系数缩放保持一致。
+ * @returns 缩放系数（基准份数非法时回退 1 = 不缩放）
+ */
+const hintFactor = computed<number>(() => {
+  if (!baseServings.value || baseServings.value < 1) return 1
+  return servings.value / baseServings.value
+})
+
+/**
+ * 营养区按份数合计热量文案（单份 × 份数，与头部 kcal/份 同源换算）。
+ * @returns 形如「约 920 kcal」；无合计数据时返回「—」
+ */
+const totalKcalText = computed<string>(() => {
+  const total = nutrition.value?.total?.kcal
+  return total != null ? `约 ${total} kcal` : '—'
+})
+
+/**
  * 难度编码转中文标签。
  * @param d 难度编码
  * @returns 中文标签
@@ -122,8 +146,9 @@ async function loadDetail(): Promise<void> {
   error.value = null
   try {
     detail.value = await getRecipe(id)
-    // 同步菜谱基准份数（不触发缩放重算）
+    // 同步菜谱基准份数（不触发缩放重算）；该值同时作为步骤提示缩放的分母
     servings.value = detail.value.servings || 1
+    baseServings.value = detail.value.servings || 1
   } catch (e) {
     error.value = e as ApiError
     detail.value = null
@@ -200,6 +225,15 @@ function nutritionText(v: number | null, unit: string): string {
 }
 
 /**
+ * 步骤用量提示按份数缩放（M3/R3 修复：本步用量随份数响应式变化）。
+ * @param step 步骤对象
+ * @returns 缩放后的用量提示；无提示返回空串
+ */
+function stepHint(step: RecipeDetail['steps'][number]): string {
+  return scaleStepHint(step.amount_hint, hintFactor.value)
+}
+
+/**
  * 点击「开始做菜」：创建烹饪会话（后端做过敏原冲突检查）；
  * 有冲突（allergen_conflict 非空）→ 弹二次确认；无冲突 → 直接进 W-04。
  * @returns 无
@@ -208,7 +242,12 @@ async function startCooking(): Promise<void> {
   if (!detail.value || starting.value) return
   starting.value = true
   try {
-    const session = await cookingStore.startSession(detail.value.id, servings.value, detail.value.steps)
+    const session = await cookingStore.startSession(
+      detail.value.id,
+      servings.value,
+      detail.value.steps,
+      baseServings.value,
+    )
     if (session.allergen_conflict && session.allergen_conflict.length > 0) {
       // 阶段一预期无档案无冲突；若返回冲突则二次确认
       conflictText.value = session.allergen_conflict.join('、')
@@ -360,7 +399,7 @@ watch(
           placement="top"
         >
           <p class="step-desc">{{ step.description }}</p>
-          <p v-if="step.amount_hint" class="step-hint">用量提示：{{ step.amount_hint }}</p>
+          <p v-if="step.amount_hint" class="step-hint">用量提示：{{ stepHint(step) }}</p>
           <!-- 要点 / 失败补救折叠 -->
           <el-collapse v-if="step.tips || step.rescue" class="step-collapse">
             <el-collapse-item title="新手要点 / 失败补救" :name="step.no">
@@ -418,7 +457,12 @@ watch(
                 <span class="n-label">钠</span>
               </div>
             </div>
-            <p class="n-serving">按 {{ nutrition.per_serving }} 份计算</p>
+            <!-- 口径统一（M5/R4/S9）：全部为「每份」口径，与头部 kcal/份 同源；
+                 按份数合计单独标注，换算 = 单份 × 份数 -->
+            <p class="n-serving">
+              单份 {{ nutrition.kcal != null ? `${nutrition.kcal} kcal` : '未纳入统计' }} ·
+              按 {{ nutrition.per_serving }} 份合计 {{ totalKcalText }}
+            </p>
             <!-- 未纳入统计项（缺失数据不按 0 计） -->
             <el-alert
               v-if="nutrition.excluded_items.length > 0"
@@ -428,8 +472,8 @@ watch(
               show-icon
             />
             <p class="n-note">{{ nutrition.estimate_note }}</p>
-            <!-- 营养区免责（G-02 nutrition 档） -->
-            <DisclaimerBar variant="nutrition" />
+            <!-- L4-1 去重：营养区原独立的 DisclaimerBar（nutrition 档）已移除，
+                 估算口径说明由后端 estimate_note 承担，全页免责统一收敛至底部固定条 1 处 -->
           </template>
           <el-alert
             v-else-if="nutritionError"
@@ -446,13 +490,14 @@ watch(
       <p class="source-line">菜谱来源：{{ detail.source_label }}</p>
     </template>
 
-    <!-- 页面级免责条（G-02） -->
-    <DisclaimerBar variant="default" />
+    <!-- L4-1 去重：原页面级 DisclaimerBar（default 档）已移除，
+         免责声明全页仅保留下方底部固定条 1 处（原最主要位置，用户决策前必见） -->
   </section>
 
-  <!-- ⑫ 底部固定条：免责 + 开始做菜 -->
+  <!-- ⑫ 底部固定条：免责 + 开始做菜（L4-1 去重后免责声明全页唯一渲染点） -->
   <div v-if="detail && !isNotFound" class="detail-footer">
     <div class="footer-inner">
+      <!-- 页面唯一免责条（G-02 default 档）：置于开始做菜按钮旁，用户发起烹饪前必见 -->
       <DisclaimerBar variant="default" class="footer-disclaimer" />
       <el-button type="primary" size="large" class="footer-btn" :loading="starting" @click="startCooking">
         开始做菜

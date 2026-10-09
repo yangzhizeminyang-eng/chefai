@@ -53,6 +53,8 @@ export const useCookingStore = defineStore('cooking', {
     session: null as CookingSession | null,
     /** 本地步骤快照（restore 时从菜谱数据写入；步骤切换只读此数组） */
     steps: [] as RecipeStep[],
+    /** 菜谱基准份数（步骤用量提示缩放分母；会话份数 / 基准份数 = 缩放系数） */
+    baseServings: 1,
     /** 会话创建/恢复请求进行中标记 */
     loading: false,
     /** 创建/恢复错误（归一化 ApiError） */
@@ -82,17 +84,28 @@ export const useCookingStore = defineStore('cooking', {
      * @param recipeId 菜谱 ID
      * @param servings 份数
      * @param steps 菜谱步骤列表（详情页已加载，直接快照避免重复请求）
+     * @param baseServings 菜谱基准份数（步骤用量提示缩放分母，可缺省按 servings 兜底）
      * @returns 创建的会话
      */
-    async startSession(recipeId: number, servings: number, steps: RecipeStep[]): Promise<CookingSession> {
+    async startSession(
+      recipeId: number,
+      servings: number,
+      steps: RecipeStep[],
+      baseServings?: number,
+    ): Promise<CookingSession> {
       this.loading = true
       this.error = null
       try {
         const session = await createCookingSession({ recipe_id: recipeId, servings })
         this.session = session
         this.steps = steps
-        // 本地缓存步骤（刷新/重进时断点续做兜底）
-        safeSet(`${LOCAL_CACHE_PREFIX}${session.id}`, JSON.stringify({ steps, step_no: session.current_step_no }))
+        // 基准份数：非法/缺省时以会话份数兜底（缩放系数 = 1，不会误缩放）
+        this.baseServings = baseServings && baseServings >= 1 ? baseServings : servings
+        // 本地缓存步骤（刷新/重进时断点续做兜底）；基准份数随步骤缓存一并持久化
+        safeSet(
+          `${LOCAL_CACHE_PREFIX}${session.id}`,
+          JSON.stringify({ steps, step_no: session.current_step_no, base_servings: this.baseServings }),
+        )
         // 会话实体也入缓存（刷新后 Pinia 内存态丢失，从 localStorage 恢复会话）
         this.writeLocalSession()
         return session
@@ -108,19 +121,25 @@ export const useCookingStore = defineStore('cooking', {
      * 恢复会话（刷新/重进断点续做）：本地缓存优先取步骤快照，step_no 以会话实体为准。
      * @param session 已从后端取回（或由详情页传入）的会话实体
      * @param fallbackSteps 本地缓存缺失时使用的步骤兜底（详情页数据）
+     * @param fallbackBaseServings 基准份数兜底（缓存缺失时用，缺省以会话份数兜底）
      */
-    restore(session: CookingSession, fallbackSteps: RecipeStep[] = []): void {
+    restore(session: CookingSession, fallbackSteps: RecipeStep[] = [], fallbackBaseServings?: number): void {
       this.session = session
+      /** 基准份数兜底值（缓存缺失时不误缩放：以会话份数兜底 → 缩放系数 1） */
+      const baseFallback = fallbackBaseServings ?? session.servings ?? 1
       const cached = safeGet(`${LOCAL_CACHE_PREFIX}${session.id}`)
       if (cached) {
         try {
-          const parsed = JSON.parse(cached) as { steps: RecipeStep[]; step_no: number }
+          const parsed = JSON.parse(cached) as { steps: RecipeStep[]; step_no: number; base_servings?: number }
           this.steps = parsed.steps ?? fallbackSteps
+          this.baseServings = parsed.base_servings && parsed.base_servings >= 1 ? parsed.base_servings : baseFallback
         } catch {
           this.steps = fallbackSteps
+          this.baseServings = baseFallback
         }
       } else {
         this.steps = fallbackSteps
+        this.baseServings = baseFallback
       }
     },
 
@@ -198,15 +217,19 @@ export const useCookingStore = defineStore('cooking', {
       try {
         const session = JSON.parse(cached) as CookingSession
         let steps: RecipeStep[] = []
+        let baseServings = session.servings ?? 1
         const stepCache = safeGet(`${LOCAL_CACHE_PREFIX}${sessionId}`)
         if (stepCache) {
           try {
-            steps = (JSON.parse(stepCache) as { steps: RecipeStep[] }).steps ?? []
+            const parsed = JSON.parse(stepCache) as { steps: RecipeStep[]; base_servings?: number }
+            steps = parsed.steps ?? []
+            // 基准份数随步骤缓存恢复；旧缓存无该字段时以会话份数兜底（缩放系数 1，不误缩放）
+            baseServings = parsed.base_servings && parsed.base_servings >= 1 ? parsed.base_servings : baseServings
           } catch {
             steps = []
           }
         }
-        this.restore(session, steps)
+        this.restore(session, steps, baseServings)
         return true
       } catch {
         // 缓存损坏视为未恢复
@@ -237,6 +260,7 @@ export const useCookingStore = defineStore('cooking', {
       }
       this.session = null
       this.steps = []
+      this.baseServings = 1
     },
 
     /**

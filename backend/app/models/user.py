@@ -190,7 +190,9 @@ class UserSkillProfile(Base):
     """厨艺与设备档案表（对应 §10.4.6 user_skill_profile）。
 
     说明：
-        一人一份（user_id 唯一），equipment 为 13 项设备 JSONB 数组。
+        一人一份（user_id 唯一），equipment 为设备 JSONB 数组（编码须在
+        schemas.profile.EQUIPMENT_WHITELIST 白名单内；推荐链路经 runner 载入
+        SafetyProfile 供 hard_filter 设备维度差集判定）。
     """
 
     __tablename__ = "user_skill_profile"

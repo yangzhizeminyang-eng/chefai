@@ -105,7 +105,8 @@ def test_hard_filter_performance(large_candidates: list[dict]) -> None:
         filtered, counts = hard_filter(session, large_candidates, profile)
         elapsed = time.perf_counter() - start
     assert elapsed < HARD_FILTER_MAX_SECONDS, f"hard_filter took {elapsed:.3f}s"
-    assert set(counts) == {"allergen", "dietary_restriction", "difficulty"}
+    # 设备维度（equipment）为 M2/P6/S8 修复新增的过滤统计键
+    assert set(counts) == {"allergen", "dietary_restriction", "difficulty", "equipment"}
     input_ids = {c["recipe_id"] for c in large_candidates}
     assert all(c["recipe_id"] in input_ids for c in filtered)
 

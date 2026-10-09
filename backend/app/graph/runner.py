@@ -5,7 +5,8 @@
     - 自管 DB Session（节点内各自短会话，runner 不持长事务）；
     - SafetyProfile 构建（R-2）：payload 显式非空字段 > 用户档案（R-2 优先级，见
       _merge_profile_field）；档案经 load_profile_from_db 从 family/family_member
-      合并读取（全成员并集，最严格口径）；payload 未传 user_id 或无档案时行为
+      合并读取（全成员并集，最严格口径），设备清单另取 user_skill_profile.equipment
+      （一人一份，供 hard_filter 设备维度差集判定）；payload 未传 user_id 或无档案时行为
       与既有链路完全一致（向后兼容）；
     - 正常响应结构对齐架构文档 §9.2 正常示例（request_id/safe_mode/results/filtered_by/
       disclaimer_id/trace_id）；
@@ -26,7 +27,7 @@ from app.core.db import SessionLocal
 from app.core.logging import get_logger, new_request_id
 from app.graph.main_graph import build_main_graph
 from app.graph.nodes.common import DISCLAIMER_ID, TXT_G06
-from app.models import Family, FamilyMember
+from app.models import Family, FamilyMember, UserSkillProfile
 from app.safety import SafetyProfile
 
 logger = get_logger(__name__)
@@ -56,8 +57,9 @@ def load_profile_from_db(session, user_id: int) -> dict:
     说明：
         R-2 核心：查用户默认家庭（第一个未删除家庭）下全部未删除成员，
         按「最严格口径取并集」合并 allergen_codes / dietary_restrictions /
-        special_population 三段（多成员任一过敏原即整户规避）。
-        任何数据库异常降级为空档案（不阻断编排主链路）。
+        special_population 三段（多成员任一过敏原即整户规避）；
+        设备清单 equipment 取自 user_skill_profile（一人一份，本人灶具口径，
+        不随家庭成员并集）。任何数据库异常降级为空档案（不阻断编排主链路）。
 
     参数：
         session：数据库会话（由调用方提供并管理生命周期）。
@@ -65,7 +67,8 @@ def load_profile_from_db(session, user_id: int) -> dict:
 
     返回值：
         dict：{"allergen_codes": [...], "dietary_restrictions": [...],
-        "special_population": [...]}（去重合并后的字符串列表；无家庭/异常时为空列表）。
+        "special_population": [...], "equipment": [...]}（去重合并后的字符串列表；
+        无家庭/无设备档案/异常时为空列表）。
 
     异常：
         不抛出（内部全捕获降级为空档案）。
@@ -74,6 +77,7 @@ def load_profile_from_db(session, user_id: int) -> dict:
         "allergen_codes": [],
         "dietary_restrictions": [],
         "special_population": [],
+        "equipment": [],
     }
     try:
         family = session.execute(
@@ -84,6 +88,8 @@ def load_profile_from_db(session, user_id: int) -> dict:
             .limit(1)
         ).scalar_one_or_none()
         if family is None:
+            # 无家庭档案仍尝试读取本人设备清单（user_skill_profile 独立于家庭存在）
+            _load_equipment_into(session, user_id, merged)
             return merged
         members = session.execute(
             select(FamilyMember)
@@ -101,10 +107,42 @@ def load_profile_from_db(session, user_id: int) -> dict:
                     text_value = str(value).strip()
                     if text_value and text_value not in merged[key]:
                         merged[key].append(text_value)
+        _load_equipment_into(session, user_id, merged)
         return merged
     except Exception as exc:  # noqa: BLE001 —— 档案读取失败降级为空档案，不阻断编排
         logger.warning("load profile from db failed (user_id=%s): %s", user_id, exc)
         return merged
+
+
+def _load_equipment_into(session, user_id: int, merged: dict) -> None:
+    """把 user_skill_profile.equipment 写入档案合并字典（函数）。
+
+    说明：
+        设备清单一人一份（user_skill_profile.user_id 唯一），与家庭档案解耦；
+        查询异常仅告警（设备维度缺失按「未设置」处理，不阻断主链路）。
+
+    参数：
+        session：数据库会话。
+        user_id：用户数据库 ID。
+        merged：load_profile_from_db 的合并字典（原地追加 "equipment" 键）。
+
+    返回值：
+        None。
+
+    异常：
+        不抛出（查询异常告警后返回，equipment 保持空列表）。
+    """
+    try:
+        row = session.execute(
+            select(UserSkillProfile).where(UserSkillProfile.user_id == int(user_id))
+        ).scalar_one_or_none()
+        if row is not None:
+            for value in (row.equipment or []):
+                text_value = str(value).strip()
+                if text_value and text_value not in merged["equipment"]:
+                    merged["equipment"].append(text_value)
+    except Exception as exc:  # noqa: BLE001 —— 设备读取失败按未设置处理
+        logger.warning("load user equipment failed (user_id=%s): %s", user_id, exc)
 
 
 def _normalize_ingredients(raw) -> list:
@@ -206,6 +244,11 @@ def _init_state(payload: dict, input_text: str, ingredients: list) -> dict:
             payload.get("special_population"), db_profile.get("special_population")
         ),
         difficulty_cap=payload.get("difficulty_cap"),
+        # 设备清单：payload 非空 > user_skill_profile.equipment（空档案=未设置，
+        # hard_filter 设备维度不生效）
+        equipment=_merge_profile_field(
+            payload.get("equipment"), db_profile.get("equipment")
+        ),
     )
     trace_id = f"tr_{uuid.uuid4().hex[:8]}"
     state: dict = {

@@ -1,8 +1,11 @@
 """推荐排序模块（硬过滤先于排序，🔴 顺序不可颠倒）。
 
 职责：
-    - hard_filter：SQL 布尔 WHERE 硬过滤（过敏原/忌口/难度上限），JSONB 数组用 `?|`
-      操作符 + bindparam；含致敏原菜谱完全排除，绝不实现为降权打分（spec D9 红线）；
+    - hard_filter：布尔硬过滤（过敏原/忌口/难度上限 + 设备），绝不实现为降权打分
+      （spec D9 红线）：过敏原/忌口/难度在数据库层以 SQL 布尔 WHERE 完成（JSONB 数组
+      用 `?|` 操作符 + bindparam）；设备维度在候选层以「差集非空即排除」的布尔语义
+      完成（含基础工具豁免集，见 BASIC_TOOLS_EXEMPT / DEVICE_CLASS_HINTS）；含致敏原
+      或缺设备的菜谱完全排除（完全不出现，非降权）；
     - weighted_rank：7 因子加权排序（coverage/expiring/taste/goal/difficulty/history/popularity），
       权重从 remote_config `rank.weights` 读取（缺失用默认值），冷启动时 history 权重按比例
       摊给 coverage/popularity；每条产出 ≥1 条中文 rank_reasons 与三档 match_level，取 Top 8；
@@ -51,6 +54,27 @@ _DEFAULT_DIFFICULTY_CAP = 3
 # E.9 dislike 反馈惩罚分值（反馈立即生效：dislike 菜谱总分 -0.5）
 FEEDBACK_DISLIKE_PENALTY = 0.5
 
+# ---------------------------------------------------------------------------
+# 设备维度硬过滤（缺陷 M2/P6/S8 修复：用户档案仅持炒锅时，需燃气灶的菜谱必须完全不出现）
+# ---------------------------------------------------------------------------
+
+# 灶具/电器/锅具类判定词素（包含式）：菜谱 equipment 词项命中任一词素才参与
+# 「菜谱设备 − 用户档案设备」差集判定，落实「仅对灶具/电器/锅具类过滤」的口径。
+# 覆盖：锅类（炒锅/蒸锅/汤锅/炖锅/高压锅/平底锅/砂锅/电压力锅…）、灶具（燃气灶/
+# 电磁炉/灶台）、电器（微波炉/烤箱/电饭煲/空气炸锅/破壁机/料理机/搅拌机…）。
+DEVICE_CLASS_HINTS: tuple[str, ...] = ("锅", "灶", "炉", "煲", "机", "烤箱", "蒸箱")
+
+# 基础工具豁免集（包含式词素）：菜谱 equipment 词表含碗/盘/碟/刀/砧板/勺/筷子等
+# 几乎家家都有或可徒手替代的基础工具，以及锡纸/油纸/保鲜膜/模具等耗材——若参与差集
+# 判定会把所有菜滤光；命中任一词素的设备词项不参与设备过滤（豁免优先于词素判定）。
+# 另含少量语料误判为工具的非设备词（底料/调料/二锅头/用水）兜底。
+BASIC_TOOLS_EXEMPT: frozenset[str] = frozenset({
+    "碗", "盆", "盘", "碟", "刀", "砧板", "案板", "勺", "筷子", "铲", "杯",
+    "筛", "网", "纸", "膜", "袋", "布", "手套", "模具", "温度计", "秤",
+    "量杯", "打蛋器", "刮刀", "擀面杖", "锡纸", "蒸笼", "刷",
+    "二锅头", "底料", "调料", "用水",
+})
+
 
 def load_weights(session: Session | None = None) -> dict[str, float]:
     """从 remote_config 读取排序权重（函数）。
@@ -88,40 +112,106 @@ def load_weights(session: Session | None = None) -> dict[str, float]:
         return dict(DEFAULT_WEIGHTS)
 
 
+def _is_filterable_device(name: str) -> bool:
+    """判定菜谱设备词项是否参与设备硬过滤差集（函数）。
+
+    说明：
+        参与条件 = 命中灶具/电器/锅具类词素（DEVICE_CLASS_HINTS）且未命中基础工具
+        豁免集（BASIC_TOOLS_EXEMPT，优先判定）；碗/盘/刀/砧板等基础工具与耗材恒不参与。
+
+    参数：
+        name：菜谱 equipment 中的单个设备词项（已去空白）。
+
+    返回值：
+        bool：True 表示参与差集判定；False 表示豁免。
+
+    异常：
+        无。
+    """
+    for token in BASIC_TOOLS_EXEMPT:
+        if token in name:
+            return False
+    return any(hint in name for hint in DEVICE_CLASS_HINTS)
+
+
+def find_missing_equipment(recipe_equipment: list, user_equipment: list) -> list[str]:
+    """计算菜谱设备中用户缺失的灶具/电器/锅具类设备（函数）。
+
+    说明：
+        设备维度硬过滤的核心判定（布尔差集语义）：
+        - 仅对灶具/电器/锅具类词项做差集（基础工具/耗材经豁免集自动豁免）；
+        - 满足条件：词项在用户设备集合中精确命中，或与用户任一设备词构成
+          双向包含（用户「炒锅」可覆盖菜谱「普通的炒锅」/泛化「锅」等语料变体，
+          避免 406 道菜谱的语料长尾写法误滤）；
+        - 菜谱设备顺序保持输出（供「缺少设备：燃气灶」类原因明细展示）。
+
+    参数：
+        recipe_equipment：菜谱 equipment 列表（JSONB 反序列化，可 None）。
+        user_equipment：用户档案设备列表（可 None/空）。
+
+    返回值：
+        list[str]：用户缺失且参与判定的设备词项列表（保持菜谱顺序，去重）；
+        用户设备为空时恒返回 []（未设置档案不启用设备过滤，避免新用户全空结果）。
+
+    异常：
+        无（元素非字符串时按 str() 容错处理）。
+    """
+    user_set = {str(u).strip() for u in (user_equipment or []) if str(u).strip()}
+    if not user_set:
+        return []
+    missing: list[str] = []
+    for item in recipe_equipment or []:
+        name = str(item).strip()
+        if not name or name in missing:
+            continue
+        if not _is_filterable_device(name):
+            continue
+        if name in user_set:
+            continue
+        if any(u in name or name in u for u in user_set):
+            continue
+        missing.append(name)
+    return missing
+
+
 def hard_filter(
     session: Session,
     candidates: list[dict],
     profile: SafetyProfile,
 ) -> tuple[list[dict], dict[str, int]]:
-    """SQL 布尔硬过滤（函数）。
+    """布尔硬过滤（函数）。
 
     说明：
         在数据库层以布尔 WHERE 完成（🔴 非打分、非降权）：
         - NOT (recipe.allergen_codes ?| :codes)：菜谱自带致敏原命中即排除；
         - NOT (recipe.ingredient_allergen_codes ?| :codes)：食材聚合致敏原命中即排除；
         - NOT (recipe.dietary_flags ?| :restrictions)：忌口标记命中即排除；
-        - difficulty <= :cap：难度上限（无上限时跳过该条件）。
+        - difficulty <= :cap：难度上限（无上限时跳过该条件）；
+        - 设备维度（候选层布尔差集，在 SQL 过滤同层叠加）：仅当档案设备清单非空时
+          生效——菜谱设备中存在用户缺失的灶具/电器/锅具类词项（差集非空）即整条
+          排除，绝不降权；档案设备为空（未设置）时该维度不生效（避免新用户全空结果）。
         用户集合为空时对应条件自动跳过（空集合 `?|` 无命中语义，跳过以省查询）。
 
     参数：
         session：数据库会话。
-        candidates：retrieve_candidates 产出的候选字典列表（仅使用其 recipe_id）。
-        profile：用户安全档案（过敏原/忌口/难度上限）。
+        candidates：retrieve_candidates 产出的候选字典列表（使用 recipe_id 与 equipment）。
+        profile：用户安全档案（过敏原/忌口/难度上限/设备清单）。
 
     返回值：
         tuple[list[dict], dict[str, int]]：
             (过滤后候选列表【保持原候选顺序】, filtered_by 计数)；
-            counts={"allergen": n, "dietary_restriction": n, "difficulty": n}。
+            counts={"allergen": n, "dietary_restriction": n, "difficulty": n, "equipment": n}。
 
     异常：
-        不抛出（任何异常按「宁少不错」返回空集 + 原候选全部计为过敏原过滤，交由上层降级）。
+        不抛出（任何异常按「宁少不错」返回空集 + 已计维度计数，交由上层降级）。
     """
-    counts = {"allergen": 0, "dietary_restriction": 0, "difficulty": 0}
+    counts = {"allergen": 0, "dietary_restriction": 0, "difficulty": 0, "equipment": 0}
     if not candidates:
         return [], counts
     candidate_ids = [int(c["recipe_id"]) for c in candidates]
     allergen_codes = [str(c) for c in (profile.user_allergen_codes or [])]
     restrictions = [str(c) for c in (profile.dietary_restrictions or [])]
+    user_equipment = [str(e).strip() for e in (profile.equipment or []) if str(e).strip()]
 
     try:
         base = select(Recipe.id).where(Recipe.id.in_(candidate_ids))
@@ -139,8 +229,16 @@ def hard_filter(
         if profile.difficulty_cap:
             over_difficulty = base.where(Recipe.difficulty > int(profile.difficulty_cap))
             counts["difficulty"] = int(len(session.execute(over_difficulty).all()))
+        # 设备维度单条件计数：候选字典自带 equipment 列表，纯 Python 差集判定
+        missing_equipment: dict[int, list[str]] = {}
+        if user_equipment:
+            for cand in candidates:
+                missing = find_missing_equipment(cand.get("equipment") or [], user_equipment)
+                if missing:
+                    missing_equipment[int(cand["recipe_id"])] = missing
+            counts["equipment"] = len(missing_equipment)
 
-        # 过滤后集合：全部条件叠加的布尔 WHERE（保持原候选顺序输出）
+        # 过滤后集合：全部条件叠加的布尔过滤（保持原候选顺序输出）
         stmt = base
         if allergen_codes:
             stmt = stmt.where(
@@ -154,7 +252,10 @@ def hard_filter(
             stmt = stmt.where(Recipe.difficulty <= int(profile.difficulty_cap))
         filtered_ids = {int(row[0]) for row in session.execute(stmt).all()}
 
-        filtered = [c for c in candidates if int(c["recipe_id"]) in filtered_ids]
+        filtered = [
+            c for c in candidates
+            if int(c["recipe_id"]) in filtered_ids and int(c["recipe_id"]) not in missing_equipment
+        ]
         return filtered, counts
     except Exception as exc:  # noqa: BLE001 —— 硬过滤失败按致命降级：返回空结果集（宁少不错）
         logger.error("hard_filter failed, fallback to empty set: %s", exc)

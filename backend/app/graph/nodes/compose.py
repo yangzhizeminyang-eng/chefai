@@ -94,6 +94,7 @@ def make_compose():
                 "allergen": 0,
                 "dietary_restriction": 0,
                 "difficulty": 0,
+                "equipment": 0,
             }
         if state.get("qa_answer"):
             response["qa_answer"] = state["qa_answer"]

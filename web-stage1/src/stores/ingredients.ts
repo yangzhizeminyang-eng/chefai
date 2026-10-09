@@ -3,7 +3,10 @@
  * - categories：十类分类常量（对齐架构文档食材分类）；
  * - list/loading/error：食材列表三态；
  * - loadIngredients(category?, q?)：按分类/关键词（含别名）拉取；
- * - selected：已选食材 Map（id → {id, name}），toggle/clear 维护。
+ * - selected：已选食材 Map（id → {id, name}），toggle/clear 维护；
+ * - selected 以 sessionStorage 持久化（key: aicook_selected_ingredients_v1）：
+ *   store 初始化时恢复、toggle/clear 时写回，整页刷新不丢（S10/L2 修复；
+ *   sessionStorage 按标签页天然隔离，跨标签页互不影响为预期行为）。
  */
 import { defineStore } from 'pinia'
 import { getIngredients, type IngredientListResponse } from '@/api/endpoints'
@@ -16,6 +19,49 @@ export interface CategoryOption {
   code: string
   /** 分类中文名（展示用） */
   label: string
+}
+
+/** 已选食材 sessionStorage 持久化键（v1：结构变更有需时升版本号） */
+const SELECTED_KEY = 'aicook_selected_ingredients_v1'
+
+/**
+ * 从 sessionStorage 恢复已选食材（store 初始化时调用，S10/L2 修复）。
+ * 数据损坏 / 结构非法 / 隐私模式不可用时回退空对象，不抛异常阻塞启动。
+ * @returns 已选食材 Map（id → {id, name}）；无有效数据时为 {}
+ */
+function restoreSelected(): Record<number, SelectedIngredient> {
+  try {
+    const raw = sessionStorage.getItem(SELECTED_KEY)
+    if (!raw) return {}
+    const parsed: unknown = JSON.parse(raw)
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    // 逐条校验结构（id 数字 / name 字符串），过滤脏数据避免污染推荐请求
+    const restored: Record<number, SelectedIngredient> = {}
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      const id = Number(key)
+      const item = value as Partial<SelectedIngredient> | null
+      if (Number.isInteger(id) && id > 0 && typeof item?.id === 'number' && typeof item?.name === 'string') {
+        restored[id] = { id, name: item.name }
+      }
+    }
+    return restored
+  } catch {
+    // JSON 解析失败或 sessionStorage 不可用（隐私模式）：回退空选择
+    return {}
+  }
+}
+
+/**
+ * 将已选食材写入 sessionStorage（toggle/clear 后调用，S10/L2 修复）。
+ * @param selected 当前已选食材 Map（id → {id, name}）
+ * @returns 无（持久化失败静默忽略，不影响内存态）
+ */
+function persistSelected(selected: Record<number, SelectedIngredient>): void {
+  try {
+    sessionStorage.setItem(SELECTED_KEY, JSON.stringify(selected))
+  } catch {
+    // 忽略持久化失败（隐私模式 / 容量溢出）：内存态仍然可用
+  }
 }
 
 /** 食材十类分类常量（ veg 蔬菜 / meat 肉禽 / seafood 水产 / egg_milk 蛋奶 / soy 豆制品 / staple 主食 / seasoning 调味品 / dry 干货 / frozen 冷冻 / other 其他） */
@@ -50,8 +96,8 @@ export const useIngredientsStore = defineStore('ingredients', {
     loading: false,
     /** 列表加载错误信息（归一化 ApiError，null 表示无错） */
     error: null as ApiError | null,
-    /** 已选食材 Map：id → {id, name}（用 Record 便于持久化与响应式遍历） */
-    selected: {} as Record<number, SelectedIngredient>,
+    /** 已选食材 Map：id → {id, name}（用 Record 便于持久化与响应式遍历；初始化时从 sessionStorage 恢复） */
+    selected: restoreSelected(),
   }),
   getters: {
     /**
@@ -97,6 +143,8 @@ export const useIngredientsStore = defineStore('ingredients', {
         // 未选 → 加入（用解构保证响应式）
         this.selected = { ...this.selected, [ing.id]: { id: ing.id, name: ing.name } }
       }
+      // S10/L2：选中态变化即写回 sessionStorage，整页刷新后恢复
+      persistSelected(this.selected)
     },
 
     /**
@@ -104,6 +152,8 @@ export const useIngredientsStore = defineStore('ingredients', {
      */
     clear(): void {
       this.selected = {}
+      // S10/L2：清空同样写回 sessionStorage（空对象），保持两侧一致
+      persistSelected(this.selected)
     },
   },
 })

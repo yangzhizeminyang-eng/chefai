@@ -68,6 +68,8 @@ export interface FilteredBy {
   dietary_restriction?: number
   /** 因难度被过滤的数量 */
   difficulty?: number
+  /** 因缺少设备被过滤的数量（M2/P6/S8：设备维度硬过滤计数，档案设备非空时生效） */
+  equipment?: number
 }
 
 /** 推荐正常响应体（POST /v1/recommend，非短路场景） */
@@ -198,18 +200,33 @@ export interface RecipeDetail {
 
 /** 营养估算结果（GET /v1/recipes/{id}/nutrition） */
 export interface NutritionResult {
-  /** 每份估算热量（kcal） */
+  /** 每份热量（kcal，唯一口径；DB calories_kcal 优先，缺失时回退估算） */
   kcal: number | null
-  /** 蛋白质（g） */
+  /** 蛋白质（g/份） */
   protein: number | null
-  /** 脂肪（g） */
+  /** 脂肪（g/份） */
   fat: number | null
-  /** 碳水化合物（g） */
+  /** 碳水化合物（g/份） */
   carbs: number | null
-  /** 钠（mg） */
+  /** 钠（mg/份） */
   sodium: number | null
   /** 当前计算份数 */
   per_serving: number
+  /** 按当前份数合计（= 每份 × 份数，同源换算；与 kcal 口径一致，可为空） */
+  total?: {
+    /** 合计热量（kcal） */
+    kcal: number | null
+    /** 合计蛋白质（g） */
+    protein: number | null
+    /** 合计脂肪（g） */
+    fat: number | null
+    /** 合计碳水（g） */
+    carbs: number | null
+    /** 合计钠（mg） */
+    sodium: number | null
+  }
+  /** 每份 kcal 数据来源（recipe_seed 菜谱库值 / llm_estimate LLM 回退 / deterministic_fallback 食材聚合；旧后端无该字段） */
+  kcal_source?: string | null
   /** 未纳入统计的食材名列表（缺失营养数据，不按 0 计） */
   excluded_items: string[]
   /** 估算说明（固定含「估算值，非实测值，误差约 ±15%」） */
@@ -352,6 +369,8 @@ export interface ApiError {
   code: number | string
   /** 面向用户的错误文案 */
   message: string
+  /** 后端返回的原始 detail（422 校验错误时为 str(exc.errors()) repr 串或原生错误数组，可选） */
+  detail?: unknown
 }
 
 /** 被过滤菜谱条目（W-02「显示被我过滤掉的菜」开关打开时，后端可选返回的清单项） */
@@ -504,6 +523,12 @@ export interface ConsentSensitiveResponse {
 
 /* ── 库存与购物清单（/v1/inventory、/v1/shopping-list）── */
 
+/**
+ * 存放位置枚举（对齐后端 StorageLocation 四值，见 backend/app/schemas/inventory.py；
+ * DB 列 storage 受 chk_storage 约束，仅接受这四个枚举值，传中文标签会 422）。
+ */
+export type StorageLocation = 'fridge' | 'freezer' | 'room' | 'dry'
+
 /** 库存条目 */
 export interface InventoryItem {
   /** 库存条目 ID */
@@ -518,8 +543,8 @@ export interface InventoryItem {
   stocked_at: string
   /** 到期日（YYYY-MM-DD） */
   expire_date: string
-  /** 存放位置（如 冷藏/冷冻/常温） */
-  location: string
+  /** 存放位置（fridge 冷藏 / freezer 冷冻 / room 常温 / dry 阴凉干燥） */
+  location: StorageLocation
   /** 该食材的致敏原编码列表 */
   allergen_codes: string[]
   /** 条目状态：active 在库 / used 已用完 / expired 已过期 / discarded 已丢弃 */
@@ -540,16 +565,16 @@ export interface InventoryCreateBody {
   quantity_level: InventoryItem['quantity_level']
   /** 到期日（可选） */
   expire_date?: string
-  /** 存放位置（可选） */
-  location?: string
+  /** 存放位置（可选，必须为 StorageLocation 四值枚举之一，传中文标签会 422） */
+  location?: StorageLocation
 }
 
 /** 修改库存请求体（PATCH /v1/inventory/{id}，增量字段） */
 export interface InventoryPatchBody {
   /** 数量档位（可选） */
   quantity_level?: InventoryItem['quantity_level']
-  /** 存放位置（可选） */
-  location?: string
+  /** 存放位置（可选，必须为 StorageLocation 四值枚举之一，传中文标签会 422） */
+  location?: StorageLocation
   /** 到期日（可选） */
   expire_date?: string
   /** 条目状态（可选，如标记用完/丢弃） */

@@ -14,8 +14,9 @@
     POST /v1/recommend/filtered：布尔硬过滤重放（W-02「显示被我过滤掉的菜」）。
     说明：agent_trace 仅落库节点 span（node_name/status/duration_ms），hard_filter
     的 filtered 明细【未落库】，GET trace 回放不可行——故采用重放语义：以请求体
-    {ingredients, allergen_codes, ...} 现场执行 retrieve_candidates + hard_filter，
-    返回会被过滤掉的菜谱及原因（allergen/taboo/difficulty）。
+    {ingredients, allergen_codes, ..., equipment} 现场执行 retrieve_candidates +
+    hard_filter，返回会被过滤掉的菜谱及原因（allergen/taboo/difficulty/equipment；
+    reasons 数组元素为 {type, detail} 结构，设备维度 detail 形如「缺少设备：燃气灶」）。
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.ability.ranking import hard_filter
+from app.ability.ranking import find_missing_equipment, hard_filter
 from app.ability.retrieval import retrieve_candidates
 from app.api.v1.deps import adapt_risk, difficulty_label, resolve_existing_user_id, resolve_request_id
 from app.core.db import get_db
@@ -285,20 +286,22 @@ class FilteredRecommendRequest(BaseModel):
     """硬过滤重放请求体（模型类）。
 
     说明：
-        W-02「显示被我过滤掉的菜」：以用户食材 + 过敏原/忌口/难度上限现场重放
-        布尔硬过滤，返回会被移除的菜谱及原因。
+        W-02「显示被我过滤掉的菜」：以用户食材 + 过敏原/忌口/难度上限 + 设备清单
+        现场重放布尔硬过滤，返回会被移除的菜谱及原因。
 
     属性：
         ingredients：已选食材列表（≥1，形态同 /v1/recommend）。
         allergen_codes：过敏原 code 集合（GB 7718 八类，缺省空）。
         dietary_restrictions：忌口标记集合（缺省空）。
         difficulty_cap：难度上限 1~5（缺省 None 不过滤）。
+        equipment：用户已有设备清单（对齐档案白名单编码，缺省空=不启用设备过滤）。
     """
 
     ingredients: list[RecommendIngredient] = Field(min_length=1)
     allergen_codes: list[str] = Field(default_factory=list)
     dietary_restrictions: list[str] = Field(default_factory=list)
     difficulty_cap: int | None = Field(default=None, ge=1, le=5)
+    equipment: list[str] = Field(default_factory=list)
 
 
 def _build_empty_suggestions() -> dict:
@@ -389,25 +392,32 @@ def _resolve_ingredient_ids(session: Session, items: list) -> list[int]:
     return ids
 
 
-def _attribute_filter_reasons(session: Session, recipe_ids: list[int], profile: SafetyProfile) -> dict[int, str]:
-    """归因每道被过滤菜谱的过滤原因（函数）。
+def _attribute_filter_reasons(
+    session: Session, recipe_ids: list[int], profile: SafetyProfile
+) -> dict[int, list[dict]]:
+    """归因每道被过滤菜谱的全部过滤原因（函数）。
 
     说明：
-        hard_filter 仅返回聚合计数，此处对被移除菜谱逐个复核命中条件：
-        优先级 allergen（致敏原）> taboo（忌口）> difficulty（难度超限）。
+        hard_filter 仅返回聚合计数，此处对被移除菜谱逐个复核命中条件，产出
+        {type, detail} 原因数组（同菜谱多条件命中时全部列出）；类型优先级
+        allergen（致敏原）> taboo（忌口）> difficulty（难度超限）> equipment（缺设备），
+        供主原因 reason 字段取首项。设备维度仅对灶具/电器/锅具类词项做差集
+        （复用 find_missing_equipment：基础工具豁免 + 档案为空不生效）。
 
     参数：
         session：数据库会话。
         recipe_ids：被过滤的菜谱 ID 列表。
-        profile：重放用的安全档案（过敏原/忌口/难度上限）。
+        profile：重放用的安全档案（过敏原/忌口/难度上限/设备清单）。
 
     返回值：
-        dict[int, str]：{recipe_id: reason}，reason ∈ {"allergen", "taboo", "difficulty"}。
+        dict[int, list[dict]]：{recipe_id: [{"type": ..., "detail": ...}, ...]}，
+        type ∈ {"allergen", "taboo", "difficulty", "equipment"}；设备 detail 形如
+        「缺少设备：燃气灶」。理论上每条至少一项（被过滤必有命中条件）。
 
     异常：
         不抛出（查询异常时全部归因为 allergen 兜底，不阻断重放）。
     """
-    reasons: dict[int, str] = {}
+    reasons: dict[int, list[dict]] = {}
     if not recipe_ids:
         return reasons
     try:
@@ -418,34 +428,59 @@ def _attribute_filter_reasons(session: Session, recipe_ids: list[int], profile: 
                 Recipe.ingredient_allergen_codes,
                 Recipe.dietary_flags,
                 Recipe.difficulty,
+                Recipe.equipment,
             ).where(Recipe.id.in_(recipe_ids))
         ).all()
     except Exception as exc:  # noqa: BLE001 —— 归因失败兜底 allergen
         logger.warning("attribute filter reasons failed: %s", exc)
-        return {int(rid): "allergen" for rid in recipe_ids}
+        return {int(rid): [{"type": "allergen", "detail": "过滤归因失败，按致敏原兜底"}] for rid in recipe_ids}
 
     allergen_codes = set(profile.user_allergen_codes or [])
     restrictions = set(profile.dietary_restrictions or [])
-    for rid, recipe_allergens, ing_allergens, flags, difficulty in rows:
+    for rid, recipe_allergens, ing_allergens, flags, difficulty, equipment in rows:
         rid = int(rid)
-        if allergen_codes and (
-            allergen_codes & set(recipe_allergens or []) or allergen_codes & set(ing_allergens or [])
+        item_reasons: list[dict] = []
+        allergen_hits: set[str] = set()
+        if allergen_codes:
+            allergen_hits = (
+                allergen_codes & set(recipe_allergens or []) | allergen_codes & set(ing_allergens or [])
+            )
+            if allergen_hits:
+                item_reasons.append(
+                    {"type": "allergen", "detail": f"命中过敏原：{'、'.join(sorted(allergen_hits))}"}
+                )
+        taboo_hits = restrictions & set(flags or []) if restrictions else set()
+        if taboo_hits:
+            item_reasons.append(
+                {"type": "taboo", "detail": f"命中忌口：{'、'.join(sorted(taboo_hits))}"}
+            )
+        if (
+            profile.difficulty_cap
+            and difficulty is not None
+            and int(difficulty) > int(profile.difficulty_cap)
         ):
-            reasons[rid] = "allergen"
-        elif restrictions and restrictions & set(flags or []):
-            reasons[rid] = "taboo"
-        elif profile.difficulty_cap and difficulty is not None and int(difficulty) > int(profile.difficulty_cap):
-            reasons[rid] = "difficulty"
-        else:
+            item_reasons.append(
+                {
+                    "type": "difficulty",
+                    "detail": f"难度 {int(difficulty)} 超过上限 {int(profile.difficulty_cap)}",
+                }
+            )
+        missing_equipment = find_missing_equipment(equipment or [], profile.equipment or [])
+        if missing_equipment:
+            item_reasons.append(
+                {"type": "equipment", "detail": f"缺少设备：{'、'.join(missing_equipment)}"}
+            )
+        if not item_reasons:
             # 理论不可达（被过滤必有命中条件），兜底归因为过敏原
-            reasons[rid] = "allergen"
+            item_reasons.append({"type": "allergen", "detail": "过滤归因失败，按致敏原兜底"})
+        reasons[rid] = item_reasons
     return reasons
 
 
 @router.post(
     "/recommend/filtered",
     response_model=FilteredResponse,
-    summary="布尔硬过滤重放（显示会被过滤掉的菜谱及原因：allergen/taboo/difficulty）",
+    summary="布尔硬过滤重放（显示会被过滤掉的菜谱及原因：allergen/taboo/difficulty/equipment）",
 )
 def post_recommend_filtered(
     payload: FilteredRecommendRequest,
@@ -455,15 +490,16 @@ def post_recommend_filtered(
 
     说明：
         agent_trace 未落库 filtered 明细，无法按 trace_id 回放——故为重放语义：
-        retrieve_candidates 召回 → hard_filter 布尔过滤 → 对被移除菜谱归因原因。
+        retrieve_candidates 召回 → hard_filter 布尔过滤（含设备差集维度）→
+        对被移除菜谱归因全部原因（{type, detail} 数组，主原因 reason 取首项）。
         候选为空时返回空列表（total_filtered=0）。
 
     参数：
-        payload：重放请求体（ingredients ≥1 + 可选过敏原/忌口/难度上限）。
+        payload：重放请求体（ingredients ≥1 + 可选过敏原/忌口/难度上限/设备清单）。
         session：请求级数据库会话。
 
     返回值：
-        dict：{filtered: [{recipe_id, recipe_name, reason}], total_filtered: int}。
+        dict：{filtered: [{recipe_id, recipe_name, reason, reasons}], total_filtered: int}。
 
     异常：
         召回/过滤内部全捕获（异常按空集降级），本端点不向外抛业务异常。
@@ -475,6 +511,7 @@ def post_recommend_filtered(
         dietary_restrictions=[str(c) for c in payload.dietary_restrictions],
         special_population=[],
         difficulty_cap=payload.difficulty_cap,
+        equipment=[str(e) for e in payload.equipment],
     )
     filtered, _counts = hard_filter(session, candidates, profile)
     kept_ids = {int(c["recipe_id"]) for c in filtered}
@@ -484,7 +521,8 @@ def post_recommend_filtered(
         {
             "recipe_id": int(c["recipe_id"]),
             "recipe_name": str(c.get("title") or ""),
-            "reason": reason_map.get(int(c["recipe_id"]), "allergen"),
+            "reason": (reason_map.get(int(c["recipe_id"])) or [{"type": "allergen"}])[0]["type"],
+            "reasons": reason_map.get(int(c["recipe_id"])) or [],
         }
         for c in removed
     ]

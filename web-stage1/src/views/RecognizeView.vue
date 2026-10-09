@@ -20,6 +20,7 @@ import type { ApiError, VisionRecognizeResponse } from '@/api/types'
 import { useConfigStore } from '@/stores/config'
 import { useIngredientsStore } from '@/stores/ingredients'
 import { compressImage } from '@/utils/image'
+import { MEMBER_QUOTA_LABEL } from '@/constants/copy'
 
 /** 路由（确认入库后跳 /select、「改为手选」） */
 const router = useRouter()
@@ -224,7 +225,7 @@ function resetAll(): void {
       <template v-else-if="result">
         <!-- 额度 -->
         <div class="quota-line">
-          <span class="quota-text">本周期识别额度：{{ result.quota.used }} / {{ result.quota.limit }}</span>
+          <span class="quota-text">{{ MEMBER_QUOTA_LABEL }}：{{ result.quota.used }} / {{ result.quota.limit }}</span>
           <el-button size="small" link type="primary" @click="resetAll">再拍一张</el-button>
         </div>
 
