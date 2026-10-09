@@ -1,0 +1,96 @@
+/**
+ * 文件职责：全局样式。
+ * - 字号阶 CSS 变量（14/16/18px，对应 UI 清单 §0.4 通用设计规范）；
+ * - 安全色语义变量（危险红 / 警示橙黄 / 信息蓝灰），深色模式自动适配；
+ * - 通用 .page-card 卡片样式（页面内容容器统一视觉）。
+ */
+
+:root {
+  /* ── 字号阶 ── */
+  --font-sm: 14px;
+  --font-md: 16px;
+  --font-lg: 18px;
+
+  /* ── 安全色语义（浅色模式）── */
+  /* 危险（红）：风控拦截、过敏原警示 */
+  --color-danger: #d93026;
+  --color-danger-bg: #fdecea;
+  --color-danger-border: #f5b7b1;
+  /* 警示（橙黄）：注意类提示 */
+  --color-warning: #b26a00;
+  --color-warning-bg: #fff4e5;
+  --color-warning-border: #f0d9b5;
+  /* 信息（蓝灰）：免责声明、说明类文案 */
+  --color-info: #5b6b7c;
+  --color-info-bg: #f2f5f8;
+  --color-info-border: #d7dee5;
+
+  /* ── 布局 ── */
+  --page-max-width: 1200px;
+  --header-height: 56px;
+  --page-bg: #f5f6f8;
+  --card-bg: #ffffff;
+  --text-main: #303133;
+}
+
+/* ── 深色模式变量适配（配合 Element Plus html.dark）── */
+html.dark {
+  --color-danger: #ff7875;
+  --color-danger-bg: #3a1d1d;
+  --color-danger-border: #6b3434;
+  --color-warning: #ffc069;
+  --color-warning-bg: #3a2c14;
+  --color-warning-border: #6b5424;
+  --color-info: #9fb0c0;
+  --color-info-bg: #1f2429;
+  --color-info-border: #38424c;
+  --page-bg: #101418;
+  --card-bg: #1d232a;
+  --text-main: #e5eaf3;
+}
+
+/* 全局背景与文字色适配深浅模式 */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--page-bg);
+  color: var(--text-main);
+  font-size: var(--font-md);
+  transition:
+    background-color 0.25s ease,
+    color 0.25s ease;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+/* ── 通用页面卡片 ── */
+.page-card {
+  background: var(--card-bg);
+  border-radius: 10px;
+  padding: 20px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+  transition:
+    background-color 0.25s ease,
+    box-shadow 0.25s ease;
+}
+
+html.dark .page-card {
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+/* ── 免责声明小字（G-02 通用视觉：小字灰蓝、信息语义）── */
+.disclaimer-text {
+  font-size: 12px;
+  color: var(--color-info);
+  line-height: 1.6;
+}
+
+/* ── 页面标题统一样式 ── */
+.page-title {
+  font-size: var(--font-lg);
+  font-weight: 600;
+  margin: 0 0 16px;
+}

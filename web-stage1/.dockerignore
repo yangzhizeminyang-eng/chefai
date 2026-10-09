@@ -1,0 +1,4 @@
+# web-stage1 独立构建上下文排除清单（容器栈实际使用根级 Dockerfile.web + 根 .dockerignore）
+node_modules
+dist
+.vscode

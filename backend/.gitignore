@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# 语料缓存（HowToCook 仓库克隆，不入版本管理）
+data/
+
+# 环境与本地配置
+.env

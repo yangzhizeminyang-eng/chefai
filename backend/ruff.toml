@@ -1,0 +1,32 @@
+# ruff 配置（05-V1.1 §3.4 质量门槛：ruff check app 全仓通过）
+# 运行：.venv\Scripts\python.exe -m ruff check app
+
+# 目标版本：项目使用 Python 3.13（backend/.venv）
+target-version = "py313"
+
+# 行宽 120：兼顾中文字符串可读性与主流屏幕宽度
+line-length = 120
+
+# 排除虚拟环境与缓存目录
+exclude = [".venv", "__pycache__", "data", "alembic/versions"]
+
+[lint]
+# 实用规则集：pycodestyle 错误(E)/警告(W)、pyflakes(F)、isort(I)、
+# flake8-bugbear(B)、pyupgrade(UP)。ruff 0.16 起默认启用全量 stable 规则，
+# 此处显式收敛为上述集合，避免 BLE/S/PL/PIE/SIM/RUF 等风格争议规则噪音。
+select = ["E", "F", "W", "I", "B", "UP"]
+
+ignore = [
+    # E501 长行：seed 语料文件（corpus_howtocook.py）含大量中文数据行与
+    # ORM 长约束定义，拆行反而损害可读性；已放宽至 120 后仍有个别超限。
+    "E501",
+    # B008 函数调用作默认参数：FastAPI 的 `Depends()` / `Query()` 写在
+    # 路由参数默认值中是官方推荐惯例，非 bug（依赖注入本就依赖此模式）。
+    "B008",
+]
+
+[lint.per-file-ignores]
+# 语料数据文件：长行与复杂数据结构属预期，不适用部分风格规则
+"app/seed/corpus_howtocook.py" = ["E731"]
+# 迁移文件由 alembic 模板生成，保持原样
+"alembic/env.py" = ["E402"]

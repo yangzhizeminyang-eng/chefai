@@ -1,0 +1,13 @@
+# 依赖与构建产物
+node_modules
+dist
+dist-ssr
+
+# 本地环境文件
+*.local
+
+# 编辑器与日志
+logs
+*.log
+.idea
+.DS_Store

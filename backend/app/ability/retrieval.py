@@ -1,0 +1,385 @@
+"""菜谱混合召回模块（Task 8 升级：pgvector 混合检索 R-1 收敛）。
+
+职责：
+    实现阶段一默认检索（spec D5：不下载向量模型）+ 向量混合召回（spec D3）：
+    ① 有食材输入时按 recipe_ingredient 覆盖数降序召回（食材覆盖率优先）；
+    ② query_text 非空时按菜名 ILIKE 与食材名/别名匹配召回（搜索/自然语言路径）；
+    ③ 向量路径（use_vector=True 且 query_text 非空）：查询文本 → 嵌入 → 双分支检索——
+       - pgvector 可用（probe_pgvector）→ raw SQL `<=>` 余弦距离 Top-20；
+       - 不可用 → 从 embedding_json 读出（≤800 行）纯 Python 点积 Top-20（无 numpy）；
+    三路并集按 recipe_id 合并去重，向量命中但关键词未命中的加 matched_by_vector
+    来源标记；Top-8（top_k）截断返回，返回结构与既有一致，下游 hard_filter/rank 无感。
+
+分区红线（spec D3）：
+    默认调用（推荐链路）只查 source='verified'——AI 私有向量行（source='ai_private'）
+    绝不出现在默认推荐结果中（代码断言：查询 WHERE 显式限定 source）；
+    创新链路经 include_private_owner=<user_id> 显式开启「verified + 该用户 ai_private」。
+
+降级保证：
+    probe 失败 / 向量路径任何异常 → logger.warning 降级走既有关键词路径，绝不抛错。
+"""
+
+from __future__ import annotations
+
+from sqlalchemy import func, or_, select, text
+from sqlalchemy.orm import Session
+
+from app.ability.embedding import (
+    ensure_embeddings,
+    get_embedding_provider,
+    lazy_backfill,
+    probe_pgvector,
+)
+from app.core.db import engine
+from app.core.logging import get_logger
+from app.models import Ingredient, IngredientAlias, Recipe, RecipeEmbedding, RecipeIngredient
+
+logger = get_logger(__name__)
+
+# 默认候选上限（中间召回池规模）
+DEFAULT_LIMIT = 200
+
+# 默认返回条数（spec：推荐链路最终 Top-8，下游 hard_filter/rank 在此集合内工作）
+DEFAULT_TOP_K = 8
+
+# 向量召回条数（混合合并前的向量 Top-N）
+VECTOR_TOP_N = 20
+
+# Python 点积分支单次扫描的向量行上限（阶段一 published ≤400，留倍余量）
+VECTOR_SCAN_MAX = 800
+
+
+def match_ingredients_in_text(session: Session, text_value: str) -> tuple[list[int], list[str]]:
+    """从自然语言文本中匹配食材库内的食材（函数）。
+
+    说明：
+        阶段一无 NER 模型，采用「食材名/别名为文本子串」的确定性匹配；
+        食材库（256 条）与别名（202 条）规模小，全量载入内存匹配即可。
+
+    参数：
+        session：数据库会话。
+        text_value：用户自然语言输入。
+
+    返回值：
+        tuple[list[int], list[str]]：(匹配到的 ingredient_id 列表, 匹配到的食材名列表)。
+
+    异常：
+        不抛出（查询异常返回空列表并告警）。
+    """
+    if not text_value:
+        return [], []
+    try:
+        rows = session.execute(select(Ingredient.id, Ingredient.name)).all()
+    except Exception as exc:  # noqa: BLE001 —— 召回失败不阻断，交由上层兜底
+        logger.warning("match ingredients in text failed: %s", exc)
+        return [], []
+    try:
+        alias_rows = session.execute(
+            select(IngredientAlias.alias, IngredientAlias.ingredient_id)
+        ).all()
+    except Exception:  # noqa: BLE001
+        alias_rows = []
+
+    matched_ids: list[int] = []
+    matched_names: list[str] = []
+    # 先精确匹配食材名（长名优先，避免「土豆」误吞「土豆泥」类短名歧义）
+    for ing_id, name in rows:
+        if name and name in text_value:
+            matched_ids.append(int(ing_id))
+            matched_names.append(name)
+    for alias, ing_id in alias_rows:
+        if alias and alias in text_value and int(ing_id) not in matched_ids:
+            matched_ids.append(int(ing_id))
+            matched_names.append(alias)
+    return matched_ids, matched_names
+
+
+def _vector_search_pgvector(query_vector: list[float], include_private_owner: int | None) -> dict[int, float]:
+    """pgvector raw SQL 余弦检索分支（函数）。
+
+    说明：
+        向量列 embedding(vector(1024)) 仅存在于迁移中，raw SQL 以 `<=>` 余弦距离
+        排序取 Top-20；使用独立 engine 连接，失败不污染调用方事务。
+        分区红线：默认仅 source='verified'；include_private_owner 时追加该用户
+        source='ai_private' 行（代码断言，AI 私有菜谱不进默认推荐）。
+
+    参数：
+        query_vector：查询向量（1024 维，已归一化）。
+        include_private_owner：创新链路归属用户 ID；None 仅查 verified。
+
+    返回值：
+        dict[int, float]：recipe_id → 余弦相似度（Top-20，降序）。
+
+    异常：
+        SQL 异常向上抛出（由 _vector_search 统一捕获降级）。
+    """
+    q_literal = "[" + ",".join(f"{x:.6f}" for x in query_vector) + "]"
+    sql = (
+        "SELECT recipe_id, 1 - (embedding <=> CAST(:q AS vector)) AS sim "
+        "FROM recipe_embedding WHERE source = 'verified'"
+    )
+    params: dict = {"q": q_literal}
+    if include_private_owner is not None:
+        sql += " OR (source = 'ai_private' AND owner_user_id = :owner)"
+        params["owner"] = int(include_private_owner)
+    sql += " ORDER BY embedding <=> CAST(:q AS vector) LIMIT :n"
+    params["n"] = VECTOR_TOP_N
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql), params).all()
+    return {int(rid): float(sim) for rid, sim in rows if rid is not None}
+
+
+def _vector_search_json(
+    session: Session, query_vector: list[float], include_private_owner: int | None
+) -> dict[int, float]:
+    """embedding_json 便携列 Python 点积检索分支（函数，无 numpy）。
+
+    说明：
+        无 pgvector 扩展环境（本机）走此分支：读 verified 行（≤800 行）+
+        （创新链路）指定用户的 ai_private 行，embedding_json 均已 L2 归一化，
+        纯 Python 点积即余弦相似度（1024 维 × 数百行，毫秒级）。
+
+    参数：
+        session：数据库会话。
+        query_vector：查询向量（1024 维，已归一化）。
+        include_private_owner：创新链路归属用户 ID；None 仅查 verified（分区红线）。
+
+    返回值：
+        dict[int, float]：recipe_id → 余弦相似度（Top-20，降序）。
+
+    异常：
+        查询异常向上抛出（由 _vector_search 统一捕获降级）。
+    """
+    base_cols = (RecipeEmbedding.recipe_id, RecipeEmbedding.embedding_json)
+    stmt = select(*base_cols).where(RecipeEmbedding.source == "verified")  # 🔴 默认仅 verified
+    if include_private_owner is not None:
+        # 创新链路分区：verified + 指定用户的 ai_private（其余用户私有行绝不出现）
+        stmt = select(*base_cols).where(
+            or_(
+                RecipeEmbedding.source == "verified",
+                (RecipeEmbedding.source == "ai_private")
+                & (RecipeEmbedding.owner_user_id == int(include_private_owner)),
+            )
+        )
+    rows = session.execute(stmt.limit(VECTOR_SCAN_MAX)).all()
+    dim = len(query_vector)
+    scored: list[tuple[int, float]] = []
+    for rid, vec in rows:
+        if rid is None or not vec or len(vec) != dim:
+            continue
+        similarity = sum(a * b for a, b in zip(query_vector, vec, strict=True))
+        scored.append((int(rid), similarity))
+    scored.sort(key=lambda item: -item[1])
+    return dict(scored[:VECTOR_TOP_N])
+
+
+def _vector_search(
+    session: Session, query_text: str, include_private_owner: int | None
+) -> dict[int, float]:
+    """向量路径总入口：惰性回填 → 嵌入 → pgvector/JSON 双分支（函数）。
+
+    参数：
+        session：数据库会话。
+        query_text：查询文本（非空）。
+        include_private_owner：创新链路归属用户 ID；None 仅查 verified。
+
+    返回值：
+        dict[int, float]：recipe_id → 余弦相似度（Top-20）。
+
+    异常：
+        向上游传播（由 retrieve_candidates 捕获降级，绝不抛给接口层）。
+    """
+    # verified 向量缺失时惰性回填一次（幂等 + 进程锁防并发重复）
+    lazy_backfill(session)
+    provider = get_embedding_provider()
+    query_vector = provider.embed([query_text])[0]
+    if probe_pgvector(engine):
+        return _vector_search_pgvector(query_vector, include_private_owner)
+    return _vector_search_json(session, query_vector, include_private_owner)
+
+
+def retrieve_candidates(
+    session: Session,
+    ingredient_ids: list[int],
+    query_text: str | None = None,
+    limit: int = DEFAULT_LIMIT,
+    *,
+    top_k: int = DEFAULT_TOP_K,
+    use_vector: bool = True,
+    include_private_owner: int | None = None,
+) -> list[dict]:
+    """混合召回菜谱候选集（函数）。
+
+    说明：
+        - 有 ingredient_ids：按「候选菜谱引用的用户食材数（覆盖数）」降序召回；
+        - 有 query_text：追加菜名 ILIKE 召回 + 按文本中解析出的食材召回；
+        - use_vector 且 query_text 非空：追加向量语义召回（Top-20），
+          pgvector 可用走 raw SQL `<=>`，否则 embedding_json 纯 Python 点积；
+        - 三路并集按 recipe_id 合并去重；向量命中但关键词未命中的候选标记
+          matched_by_vector=True（下游排序在菜名命中之后、其余之前）；
+        - 三路皆空：回退全部已发布菜谱（保证冷启动可演示）；
+        - 🔴 分区红线：默认（include_private_owner=None）向量查询只查
+          source='verified'，AI 私有菜谱绝不进入默认推荐；
+        - 最终 top_k（默认 8）截断返回，字段结构与既有一致，下游无感。
+
+    参数：
+        session：数据库会话。
+        ingredient_ids：用户食材 ID 列表（可为空）。
+        query_text：查询文本（可为空）。
+        limit：中间召回池上限，默认 200。
+        top_k：最终返回条数，默认 8。
+        use_vector：是否启用向量路径（默认 True；recommend 节点经
+          RETRIEVAL_VECTOR 环境变量控制）。
+        include_private_owner：创新链路归属用户 ID（默认 None=仅 verified）。
+
+    返回值：
+        list[dict]：候选菜谱字典列表（≤top_k 条），每条含：
+            recipe_id/title/difficulty/time_minutes/calories_kcal/allergen_codes/
+            ingredient_allergen_codes/dietary_flags/equipment/covered_count/
+            covered_names/main_ingredient_names/seasoning_names/matched_by_title/
+            matched_by_vector。
+
+    异常：
+        不抛出（查询/向量异常时降级或返回空列表，由 compose 标注「暂时无法检索」）。
+    """
+    try:
+        id_score: dict[int, int] = {}          # recipe_id → 覆盖数
+        title_matched: set[int] = set()        # 菜名命中集合
+
+        # ① 食材覆盖召回：引用了用户食材的已发布菜谱，按覆盖数降序
+        if ingredient_ids:
+            stmt = (
+                select(RecipeIngredient.recipe_id, func.count(RecipeIngredient.id).label("covered"))
+                .join(Recipe, Recipe.id == RecipeIngredient.recipe_id)
+                .where(Recipe.status == "published")
+                .where(RecipeIngredient.ingredient_id.in_(ingredient_ids))
+                .group_by(RecipeIngredient.recipe_id)
+                .order_by(func.count(RecipeIngredient.id).desc())
+                .limit(limit)
+            )
+            for recipe_id, covered in session.execute(stmt).all():
+                id_score[int(recipe_id)] = int(covered)
+
+        # ② 文本召回：菜名 ILIKE + 文本解析出的食材引用
+        if query_text:
+            keyword = f"%{query_text.strip()}%"
+            title_rows = session.execute(
+                select(Recipe.id).where(Recipe.status == "published").where(Recipe.title.ilike(keyword))
+            ).all()
+            for (recipe_id,) in title_rows:
+                title_matched.add(int(recipe_id))
+                id_score.setdefault(int(recipe_id), 0)
+            # 文本中解析出的食材 → 引用这些食材的菜谱
+            text_ids, _ = match_ingredients_in_text(session, query_text)
+            extra_ids = [i for i in text_ids if i not in (ingredient_ids or [])]
+            if extra_ids:
+                stmt2 = (
+                    select(RecipeIngredient.recipe_id, func.count(RecipeIngredient.id))
+                    .join(Recipe, Recipe.id == RecipeIngredient.recipe_id)
+                    .where(Recipe.status == "published")
+                    .where(RecipeIngredient.ingredient_id.in_(extra_ids))
+                    .group_by(RecipeIngredient.recipe_id)
+                    .limit(limit)
+                )
+                for recipe_id, covered in session.execute(stmt2).all():
+                    id_score[int(recipe_id)] = max(id_score.get(int(recipe_id), 0), int(covered))
+
+        # ③ 向量语义召回（use_vector + 非空文本；异常降级走既有路径，绝不抛错）
+        vector_sims: dict[int, float] = {}     # 仅向量命中的 recipe_id → 余弦相似度
+        if use_vector and query_text:
+            try:
+                vector_hits = _vector_search(session, query_text, include_private_owner)
+                for recipe_id in vector_hits:
+                    if recipe_id not in id_score:
+                        id_score[recipe_id] = 0
+                        vector_sims[recipe_id] = float(vector_hits[recipe_id])
+            except Exception as exc:  # noqa: BLE001 —— 向量路径异常降级为关键词路径
+                logger.warning("vector retrieval failed, fallback to keyword path: %s", exc)
+
+        # ④ 冷启动/全空回退：无任何命中 → 返回全部已发布菜谱
+        if not id_score:
+            rows = session.execute(
+                select(Recipe.id).where(Recipe.status == "published").limit(limit)
+            ).all()
+            for (recipe_id,) in rows:
+                id_score[int(recipe_id)] = 0
+
+        candidate_ids = list(id_score.keys())[:limit]
+        if not candidate_ids:
+            return []
+
+        # ⑤ 装配候选字典：菜谱主字段 + 全部食材引用（供硬过滤/排序/展示）
+        recipes = session.execute(
+            select(Recipe).where(Recipe.id.in_(candidate_ids))
+        ).scalars().all()
+        ri_rows = session.execute(
+            select(RecipeIngredient, Ingredient.name)
+            .join(Ingredient, Ingredient.id == RecipeIngredient.ingredient_id)
+            .where(RecipeIngredient.recipe_id.in_(candidate_ids))
+        ).all()
+
+        ri_by_recipe: dict[int, list] = {}
+        for ri, ing_name in ri_rows:
+            ri_by_recipe.setdefault(int(ri.recipe_id), []).append((ri, ing_name))
+
+        id_set = set(ingredient_ids or [])
+        candidates: list[dict] = []
+        for recipe in recipes:
+            rid = int(recipe.id)
+            items = ri_by_recipe.get(rid, [])
+            main_names: list[str] = []
+            seasoning_names: list[str] = []
+            covered_names: list[str] = []
+            for ri, ing_name in items:
+                if ri.amount_type == "seasoning":
+                    seasoning_names.append(ing_name)
+                else:
+                    main_names.append(ing_name)
+                if id_set and ri.ingredient_id in id_set:
+                    covered_names.append(ing_name)
+            # covered_count：主料/辅料中被用户食材命中的数量（调味料默认常备，不计入）
+            covered_count = len({int(ri.ingredient_id) for ri, _ in items if ri.ingredient_id in id_set})
+            candidates.append(
+                {
+                    "recipe_id": rid,
+                    "title": recipe.title,
+                    "difficulty": int(recipe.difficulty),
+                    "time_minutes": recipe.time_minutes,
+                    "calories_kcal": recipe.calories_kcal,
+                    "allergen_codes": list(recipe.allergen_codes or []),
+                    "ingredient_allergen_codes": list(recipe.ingredient_allergen_codes or []),
+                    "dietary_flags": list(recipe.dietary_flags or []),
+                    "equipment": list(recipe.equipment or []),
+                    "covered_count": covered_count,
+                    "covered_names": covered_names,
+                    "main_ingredient_names": main_names,
+                    "seasoning_names": seasoning_names,
+                    "matched_by_title": rid in title_matched,
+                    "matched_by_vector": rid in vector_sims,
+                    # 内部键：向量相似度仅参与召回内排序，下游 hard_filter/rank 不消费
+                    "_vector_sim": round(vector_sims.get(rid, 0.0), 6),
+                }
+            )
+        # 排序：覆盖数降序 → 菜名命中优先 → 向量相似度降序 → recipe_id 升序（结果稳定）
+        candidates.sort(
+            key=lambda c: (
+                -c["covered_count"],
+                not c["matched_by_title"],
+                -c["_vector_sim"],
+                c["recipe_id"],
+            )
+        )
+        # Top-K 截断（spec：默认 ≤8 条返回，下游 hard_filter/rank 在此集合内工作）
+        return candidates[:top_k]
+    except Exception as exc:  # noqa: BLE001 —— 召回失败返回空集，由上层标注降级
+        logger.error("retrieve candidates failed: %s", exc)
+        return []
+
+
+__all__ = [
+    "DEFAULT_LIMIT",
+    "DEFAULT_TOP_K",
+    "ensure_embeddings",
+    "match_ingredients_in_text",
+    "retrieve_candidates",
+]

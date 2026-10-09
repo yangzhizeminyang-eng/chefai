@@ -1,0 +1,74 @@
+/*
+ * 文件职责：后台管理端全局样式（标准亮色主题，颜色统一走 Element Plus CSS 变量，不留死色值）。
+ */
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Helvetica Neue', Helvetica, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', Arial, sans-serif;
+  background-color: var(--el-bg-color-page);
+  color: var(--el-text-color-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 页面级工具栏（筛选区通用布局） */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.toolbar .grow {
+  flex: 1;
+}
+
+/* 表格下方分页容器 */
+.pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+/* 块级间距 */
+.block {
+  margin-bottom: 16px;
+}
+
+/* JSON / 快照等代码展示块 */
+.json-pre {
+  margin: 0;
+  padding: 12px;
+  font-family: Consolas, Monaco, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  background-color: var(--el-fill-color-light);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 320px;
+  overflow: auto;
+}
+
+/* 弱化说明文字 */
+.muted {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+/* 等宽字体（哈希 / 编号等） */
+.mono {
+  font-family: Consolas, Monaco, 'Courier New', monospace;
+}
+
+/* 卡片内小节标题 */
+.sub-title {
+  font-weight: 600;
+  margin: 16px 0 8px;
+}

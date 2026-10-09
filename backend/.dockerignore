@@ -1,0 +1,14 @@
+# backend 构建上下文排除清单（缩小上下文体积 / 防止敏感与本地态进入镜像）
+.venv
+**/__pycache__
+*.pyc
+logs
+uploads
+data
+tests
+.pytest_cache
+.ruff_cache
+.coverage
+.env
+*.md
+_tmp_dbg.py

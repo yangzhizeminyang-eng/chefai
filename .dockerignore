@@ -1,0 +1,18 @@
+# 项目根构建上下文排除清单（Dockerfile.web 的 context=. 使用；缩小上下文体积）
+**/node_modules
+**/dist
+**/__pycache__
+backend/.venv
+backend/data
+backend/uploads
+backend/logs
+backend/.pytest_cache
+backend/.ruff_cache
+backend/.coverage
+backend/_tmp_dbg.py
+logs
+.git
+.trae
+.vscode
+项目开发文档
+scripts
