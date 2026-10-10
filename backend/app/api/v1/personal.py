@@ -431,6 +431,7 @@ def export_me(request: Request, session: Session = Depends(get_db)) -> Response:
     说明：
         汇出结构：{meta, profile: {family, members, skill, goal},
         inventory, favorites, history, feedbacks, meal_records, shopping_list}；
+        members 仅含未软删行（与档案列表读取端同口径，避免已删成员残留导出）；
         以 application/json + Content-Disposition: attachment 下载。
 
     参数：
@@ -453,6 +454,7 @@ def export_me(request: Request, session: Session = Depends(get_db)) -> Response:
         session.execute(
             select(FamilyMember)
             .where(FamilyMember.family_id.in_([int(f.id) for f in family_rows] or [0]))
+            .where(FamilyMember.deleted_at.is_(None))
             .order_by(FamilyMember.id)
         ).scalars().all()
         if family_rows

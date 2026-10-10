@@ -6,7 +6,8 @@
  *          chat 就地展示结果卡 AskChatCard）；
  *       ② 未建档黄条（el-alert warning → 跳 /profile 建档引导）；
  *       ③ 「继续上次的菜」卡（未完成会话 → /cook/{sessionId} 断点续做）；
- *       ④ 临期提醒条（el-alert 可关闭，localStorage aicook_expiry_dismissed_{date} 当日不再显示）；
+ *       ④ 临期提醒条（el-alert 可关闭，localStorage aicook_expiry_dismissed_{date} 当日不再显示；
+ *          条内固定说明「到期信息仅作提醒，不代表食材是否可食用」，RL-3 不做可食性判定）；
  *       ⑤ 六大入口卡（今天吃什么 / 拍一下冰箱 / 时令吃什么 / 饮食目标 / 我的冰箱 / AI 创新一下；
  *          innovation 受 switches.innovation 控制，关闭时置灰 + 说明）；
  *       ⑥ 底部常驻免责小字（DisclaimerBar）。
@@ -273,7 +274,7 @@ onMounted(() => {
       <el-button type="primary">继续做</el-button>
     </div>
 
-    <!-- ④ 临期提醒条（可关闭，当日记忆） -->
+    <!-- ④ 临期提醒条（可关闭，当日记忆；条内固定说明：到期信息仅提醒，不作可食性判定，RL-3） -->
     <el-alert
       v-if="showExpiryAlert"
       class="home-alert"
@@ -282,6 +283,7 @@ onMounted(() => {
       show-icon
       @close="dismissExpiry"
     >
+      <p class="expiry-note">到期信息仅作提醒，不代表食材是否可食用</p>
       <el-button size="small" plain @click="router.push('/inventory')">去查看冰箱</el-button>
     </el-alert>
 
@@ -327,6 +329,13 @@ onMounted(() => {
 
 .home-alert {
   margin-bottom: 14px;
+}
+
+/* ── 临期条固定说明（RL-3：仅提醒，不作可食性判定） ── */
+.expiry-note {
+  margin: 0 0 6px;
+  font-size: var(--font-sm);
+  color: var(--color-info);
 }
 
 /* ── 继续上次的菜卡 ── */

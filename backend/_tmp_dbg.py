@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """临时调试：直查 runner 推荐链路的档案加载与响应（用后即删）。"""
 
 import os
@@ -7,8 +6,6 @@ os.environ.setdefault("LLM_BASE_URL", "http://127.0.0.1:9")
 os.environ.setdefault("LLM_API_KEY", "test-offline")
 
 import uuid
-
-from sqlalchemy import select
 
 from app.core.db import SessionLocal
 from app.graph.runner import load_profile_from_db, run_recommend

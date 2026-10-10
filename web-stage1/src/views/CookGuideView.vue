@@ -24,18 +24,36 @@
  *          header + aria-label="关闭此对话框" 的显式按钮，并 append-to-body 置顶
  *          弹层（详见模板处注释）。
  * 断点续做恢复策略：内存 store（同会话 id 直接复用）→ localStorage
- * cook_session_{id}（会话实体）+ cook_steps_{id}（步骤快照与步骤号）→ 都无则提示并回 /select
- * （endpoints 无「查询会话」GET 接口，阶段一不做远端兜底）。
+ * cook_session_{id}（会话实体）+ cook_steps_{id}（步骤快照与步骤号）→ IndexedDB
+ * 离线快照（F 模块：会话建立成功时写入，恢复失败时回退渲染，顶部提示离线模式）→
+ * 都无则提示并回 /select（endpoints 无「查询会话」GET 接口，阶段一不做远端兜底）。
+ * F 模块新增：
+ *       ⑫ 离线可读（NFR-3.6）：进入引导保存菜谱快照到 IndexedDB（utils/offlineCache），
+ *          断点恢复失败时回退本地快照渲染步骤，不依赖网络；
+ *       ⑬ 免手语音（PRD US-F4）：Web Speech API 指令白名单本地解析（utils/voiceCommand），
+ *          「下一步/上一步/暂停/继续」映射到既有切换与计时器处理函数。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
-import { Timer as TimerIcon } from '@element-plus/icons-vue'
+import { Mic as MicIcon, Timer as TimerIcon } from '@element-plus/icons-vue'
 import { finishCookingSession, getRecipe, postCookingHelp } from '@/api/endpoints'
 import type { ApiError, RecipeStep } from '@/api/types'
 import { useCookingStore } from '@/stores/cooking'
 import { MultiTimer, formatCountdown, type TimerSnapshot } from '@/utils/timer'
 import { scaleStepHint } from '@/utils/scaling'
+import {
+  getRecipeSnapshot,
+  recallSessionRecipe,
+  rememberSessionRecipe,
+  saveRecipeSnapshot,
+  type RecipeSnapshot,
+} from '@/utils/offlineCache'
+import {
+  createVoiceCommandController,
+  type VoiceCommand,
+  type VoiceCommandError,
+} from '@/utils/voiceCommand'
 import AllergenAlertBar from '@/components/AllergenAlertBar.vue'
 
 /** 路由（取 :sessionId 与退出/完成跳转） */
@@ -51,26 +69,60 @@ const finishing = ref(false)
 /** 步骤列表抽屉可见性 */
 const drawerVisible = ref(false)
 
-/** 当前步骤对象（来自 store getter） */
-const currentStep = computed(() => cookingStore.currentStep)
+/* ═══ F 模块 ⑫：离线可读（IndexedDB 快照兜底） ═══ */
+
+/** 离线模式标记（true = 断点恢复失败后已回退本地快照渲染） */
+const offlineMode = ref(false)
+/** 离线快照（steps 为渲染数据源，title 供提示条展示） */
+const offlineSnapshot = ref<RecipeSnapshot | null>(null)
+/** 离线模式当前步骤号（纯本地切换，1 起） */
+const offlineStepNo = ref(1)
+
+/** 当前步骤对象（离线态取快照，在线取 store getter） */
+const currentStep = computed<RecipeStep | null>(() => {
+  if (offlineMode.value) {
+    return offlineSnapshot.value?.steps[offlineStepNo.value - 1] ?? null
+  }
+  return cookingStore.currentStep
+})
+
+/** 当前步骤序号（离线态取本地游标，在线取 store） */
+const currentStepNo = computed<number>(() =>
+  offlineMode.value ? offlineStepNo.value : cookingStore.currentStepNo,
+)
+
+/** 步骤总数（离线态取快照长度，在线取 store） */
+const totalSteps = computed<number>(() =>
+  offlineMode.value ? (offlineSnapshot.value?.steps.length ?? 0) : cookingStore.totalSteps,
+)
+
+/** 全量步骤列表（步骤列表抽屉渲染；离线态取快照） */
+const stepList = computed<RecipeStep[]>(() =>
+  offlineMode.value ? (offlineSnapshot.value?.steps ?? []) : cookingStore.steps,
+)
+
+/** 底部主按钮文案（离线态无会话可结束，最后一步仍是「下一步」） */
+const primaryLabel = computed<string>(() => (!offlineMode.value && isLast.value ? '完成' : '下一步'))
 
 /** 是否最后一步（「下一步」变「完成」） */
 const isLast = computed(
-  () => cookingStore.totalSteps > 0 && cookingStore.currentStepNo >= cookingStore.totalSteps,
+  () => totalSteps.value > 0 && currentStepNo.value >= totalSteps.value,
 )
 
 /** 进度百分比 = 当前步 / 总步数 */
 const progressPercent = computed(() => {
-  if (cookingStore.totalSteps === 0) return 0
-  return Math.round((cookingStore.currentStepNo / cookingStore.totalSteps) * 100)
+  if (totalSteps.value === 0) return 0
+  return Math.round((currentStepNo.value / totalSteps.value) * 100)
 })
 
 /**
  * 本步用量缩放系数（M3/R3 修复：本步用量随会话份数缩放）。
  * = 会话份数 / 菜谱基准份数；基准份数缺失/非法时以会话份数兜底（系数 1 = 不缩放）。
+ * 离线态无会话份数，固定系数 1（按基准份数原样展示，不误缩放）。
  * @returns 缩放系数
  */
 const hintFactor = computed<number>(() => {
+  if (offlineMode.value) return 1
   const sessionServings = cookingStore.session?.servings ?? 1
   const base = cookingStore.baseServings || sessionServings
   if (!base || base < 1) return 1
@@ -208,6 +260,8 @@ async function onCookAgain(): Promise<void> {
     await cookingStore.startSession(info.recipeId, info.servings, info.steps, info.baseServings)
     finished.value = false
     finishedInfo.value = null
+    // 新会话建立成功：同步刷新离线快照与 sessionId 映射（fire-and-forget，失败不影响引导）
+    void saveOfflineSnapshot()
     void router.replace(`/cook/${cookingStore.session?.id ?? ''}`)
   } catch (e) {
     ElMessage.error((e as ApiError).message || '重新开始失败，请重试')
@@ -234,24 +288,54 @@ function goNutrition(): void {
 }
 
 /**
- * 底部主按钮点击：非最后一步 → 本地下一步；最后一步 → 完成会话。
+ * 推进到下一步（在线走 store 本地切换；离线态走快照游标）。
+ * 语音「下一步」也复用此函数：不触发「完成」，避免误结束会话。
+ * @returns 无
+ */
+function goNextStep(): void {
+  if (offlineMode.value) {
+    if (offlineStepNo.value < totalSteps.value) offlineStepNo.value += 1
+    return
+  }
+  if (!isLast.value) void cookingStore.next()
+}
+
+/**
+ * 回退到上一步（在线走 store 本地切换；离线态走快照游标）。
+ * @returns 无
+ */
+function goPrevStep(): void {
+  if (offlineMode.value) {
+    if (currentStepNo.value > 1) offlineStepNo.value -= 1
+    return
+  }
+  void cookingStore.prev()
+}
+
+/**
+ * 底部主按钮点击：非最后一步 → 本地下一步；最后一步（在线会话）→ 完成会话。
+ * 离线态无会话可结束，始终走本地推进。
  * @returns 无
  */
 function onPrimaryAction(): void {
-  if (isLast.value) {
+  if (!offlineMode.value && isLast.value) {
     void onFinish()
   } else {
-    void cookingStore.next()
+    goNextStep()
   }
 }
 
 /**
- * 步骤列表抽屉点击跳转（本地切换 + 防抖持久化）。
+ * 步骤列表抽屉点击跳转（在线：本地切换 + 防抖持久化；离线：快照游标收敛）。
  * @param no 目标步骤序号
  * @returns 无
  */
 function onJump(no: number): void {
   drawerVisible.value = false
+  if (offlineMode.value) {
+    offlineStepNo.value = Math.min(Math.max(no, 1), Math.max(totalSteps.value, 1))
+    return
+  }
   void cookingStore.jumpTo(no)
 }
 
@@ -420,6 +504,136 @@ function onVisibilityChange(): void {
   }
 }
 
+/* ═══ F 模块 ⑫：离线可读（IndexedDB 快照，NFR-3.6） ═══ */
+
+/**
+ * 保存当前菜谱离线快照（会话建立成功时调用：进入引导 / 「再做一次」重建会话）。
+ * 并行写 sessionId→recipeId 映射（恢复失败反查用）；菜名异步补齐，拉取失败以
+ * 空串兜底仍保存步骤（离线可读的核心是步骤，菜名仅为提示条展示增强）。
+ * @returns 无
+ * @throws 不抛出（offlineCache 内部静默降级，保存失败不影响在线烹饪流程）
+ */
+async function saveOfflineSnapshot(): Promise<void> {
+  const session = cookingStore.session
+  if (!session || cookingStore.steps.length === 0) return
+  rememberSessionRecipe(session.id, session.recipe_id)
+  const title = await getRecipe(session.recipe_id)
+    .then((detail) => detail.title)
+    .catch(() => '')
+  await saveRecipeSnapshot({
+    recipe_id: session.recipe_id,
+    title,
+    steps: cookingStore.steps,
+    base_servings: cookingStore.baseServings,
+    session_id: session.id,
+  })
+}
+
+/**
+ * 断点恢复失败时的离线兜底：经 sessionId 映射反查 recipeId → 读取 IndexedDB
+ * 快照 → 成功则进入离线模式（渲染本地缓存步骤，不依赖网络与会话）。
+ * @param sessionId 路由中的会话 ID
+ * @returns 兜底成功返回 true（offlineMode 已置位）；映射/快照缺失返回 false
+ * @throws 不抛出（getRecipeSnapshot 内部静默降级）
+ */
+async function tryOfflineRestore(sessionId: string): Promise<boolean> {
+  const recipeId = recallSessionRecipe(sessionId)
+  if (recipeId == null) return false
+  const snapshot = await getRecipeSnapshot(recipeId)
+  if (!snapshot || snapshot.steps.length === 0) return false
+  offlineSnapshot.value = snapshot
+  offlineStepNo.value = 1
+  offlineMode.value = true
+  return true
+}
+
+/* ═══ F 模块 ⑬：免手语音（PRD US-F4，白名单本地解析） ═══ */
+
+/** 语音开关状态（true = 正在监听麦克风） */
+const voiceOn = ref(false)
+
+/**
+ * 暂停全部运行中的计时器（语音 timer_pause 落点，复用单路暂停函数）。
+ * @returns 无
+ */
+function pauseAllTimers(): void {
+  for (const t of timerList.value) {
+    if (t.status === 'running') pauseTimer(t.id)
+  }
+}
+
+/**
+ * 恢复全部已暂停的计时器（语音 timer_resume 落点，复用单路恢复函数）。
+ * @returns 无
+ */
+function resumeAllTimers(): void {
+  for (const t of timerList.value) {
+    if (t.status === 'paused') resumeTimer(t.id)
+  }
+}
+
+/**
+ * 语音指令分发：映射到既有动作函数（步骤切换 / 计时器暂停恢复），不重复实现。
+ * @param command 白名单命中的指令
+ * @returns 无
+ */
+function handleVoiceCommand(command: VoiceCommand): void {
+  switch (command) {
+    case 'next':
+      goNextStep()
+      break
+    case 'prev':
+      goPrevStep()
+      break
+    case 'timer_pause':
+      pauseAllTimers()
+      break
+    case 'timer_resume':
+      resumeAllTimers()
+      break
+  }
+}
+
+/**
+ * 语音识别错误处理（经 onError 回调进入，不抛出）：
+ * no-speech/aborted（没说话/主动停止）静默；权限类错误关闭开关并提示；其余轻提示。
+ * @param error 错误对象（原生错误码 + 中文说明）
+ * @returns 无
+ */
+function onVoiceError(error: VoiceCommandError): void {
+  if (error.code === 'no-speech' || error.code === 'aborted') return
+  if (error.code === 'not-allowed' || error.code === 'service-not-allowed') {
+    voiceOn.value = false
+    ElMessage.warning(error.message)
+    return
+  }
+  ElMessage.warning(`语音识别异常：${error.message}`)
+}
+
+/** 语音控制器实例（识别 → 白名单解析 → handleVoiceCommand 分发） */
+const voiceController = createVoiceCommandController({
+  onCommand: handleVoiceCommand,
+  onError: onVoiceError,
+})
+
+/**
+ * 切换语音控制开关：开启开始识别监听，关闭停止；浏览器不支持时一次性提示。
+ * @returns 无
+ */
+function toggleVoice(): void {
+  if (!voiceController.supported) {
+    ElMessage.info('当前浏览器不支持语音控制')
+    return
+  }
+  if (voiceOn.value) {
+    voiceController.stop()
+    voiceOn.value = false
+    return
+  }
+  voiceController.start()
+  voiceOn.value = true
+}
+
 /* ═══ Task 9 增强 ⑨：烹饪求助 ═══ */
 
 /** 求助弹窗可见性 */
@@ -479,26 +693,33 @@ async function onHelpSubmit(): Promise<void> {
   }
 }
 
-// 挂载即恢复会话：内存 store → 本地缓存；都无则提示并回 /select。
-// 同步申请屏幕常亮（做菜过程锁屏会打断引导）。
+// 挂载即恢复会话：内存 store → 本地缓存 → IndexedDB 离线快照（离线可读兜底）；
+// 全部无则提示并回 /select。恢复成功同步申请屏幕常亮（做菜过程锁屏会打断引导），
+// 并把当前菜谱快照写入 IndexedDB（F 模块 ⑫，fire-and-forget 失败不影响在线逻辑）。
 onMounted(() => {
   const sessionId = route.params.sessionId as string
   const restored = cookingStore.restoreById(sessionId)
-  if (!restored) {
+  if (restored) {
+    void saveOfflineSnapshot()
+    void requestWakeLock()
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return
+  }
+  // 内存与 localStorage 均无 → 尝试 IndexedDB 离线快照兜底（断网/缓存被清时仍可读步骤）
+  void tryOfflineRestore(sessionId).then((ok) => {
+    if (ok) return
     restoreFailed.value = true
     ElMessage.warning('未找到进行中的烹饪会话，请重新从菜谱发起')
     void router.replace('/select')
-    return
-  }
-  void requestWakeLock()
-  document.addEventListener('visibilitychange', onVisibilityChange)
+  })
 })
 
-// 卸载：释放 Wake Lock、停掉全部计时器、解绑可见性监听
+// 卸载：释放 Wake Lock、停掉全部计时器、停止语音识别、解绑可见性监听
 onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', onVisibilityChange)
   void releaseWakeLock()
   multiTimer.clearAll()
+  voiceController.stop()
 })
 </script>
 
@@ -530,13 +751,23 @@ onBeforeUnmount(() => {
       </el-result>
     </div>
 
-    <!-- 步骤数据缺失兜底：会话在但步骤快照为空 -->
-    <el-empty v-else-if="cookingStore.totalSteps === 0" description="步骤数据缺失，无法继续引导">
+    <!-- 步骤数据缺失兜底：会话在但步骤快照为空（离线兜底成功时快照必有步骤，不触发） -->
+    <el-empty v-else-if="totalSteps === 0" description="步骤数据缺失，无法继续引导">
       <el-button type="primary" @click="goSelect">返回选食材</el-button>
     </el-empty>
 
     <template v-else>
-      <!-- ① 顶部：过敏原警示条（冲突时）+ 退出 -->
+      <!-- ⑫ 离线模式顶部提示：断点恢复失败、由 IndexedDB 快照渲染 -->
+      <el-alert
+        v-if="offlineMode"
+        class="cook-offline-alert"
+        type="warning"
+        :closable="false"
+        show-icon
+        title="离线模式：显示本地缓存的步骤"
+      />
+
+      <!-- ① 顶部：过敏原警示条（冲突时）+ 语音开关 + 退出 -->
       <div class="cook-top">
         <div class="cook-alert-slot">
           <AllergenAlertBar
@@ -544,7 +775,19 @@ onBeforeUnmount(() => {
             conflict
           />
         </div>
-        <el-button class="cook-exit" size="large" @click="onExit">退出</el-button>
+        <div class="cook-top-actions">
+          <!-- ⑬ 免手语音开关：开启监听麦克风，白名单指令驱动翻步/计时 -->
+          <el-button
+            class="cook-voice"
+            size="large"
+            :type="voiceOn ? 'primary' : 'default'"
+            @click="toggleVoice"
+          >
+            <el-icon class="cook-btn-icon"><MicIcon /></el-icon>
+            {{ voiceOn ? '语音开' : '语音关' }}
+          </el-button>
+          <el-button class="cook-exit" size="large" @click="onExit">退出</el-button>
+        </div>
       </div>
 
       <!-- ② 进度：百分比 + 第 X 步 / 共 Y 步 -->
@@ -555,7 +798,7 @@ onBeforeUnmount(() => {
           :stroke-width="14"
           :format="() => `${progressPercent}%`"
         />
-        <span class="cook-progress-text">第 {{ cookingStore.currentStepNo }} 步 / 共 {{ cookingStore.totalSteps }} 步</span>
+        <span class="cook-progress-text">第 {{ currentStepNo }} 步 / 共 {{ totalSteps }} 步</span>
       </div>
 
       <!-- ③ 主体大字步骤 -->
@@ -578,13 +821,13 @@ onBeforeUnmount(() => {
         </el-collapse>
       </div>
 
-      <!-- ⑤ 底部操作：上一步 / 下一步（本地切换）+ 计时器 / 求助 / 步骤列表 -->
+      <!-- ⑤ 底部操作：上一步 / 下一步（本地切换；离线态走快照游标）+ 计时器 / 求助 / 步骤列表 -->
       <div class="cook-actions">
         <el-button
           class="cook-btn"
           size="large"
-          :disabled="cookingStore.currentStepNo <= 1"
-          @click="cookingStore.prev()"
+          :disabled="currentStepNo <= 1"
+          @click="goPrevStep"
         >
           上一步
         </el-button>
@@ -595,7 +838,7 @@ onBeforeUnmount(() => {
           :loading="finishing"
           @click="onPrimaryAction"
         >
-          {{ isLast ? '完成' : '下一步' }}
+          {{ primaryLabel }}
         </el-button>
         <el-button class="cook-btn" size="large" @click="openTimerDrawer">
           <el-icon v-if="hasRunningTimer" class="cook-btn-icon"><TimerIcon /></el-icon>
@@ -605,13 +848,13 @@ onBeforeUnmount(() => {
         <el-button class="cook-btn" size="large" @click="drawerVisible = true">步骤列表</el-button>
       </div>
 
-      <!-- ⑥ 步骤列表抽屉：全量步骤可点击跳转 -->
+      <!-- ⑥ 步骤列表抽屉：全量步骤可点击跳转（离线态渲染快照步骤） -->
       <el-drawer v-model="drawerVisible" title="步骤列表" size="380px">
         <div
-          v-for="step in cookingStore.steps"
+          v-for="step in stepList"
           :key="step.no"
           class="drawer-step"
-          :class="{ 'drawer-step--active': step.no === cookingStore.currentStepNo }"
+          :class="{ 'drawer-step--active': step.no === currentStepNo }"
           role="button"
           @click="onJump(step.no)"
         >
@@ -790,6 +1033,23 @@ onBeforeUnmount(() => {
 .cook-exit {
   flex-shrink: 0;
   min-height: 44px;
+}
+
+/* ── F 模块：顶部右侧动作区（语音开关 + 退出） ── */
+.cook-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.cook-voice {
+  min-height: 44px;
+}
+
+/* ── F 模块 ⑫：离线模式顶部提示条 ── */
+.cook-offline-alert {
+  margin-bottom: 12px;
 }
 
 /* ── 进度 ── */

@@ -907,3 +907,194 @@ def test_innovation_rules_and_recipes(client: TestClient, env: dict) -> None:
             session.execute(delete(InnovationRecipe).where(InnovationRecipe.id == recipe_id))
             session.execute(delete(User).where(User.id == user_id))
             session.commit()
+
+
+# ---------------------------------------------------------------------------
+# K 补齐（深度验证差距项）：风控规则启停热更新生效 + 菜谱回滚版本与审计快照
+# ---------------------------------------------------------------------------
+def test_risk_rule_toggle_hot_reload_effect(client: TestClient, env: dict) -> None:
+    """风控规则启停热更新：停用后命中场景立即放行、恢复后再次拦截（函数）。
+
+    说明：
+        引擎为「scan 时指纹校验（COUNT+MAX(updated_at)）」拉模式热更新（等价
+        30s 轮询语义）+ 管理端写操作后主动 _load_rules 强制重载（变更即时生效，
+        无需等待轮询周期）。本用例走 admin toggle 端点（同时复核 toggle 的
+        before/after 审计快照），以 RiskEngine.scan 直接断言拦截场景的生效链：
+        - 启用：scan 命中且 block=true（一票否决）；
+        - 停用：scan 立即不再命中（热更新生效，不等 30s 轮询）；
+        - 恢复启用：scan 再次命中。
+        finally 中删除自建规则行并强制重载引擎缓存，避免残留影响其他用例。
+
+    参数：
+        client：TestClient fixture。
+        env：模块级环境 fixture（super_admin token）。
+
+    返回值：
+        None。
+
+    异常：
+        断言失败即测试失败；清理/重载失败向上抛出（不影响其他用例判定）。
+    """
+    from app.safety.engine import get_risk_engine
+
+    keyword = f"热更新探测词{SUFFIX}"
+    scan_text = f"普通文本包含{keyword}的场景"
+    engine = get_risk_engine()
+    super_headers = env["tokens"]["super_admin"]["headers"]
+    rule_id: int | None = None
+    try:
+        resp = client.post(
+            "/admin/v1/risk-rules",
+            headers=super_headers,
+            json={
+                "rule_code": f"{_RULE_CODE}-HOT",
+                "category": "food_safety_high_risk",
+                "stage_scope": "input",
+                "trigger_condition": {"keywords": [keyword], "any": True},
+                "block": True,
+                "risk_level": "high",
+                "version": "v1",
+                "enabled": True,
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        rule_id = int(resp.json()["id"])
+
+        # 启用态：命中场景被拦截（一票否决）
+        verdict = engine.scan("input", scan_text)
+        assert verdict.hit is True
+        assert verdict.block is True
+
+        # 停用 → 命中场景立即放行（热更新，不等 30s 轮询周期）
+        resp = client.post(
+            f"/admin/v1/risk-rules/{rule_id}/toggle",
+            headers=super_headers,
+            json={"enabled": False},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["enabled"] is False
+        verdict = engine.scan("input", scan_text)
+        assert verdict.hit is False, "停用规则后 scan 仍命中 → 热更新失效"
+
+        # 恢复启用 → 再次拦截
+        resp = client.post(
+            f"/admin/v1/risk-rules/{rule_id}/toggle",
+            headers=super_headers,
+            json={"enabled": True},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["enabled"] is True
+        verdict = engine.scan("input", scan_text)
+        assert verdict.hit is True and verdict.block is True
+
+        # toggle 的 before/after 审计快照（最新一条为恢复启用：False → True）
+        with SessionLocal() as session:
+            log = session.execute(
+                select(OperationLog)
+                .where(
+                    OperationLog.module == "risk_rule",
+                    OperationLog.action == "toggle",
+                    OperationLog.target_id == rule_id,
+                )
+                .order_by(OperationLog.id.desc())
+            ).scalars().first()
+            assert log is not None
+            assert log.before_snapshot["enabled"] is False
+            assert log.after_snapshot["enabled"] is True
+    finally:
+        with SessionLocal() as session:
+            if rule_id is not None:
+                row = session.get(RiskRule, rule_id)
+                if row is not None:
+                    session.delete(row)
+            session.commit()
+        # 强制重载引擎缓存，避免本用例规则残留影响其他测试（等价轮询周期后的收敛态）
+        for stage in ("input", "output"):
+            try:
+                engine._load_rules(stage)
+            except Exception:  # noqa: BLE001 —— 重载失败交由 scan 的 UNKNOWN 兜底
+                pass
+
+def test_recipe_rollback_version_and_after_snapshot(client: TestClient, env: dict) -> None:
+    """菜谱回滚：内容与版本号正确 + update 日志 after_snapshot 断言（函数）。
+
+    说明：
+        版本口径核对结论：recipe.version 由默认 1 起始，update/publish/rollback
+        均不自动递增（「再发布产生新版本号」业务未实现——差距与最小修复方案见
+        交付报告，本阶段业务代码零改动）。本用例锁定当下正确口径：
+        - update 操作日志携带 before/after 双快照（before.title=v1、after.title=v2）；
+        - rollback 后详情内容恢复为 v1 快照、version 保持不变（快照恢复不触碰版本列）；
+        - 重新发布成功（空卡通过量化闸门）且 version 维持稳定（现状基线）。
+
+    参数：
+        client：TestClient fixture。
+        env：模块级环境 fixture（content_ops token）。
+
+    返回值：
+        None。
+
+    异常：
+        断言失败即测试失败；自建菜谱在 finally 中自清理。
+    """
+    ops_headers = env["tokens"]["content_ops"]["headers"]
+    resp = client.post(
+        "/admin/v1/recipes",
+        headers=ops_headers,
+        json={"title": f"版本菜谱v1{SUFFIX}", "ingredients": [], "steps": []},
+    )
+    assert resp.status_code == 201, resp.text
+    recipe_id = int(resp.json()["id"])
+    try:
+        resp = client.put(
+            f"/admin/v1/recipes/{recipe_id}",
+            headers=ops_headers,
+            json={"title": f"版本菜谱v2{SUFFIX}"},
+        )
+        assert resp.status_code == 200
+
+        # update 操作日志：before/after 双快照齐备（补 K 差距：after_snapshot 断言）
+        with SessionLocal() as session:
+            log = session.execute(
+                select(OperationLog)
+                .where(
+                    OperationLog.module == "recipe",
+                    OperationLog.action == "update",
+                    OperationLog.target_id == recipe_id,
+                )
+                .order_by(OperationLog.id.desc())
+            ).scalars().first()
+            assert log is not None
+            assert log.before_snapshot["title"] == f"版本菜谱v1{SUFFIX}"
+            assert log.after_snapshot is not None
+            assert log.after_snapshot["title"] == f"版本菜谱v2{SUFFIX}"
+            log_id = int(log.id)
+
+        with SessionLocal() as session:
+            version_before = int(session.get(Recipe, recipe_id).version)
+
+        # 回滚 → 内容恢复 v1 快照、version 保持不变（快照恢复不触碰版本列）
+        resp = client.post(
+            f"/admin/v1/recipes/{recipe_id}/rollback",
+            headers=ops_headers,
+            json={"log_id": log_id},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["rolled_back_to"] == log_id
+
+        resp = client.get(f"/admin/v1/recipes/{recipe_id}", headers=ops_headers)
+        assert resp.status_code == 200
+        assert resp.json()["title"] == f"版本菜谱v1{SUFFIX}"
+        assert int(resp.json()["version"]) == version_before
+
+        # 再发布：内容为空卡可通过量化闸门 → published；version 现状不递增（差距记录）
+        resp = client.post(f"/admin/v1/recipes/{recipe_id}/publish", headers=ops_headers)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "published"
+        resp = client.get(f"/admin/v1/recipes/{recipe_id}", headers=ops_headers)
+        assert int(resp.json()["version"]) == version_before
+    finally:
+        with SessionLocal() as session:
+            recipe = session.get(Recipe, recipe_id)
+            if recipe is not None:
+                session.delete(recipe)
+                session.commit()

@@ -279,6 +279,108 @@ def test_vision_quota_exhausted_429(client: TestClient, monkeypatch: pytest.Monk
                 session.commit()
 
 
+def test_vision_quota_boundary_four_ok_then_reject(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """额度真实边界：第 1~4 次识别成功，第 5 次拒绝 429（函数）。
+
+    说明：
+        区别于预置 used=4 的用例（test_vision_quota_exhausted_429），本用例
+        连续真实扣减 4 次验证逐次递减与第 4 次仍 200（remaining=0）的边界。
+
+    参数：
+        client：TestClient fixture。
+        monkeypatch：替换 vision 模块的 provider 工厂。
+
+    返回值：
+        None。
+
+    异常：
+        断言失败即测试失败。
+    """
+    monkeypatch.setattr(vision_module, "get_vision_provider", lambda: _StubHighProvider())
+    headers = _anon_headers()
+    for expected_used in range(1, 5):
+        resp = client.post("/v1/vision/recognize", files=_UPLOAD_IMAGE, headers=headers)
+        assert resp.status_code == 200, f"第 {expected_used} 次识别应成功"
+        quota = resp.json()["quota"]
+        assert quota["used"] == expected_used
+        assert quota["remaining"] == 4 - expected_used
+        if expected_used == 4:
+            assert quota["remaining"] == 0  # 第 4 次成功后额度恰好耗尽
+
+    resp5 = client.post("/v1/vision/recognize", files=_UPLOAD_IMAGE, headers=headers)
+    assert resp5.status_code == 429
+    body = resp5.json()
+    assert body["code"] == "QUOTA_EXCEEDED"
+    assert body["quota"]["remaining"] == 0
+    assert body["quota"]["limit"] == 4
+
+
+def test_vision_confirm_repeat_idempotent(client: TestClient) -> None:
+    """confirm 重复确认行为：同一批名字重复调用结果稳定、无副作用（函数）。
+
+    说明：
+        confirm 为纯存在性校验（后端不入库），重复确认同一批真实食材两次
+        均应 added 一致且 skipped 为空；重复伪食材两次均稳定 skipped。
+
+    参数：
+        client：TestClient fixture。
+
+    返回值：
+        None。
+
+    异常：
+        断言失败即测试失败。
+    """
+    names = ["番茄", "土豆"]
+    fake = ["绝对不存在的伪食材xyz"]
+    first = client.post("/v1/vision/confirm", json={"names": names + fake}).json()
+    second = client.post("/v1/vision/confirm", json={"names": names + fake}).json()
+    assert first == second, "重复 confirm 响应应稳定一致（幂等语义）"
+    assert first["added"] == 2
+    assert first["skipped"] == fake
+
+
+def test_vision_recognize_triggers_lazy_cleanup(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """recognize 调用触发 uploads 惰性清理，成功识别顺带留档（函数）。
+
+    说明：
+        将 vision 模块的留档根目录指向 tmp_path：预置一个 mtime 超 24h 的
+        过期文件，识别成功后应被顺手清理；同时当天留档文件应存在
+        （high 项场景落盘，日期子目录 {yyyymmdd}）。
+
+    参数：
+        client：TestClient fixture。
+        monkeypatch：替换 provider 工厂与留档根目录。
+        tmp_path：pytest 临时目录 fixture。
+
+    返回值：
+        None。
+
+    异常：
+        断言失败即测试失败。
+    """
+    monkeypatch.setattr(vision_module, "get_vision_provider", lambda: _StubHighProvider())
+    monkeypatch.setattr(vision_module, "_UPLOAD_BASE_DIR", tmp_path)
+    expired = tmp_path / "20260101"
+    expired.mkdir()
+    old_file = expired / "old.jpg"
+    old_file.write_bytes(b"expired-image")
+    old_ts = time.time() - 25 * 3600
+    os.utime(old_file, (old_ts, old_ts))
+
+    resp = client.post("/v1/vision/recognize", files=_UPLOAD_IMAGE, headers=_anon_headers())
+    assert resp.status_code == 200
+
+    assert not old_file.exists(), "超 24h 的过期留档应被惰性清理"
+    today_dir = tmp_path / date.today().strftime("%Y%m%d")
+    archived = list(today_dir.glob("*.jpg")) if today_dir.exists() else []
+    assert len(archived) == 1, "成功识别（有 high 项）应留档 1 张当天图片"
+
+
 def test_vision_confirm_real_and_fake(client: TestClient) -> None:
     """confirm：真实食材计入 added，伪食材列入 skipped（函数）。
 

@@ -73,6 +73,13 @@ def make_compose():
                     }
                 else:
                     item["nutrition"] = None
+                    # 🔴 每份口径（M5 收口）：营养估算未命中时，DB calories_kcal 为全菜总量
+                    # 语义，不能直接当每份展示 —— 按菜谱基准份数折算（retrieval 透传的
+                    # 原始值缺份数信息，此处从结果条目 servings（缺省 2）折算）。
+                    base = item.get("servings") or 2
+                    raw_kcal = item.get("calories_kcal")
+                    if isinstance(raw_kcal, (int, float)) and raw_kcal and base >= 1:
+                        item["calories_kcal"] = round(float(raw_kcal) / base, 1)
             except Exception as exc:  # noqa: BLE001 —— 单条合并失败不影响整体
                 logger.warning("compose merge nutrition failed: %s", exc)
 

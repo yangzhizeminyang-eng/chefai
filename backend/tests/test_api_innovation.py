@@ -660,3 +660,184 @@ def test_switch_maintenance_503(client: TestClient, anon_id: str) -> None:
             ).scalar_one()
             cfg.value = original
             db.commit()
+
+
+# ---------------------------------------------------------------------------
+# O 补齐（深度验证差距项，R-8 冻结：仅新增测试断言，业务代码零改动）
+# ---------------------------------------------------------------------------
+# NFR-9.2 抽检违禁词表（任务口径：适量/少许/若干/一些；并含业务词表「随意」）
+_VAGUE_AMOUNT_WORDS: tuple[str, ...] = ("适量", "少许", "若干", "一些", "随意")
+
+
+def _assert_quantified_recipe(recipe: dict) -> None:
+    """NFR-9.2 量化抽检断言函数（函数）。
+
+    说明：
+        对创新菜产出结构做 0 模糊用量抽检：食材行（amount 正数值 + unit 非空）、
+        步骤（duration_sec>0）、以及 name/basis/nutrition/全文序列化后逐词断言
+        不命中 _VAGUE_AMOUNT_WORDS（适量/少许/若干/一些/随意）。
+
+    参数：
+        recipe：创新菜响应 dict（/v1/innovation/generate 的 recipe 节点）。
+
+    返回值：
+        None。
+
+    异常：
+        断言失败即测试失败（发现模糊用量或结构缺量即失败）。
+    """
+    for item in recipe["ingredients"]:
+        assert isinstance(item["amount"], (int, float)) and not isinstance(item["amount"], bool)
+        assert item["amount"] > 0
+        assert str(item.get("unit") or "").strip()
+    for step in recipe["steps"]:
+        assert isinstance(step["duration_sec"], (int, float)) and step["duration_sec"] > 0
+    full_text = json.dumps(recipe, ensure_ascii=False)
+    for word in _VAGUE_AMOUNT_WORDS:
+        assert word not in full_text, f"产出含模糊用量词「{word}」：{full_text}"
+
+
+def test_nfr92_quantified_spot_check_multiple_recipes(client: TestClient, anon_id: str) -> None:
+    """NFR-9.2 量化抽检：多组食材生成产出 0 模糊用量（降级模板路径同样满足）（函数）。
+
+    说明：
+        conftest 将 LLM 指向不可达地址 → 生成走本地模板降级（generated_by=
+        local_template）；降级输出与 LLM 输出共用同一 _is_quantified 代码强制
+        校验（违例重试一次、再违例本地模板替换），因此 Mock 输出路径与正式路径
+        同受红线约束。抽检 3 组食材，逐个过 _assert_quantified_recipe。
+
+    参数：
+        client：TestClient fixture。
+        anon_id：唯一匿名身份 fixture。
+
+    返回值：
+        None。
+
+    异常：
+        断言失败即测试失败。
+    """
+    combos = [
+        ("鸡蛋", "西红柿"),
+        ("土豆", "青椒"),
+        ("牛肉", "洋葱"),
+    ]
+    for ingredients in combos:
+        resp = client.post(
+            "/v1/innovation/generate",
+            json={"ingredients": list(ingredients)},
+            headers=_headers(anon_id),
+        )
+        assert resp.status_code == 201, resp.text
+        recipe = resp.json()["recipe"]
+        assert recipe["is_ai_innovated"] is True
+        assert recipe["visibility"] == "private"
+        assert recipe["status"] == "generated"
+        _assert_quantified_recipe(recipe)
+        assert recipe["basis"]["generated_by"] == "local_template"
+
+def test_nfr94_default_recommend_excludes_ai_private(client: TestClient, anon_id: str) -> None:
+    """NFR-9.4 私有分区红线：默认推荐链路绝不检索他人 ai_private 创新菜（函数）。
+
+    流程：
+        1. A 用户 generate→adopt→index 创新菜（食材名含进程级唯一 token，模板
+           菜名携带 token，保证与种子菜谱/食材零碰撞）；
+        2. DB 断言向量行 source='ai_private'、owner=A、recipe_id=None（分区结构）；
+        3. B 用户默认检索（ability.retrieval.retrieve_candidates 默认
+           include_private_owner=None，与推荐链路同口径）：结果标题不含 token
+           （🔴 他人创新菜不出现——InnovationRecipe 不在 recipe 表，且 ai_private
+           向量行不进默认向量查询，双重隔离）。
+
+    参数：
+        client：TestClient fixture。
+        anon_id：A 用户唯一匿名身份 fixture（teardown 级联清理）。
+
+    返回值：
+        None。
+
+    异常：
+        默认检索出现 AI 私有创新菜时断言失败（分区红线破坏）。
+    """
+    from app.ability.retrieval import retrieve_candidates
+
+    token = uuid.uuid4().hex[:8]
+    ing_a = f"{token}幻影果"
+    ing_b = f"{token}星尘糖"
+    resp = client.post(
+        "/v1/innovation/generate",
+        json={"ingredients": [ing_a, ing_b]},
+        headers=_headers(anon_id),
+    )
+    assert resp.status_code == 201, resp.text
+    recipe = resp.json()["recipe"]
+    recipe_id = int(recipe["id"])
+    uid = int(_get_user_id(anon_id))
+
+    # adopt → index（写 ai_private 向量行）
+    assert client.post(
+        f"/v1/innovation/recipes/{recipe_id}/adopt", headers=_headers(anon_id)
+    ).status_code == 200
+    index = client.post(
+        f"/v1/innovation/recipes/{recipe_id}/index", headers=_headers(anon_id)
+    )
+    assert index.status_code == 200
+
+    # 分区结构断言：ai_private 行 owner 归属正确、recipe_id 为空（verified 检索天然不含）
+    with SessionLocal() as db:
+        row = db.execute(
+            select(RecipeEmbedding).where(RecipeEmbedding.innovation_recipe_id == recipe_id)
+        ).scalar_one()
+        assert row.source == "ai_private"
+        assert int(row.owner_user_id) == uid
+        assert row.recipe_id is None
+
+    # B 用户默认推荐链路：绝不出现 A 的创新菜（标题与 token 双断言）
+    other = _anon()
+    try:
+        with SessionLocal() as db:
+            results = retrieve_candidates(db, [], query_text=ing_a, use_vector=True)
+        hit_titles = [str(item.get("title") or "") for item in results]
+        assert all(token not in title for title in hit_titles), (
+            f"🔴 默认检索出现他人 ai_private 创新菜: {hit_titles}"
+        )
+        assert all(int(recipe_id) != int(item.get("recipe_id") or -1) for item in results)
+    finally:
+        _delete_user(other)
+
+def test_removed_terminal_state_rejects_transitions(client: TestClient, anon_id: str) -> None:
+    """removed 终态拒绝一切流转（adopt/index/reuse/detail/feedback → 404）（函数）。
+
+    说明：
+        状态机 generated→adopted→indexed 的合法流转与重复/跳步 422 已由
+        test_adopt_index_state_machine 覆盖；本用例补 removed 终态口径：
+        管理端下架（status='removed'）后，用户侧一切流转与读取统一 404
+        （对外视为已删除，不泄露存在性）。
+
+    参数：
+        client：TestClient fixture。
+        anon_id：唯一匿名身份 fixture。
+
+    返回值：
+        None。
+
+    异常：
+        断言失败即测试失败。
+    """
+    recipe_id = _generate_recipe(client, anon_id)
+    with SessionLocal() as db:
+        row = db.get(InnovationRecipe, recipe_id)
+        row.status = "removed"
+        db.commit()
+
+    headers = _headers(anon_id)
+    assert client.post(f"/v1/innovation/recipes/{recipe_id}/adopt", headers=headers).status_code == 404
+    assert client.post(f"/v1/innovation/recipes/{recipe_id}/index", headers=headers).status_code == 404
+    assert client.post(f"/v1/innovation/recipes/{recipe_id}/reuse", headers=headers).status_code == 404
+    assert client.get(f"/v1/innovation/recipes/{recipe_id}", headers=headers).status_code == 404
+    assert (
+        client.post(
+            f"/v1/innovation/recipes/{recipe_id}/feedback",
+            json={"rating": 5},
+            headers=headers,
+        ).status_code
+        == 404
+    )

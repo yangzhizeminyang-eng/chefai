@@ -14,6 +14,9 @@
  *   H1b —— 库存/购物清单食材选择改远程搜索（GET /v1/ingredients?q=，≥300ms 去抖，
  *         首屏仍加载默认列表，仅用户输入时走远程，支持别名如「柴鸡蛋」）；
  *   1.3 —— 422 时经 format422Detail() 解析后端 detail 拼进 toast 透出具体字段信息。
+ * 合规（RL-3 / PRD TXT-D07）：库存列表页与条目编辑弹窗均固定展示
+ * 「到期日为您自行填写，仅作提醒用途，不能作为食材是否可安全食用的判断依据」，
+ * 产品侧不给任何「还能吃 / 不能吃」可食性判定。
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -518,6 +521,15 @@ onMounted(() => {
           <el-button @click="openDeductDialog">烹饪后记录消耗</el-button>
         </div>
 
+        <!-- 合规固定说明条（PRD TXT-D07 / RL-3：仅提醒用途，不作可食性判定，常驻不可关闭） -->
+        <el-alert
+          class="inv-notice"
+          type="info"
+          :closable="false"
+          show-icon
+          title="到期日为您自行填写，仅作提醒用途，不能作为食材是否可安全食用的判断依据。"
+        />
+
         <!-- 异常 / 加载 / 空 / 列表 -->
         <el-alert
           v-if="inventoryStore.error"
@@ -685,6 +697,8 @@ onMounted(() => {
             value-format="YYYY-MM-DD"
             placeholder="选择到期日（可留空）"
           />
+          <!-- 合规固定提示（TXT-D07 / RL-3）：到期日仅提醒，不作可食性判定 -->
+          <p class="expire-hint">到期日为您自行填写，仅作提醒用途，不能作为食材是否可安全食用的判断依据。</p>
         </el-form-item>
         <el-form-item label="存放位置">
           <!-- H1：value 用后端枚举（fridge/freezer/room/dry），仅 label 展示中文，避免中文标签直传 422 -->
@@ -787,6 +801,20 @@ onMounted(() => {
 
 .inv-alert {
   margin-bottom: 14px;
+}
+
+/* ── TXT-D07 固定说明条（常驻） ── */
+.inv-notice {
+  margin-bottom: 14px;
+}
+
+/* ── 编辑弹窗到期日固定提示（TXT-D07） ── */
+.expire-hint {
+  margin: 6px 0 0;
+  width: 100%;
+  font-size: var(--font-sm);
+  line-height: 1.6;
+  color: var(--color-info);
 }
 
 .inv-skeleton {

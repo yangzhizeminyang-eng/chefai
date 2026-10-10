@@ -159,10 +159,13 @@ def resolve_per_serving_kcal(session: Session, recipe: Recipe, servings: int) ->
     """解析菜谱每份 kcal 的唯一口径（函数）。
 
     说明：
-        数据流（M5/R4/S9 修复）：
-        ① DB calories_kcal 存在且落在合理区间 → 直接采信（同输入恒定输出）；
-        ② DB 缺失/无效 → LLM 回退估算，校验通过后落定写回 DB（commit），
-           后续请求命中 ① 保证多次请求一致；
+        🔴 口径约定（M5/R4/S9 修复 + 第二轮回归 460↔117.2 矛盾收口）：
+        DB ``calories_kcal`` 的存储语义 = **全菜总量**（seed/recipes.py 元组值与
+        HowToCook 语料「预估卡路里」均为整道菜口径，且与食材聚合总量互证）。
+        数据流：
+        ① DB calories_kcal 存在且落在合理区间 → 每份 = 总量 / 基准份数（同输入恒定输出）；
+        ② DB 缺失/无效 → LLM 回退估算每份，落定写回 DB 时按总量口径存储
+          （llm 每份 × 基准份数，与 ① 的除法闭环），后续请求命中 ① 保证一致；
         ③ LLM 不可用/输出无效 → 确定性回退：食材营养表求和 / 份数（纯计算无随机）。
 
     参数：
@@ -177,10 +180,12 @@ def resolve_per_serving_kcal(session: Session, recipe: Recipe, servings: int) ->
     异常：
         不抛出（聚合异常按 None 处理并告警）。
     """
-    # ① DB 值优先：菜谱种子/管理员维护的稳定来源
+    base_servings = max(1, int(recipe.servings or 2))
+    # ① DB 值优先：菜谱种子/管理员维护的稳定来源（总量口径 → 折算每份）
     db_kcal = recipe.calories_kcal
     if db_kcal is not None and _is_valid_per_serving_kcal(float(db_kcal)):
-        return float(db_kcal), KCAL_SOURCE_SEED
+        per_serving = round(float(db_kcal) / base_servings, 1)
+        return per_serving, KCAL_SOURCE_SEED
     if db_kcal is not None:
         logger.warning(
             "菜谱 %s 的 calories_kcal=%s 超出合理区间 [%s, %s]，转回退链",
@@ -188,11 +193,12 @@ def resolve_per_serving_kcal(session: Session, recipe: Recipe, servings: int) ->
         )
 
     # ② LLM 回退：采信前做区间二次校验（防御 LLM 实现/Mock 绕过内部校验），
-    #    校验通过后落定写回 DB（后续请求直接命中 ①，消除输出随机性）
+    #    校验通过后按总量口径落定写回 DB（llm 每份 × 基准份数；
+    #    后续请求直接命中 ① 的除法闭环，消除输出随机性）
     llm_kcal = estimate_kcal_by_llm(str(recipe.title), int(servings))
     if llm_kcal is not None and _is_valid_per_serving_kcal(llm_kcal):
         try:
-            recipe.calories_kcal = int(round(llm_kcal))
+            recipe.calories_kcal = int(round(llm_kcal * base_servings))
             session.commit()
         except Exception as exc:  # noqa: BLE001 —— 落定失败仅告警（本次请求仍返回 LLM 值）
             logger.warning("LLM kcal 落定写回失败（recipe=%s）: %s", recipe.id, exc)

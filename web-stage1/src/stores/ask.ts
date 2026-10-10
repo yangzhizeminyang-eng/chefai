@@ -70,8 +70,9 @@ export const useAskStore = defineStore('ask', {
         }
         if (action.type === 'recipe_search') {
           // 搜索命中：按 ids 拉详情落推荐态（askMode 置位，/recommend 守卫放行）
+          // 第 4 参透传 res.request_id：W-02「查看调度详情」跳 /trace?request_id= 串联取证
           const recommendStore = useRecommendStore()
-          await recommendStore.applyAskResults(action.recipeIds, t, res.trace_id)
+          await recommendStore.applyAskResults(action.recipeIds, t, res.trace_id, res.request_id)
           void router.push('/recommend')
           return
         }

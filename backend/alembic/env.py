@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Alembic 迁移环境配置模块。
 
 职责：
@@ -17,15 +16,16 @@
 """
 
 import os
-from logging.config import fileConfig
-
-from alembic import context
-from sqlalchemy import engine_from_config, pool
 
 # 将 backend 根目录加入 sys.path（alembic.ini 的 prepend_sys_path 已处理，
 # 此处重复设置以保证「任意工作目录执行 alembic 命令」均可导入 app 包）
 import sys
+from logging.config import fileConfig
 from pathlib import Path
+
+from sqlalchemy import engine_from_config, pool
+
+from alembic import context
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(_BACKEND_ROOT) not in sys.path:

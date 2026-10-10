@@ -70,7 +70,11 @@ def test_nutrition_consistent_across_three_requests(client: TestClient) -> None:
     with SessionLocal() as session:
         recipe = _pick_published_recipe_with_kcal(session)
         recipe_id = int(recipe.id)
-        db_kcal = float(recipe.calories_kcal)  # type: ignore[arg-type]
+        # DB calories_kcal 存储语义 = 全菜总量（seed 与 HowToCook 语料一致），
+        # 每份口径 = 总量 / 基准份数（M5 收口后的唯一口径）
+        db_kcal_total = float(recipe.calories_kcal)  # type: ignore[arg-type]
+        base_servings = max(1, int(recipe.servings or 2))
+        expected_per_serving = round(db_kcal_total / base_servings, 1)
 
     results: list[dict[str, Any]] = []
     for _ in range(3):
@@ -80,7 +84,7 @@ def test_nutrition_consistent_across_three_requests(client: TestClient) -> None:
 
     first = results[0]
     assert first["kcal_source"] == KCAL_SOURCE_SEED, "带库值的菜谱应直接采信 DB 来源"
-    assert first["kcal"] == pytest.approx(db_kcal), "每份 kcal 应等于 DB calories_kcal"
+    assert first["kcal"] == pytest.approx(expected_per_serving), "每份 kcal 应等于 DB 总量 / 基准份数"
     for other in results[1:]:
         assert other["kcal"] == first["kcal"], "3 次请求每份 kcal 必须一致"
         assert other["kcal_source"] == first["kcal_source"]
@@ -131,17 +135,20 @@ def test_per_serving_total_conversion(client: TestClient) -> None:
     with SessionLocal() as session:
         recipe = _pick_published_recipe_with_kcal(session)
         recipe_id = int(recipe.id)
-        db_kcal = float(recipe.calories_kcal)  # type: ignore[arg-type]
+        # DB 总量口径 → 每份 = 总量 / 基准份数（不随请求份数漂移）
+        db_kcal_total = float(recipe.calories_kcal)  # type: ignore[arg-type]
+        base_servings = max(1, int(recipe.servings or 2))
+        expected_per_serving = round(db_kcal_total / base_servings, 1)
 
     resp2 = client.get(f"/v1/recipes/{recipe_id}/nutrition", params={"servings": 2}).json()
     resp4 = client.get(f"/v1/recipes/{recipe_id}/nutrition", params={"servings": 4}).json()
 
-    # 每份口径不随份数漂移（DB 值优先）
-    assert resp2["kcal"] == pytest.approx(db_kcal)
-    assert resp4["kcal"] == pytest.approx(db_kcal)
-    # 合计 = 每份 × 份数（同源换算闭环）
-    assert resp2["total"]["kcal"] == pytest.approx(db_kcal * 2, abs=0.1)
-    assert resp4["total"]["kcal"] == pytest.approx(db_kcal * 4, abs=0.2)
+    # 每份口径不随请求份数漂移（DB 总量 / 基准份数）
+    assert resp2["kcal"] == pytest.approx(expected_per_serving)
+    assert resp4["kcal"] == pytest.approx(expected_per_serving)
+    # 合计 = 每份 × 请求份数（同源换算闭环）
+    assert resp2["total"]["kcal"] == pytest.approx(expected_per_serving * 2, abs=0.1)
+    assert resp4["total"]["kcal"] == pytest.approx(expected_per_serving * 4, abs=0.2)
     # 旧口径矛盾复现断言：合计不再被标成单份口径（total ≠ kcal）
     assert resp4["total"]["kcal"] != resp4["kcal"]
 
@@ -151,10 +158,11 @@ def _create_temp_recipe(session: Session, *, kcal: float | None, ingredient: Ing
 
     说明：
         flush 使本会话内查询可见；是否 commit 由调用方决定（LLM 落定路径需真实入库）。
+        kcal 参数语义 = 全菜总量（与 DB calories_kcal 存储口径一致）。
 
     参数：
         session：数据库会话。
-        kcal：每份热量（None 模拟库值缺失）。
+        kcal：全菜总量热量（None 模拟库值缺失）。
         ingredient：引用的食材（须有营养数据）。
 
     返回值：

@@ -140,10 +140,17 @@ export const useRecommendStore = defineStore('recommend', {
      * @param recipeIds ask 响应携带的菜谱 ID 列表（非空，由 resolveAskAction 保证）
      * @param question 触发本次搜索的用户问句（溯源展示用）
      * @param traceId ask 响应的 trace ID（W-02 底部取证线索）
+     * @param requestId ask 响应回显的幂等键 request_id（可选；W-02「查看调度详情」
+     *   跳 /trace?request_id= 串联取证用，缺省置空以保持旧调用兼容）
      * @returns 无
      * @exception 全部菜谱详情拉取失败时抛出 Error（调用方捕获后做单一降级提示）
      */
-    async applyAskResults(recipeIds: number[], question: string, traceId: string): Promise<void> {
+    async applyAskResults(
+      recipeIds: number[],
+      question: string,
+      traceId: string,
+      requestId?: string,
+    ): Promise<void> {
       // 并行拉详情，单个失败容忍（部分成功仍展示成功的部分）
       const settled: PromiseSettledResult<RecipeDetail>[] = await Promise.allSettled(
         recipeIds.map((id) => getRecipe(id)),
@@ -166,7 +173,9 @@ export const useRecommendStore = defineStore('recommend', {
       this.safeMode = false
       this.error = null
       this.traceId = traceId
-      this.requestId = ''
+      // 幂等键透传：ask 响应回显的 request_id 供 W-02「查看调度详情」串联 /trace?request_id=
+      // 取证链路（与手选路径 fetchRecommend 回写行为一致）；缺省置空保持旧调用兼容
+      this.requestId = requestId ?? ''
       this.blockedPayload = null
       this.askMode = true
       this.askQuestion = question

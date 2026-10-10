@@ -508,3 +508,141 @@ def test_quota_consume_refund_functions() -> None:
         assert status == {"is_member": False, "expire_at": None}
     finally:
         _delete_user_with_orders(anon)
+
+
+# ---------------------------------------------------------------------------
+# J 补齐（深度验证差距项）：订单创建幂等口径锁定 + 会员权益 vision 额度联动
+# ---------------------------------------------------------------------------
+def test_create_order_repeat_creates_independent_pending_orders(client: TestClient) -> None:
+    """同用户重复创建订单 → 独立 pending 订单、无任何自动扣费（RL-20/21 锁定）（函数）。
+
+    说明：
+        验收口径核对结论：OrderCreateRequest 仅有 product_type（无 request_id
+        幂等键），order 表亦无幂等列——「同 request_id 返回同一订单」业务未实现
+        （差距与最小修复方案见交付报告，涉及 DB 迁移故本阶段不实施）。
+        阶段一「不重复扣费」由以下三道锁定保障，本用例逐项断言：
+        1) 重复创建仅产生独立 pending 订单（创建动作本身无扣费语义）；
+        2) 全部订单 paid_at / wx_transaction_id 为空（无自动扣费）；
+        3) mock-pay 仅作用于指定订单，其余订单保持 pending（状态机隔离），
+           且支付前会员权益不生效（is_member=False、免费额度 4）。
+
+    参数：
+        client：TestClient fixture。
+
+    返回值：
+        None。
+
+    异常：
+        断言失败即测试失败；清理失败向上抛出（避免脏数据残留）。
+    """
+    anon = _unique_anon()
+    try:
+        first = _create_order(client, anon, "monthly")
+        second = _create_order(client, anon, "monthly")
+        # 幂等键缺失的当下语义：重复创建 = 两笔独立 pending 订单（互不影响）
+        assert first["order_no"] != second["order_no"]
+        for order in (first, second):
+            assert order["status"] == "pending"
+            assert order["paid_at"] is None
+            assert order["wx_transaction_id"] is None
+            assert order["amount_cents"] == 2500
+
+        # 创建不产生任何权益：未支付维持免费档 4（无「下单即扣费」红线）
+        me = client.get("/v1/member/me", headers={"X-Anonymous-Id": anon}).json()
+        assert me["is_member"] is False
+        assert me["quota"]["limit"] == 4
+        assert me["quota"]["used"] == 0
+
+        # mock-pay 仅作用于指定订单：另一笔保持 pending（状态机隔离，不连带扣费）
+        assert client.post(f"/v1/member/orders/{first['order_no']}/mock-pay").status_code == 200
+        with SessionLocal() as session:
+            user = session.execute(
+                select(User).where(User.anonymous_id == anon)
+            ).scalar_one()
+            rows = session.execute(
+                select(Order).where(Order.user_id == int(user.id)).order_by(Order.id)
+            ).scalars().all()
+        assert len(rows) == 2
+        by_no = {order.order_no: order for order in rows}
+        assert by_no[first["order_no"]].status == "paid"
+        assert by_no[second["order_no"]].status == "pending"
+        assert by_no[second["order_no"]].paid_at is None
+        assert by_no[second["order_no"]].wx_transaction_id is None
+    finally:
+        _delete_user_with_orders(anon)
+
+
+def test_member_paid_vision_quota_linkage(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """mock-pay 后会员识别额度即时生效 10/日；未支付维持免费 4（函数）。
+
+    说明：
+        vision 模块会员判定与会员口径同源（order 表存在 paid 订单，每请求直查）；
+        以桩 provider（恒 high 置信）打通识别扣减链路，断言：
+        - 支付前 recognize 响应 quota.limit == 4（免费档）；
+        - mock-pay 成功后 recognize 响应 quota.limit == 10（会员权益即时生效）；
+        - /v1/member/me 与 vision 响应的会员额度口径一致（limit 均为 10）。
+
+    参数：
+        client：TestClient fixture。
+        monkeypatch：替换 vision 模块 provider 工厂（离线桩）与留档根目录。
+        tmp_path：pytest 临时目录（识别留档落 tmp，不污染 uploads）。
+
+    返回值：
+        None。
+
+    异常：
+        断言失败即测试失败；清理失败向上抛出。
+    """
+    from app.ability.providers import RecognizedItem, VisionProvider
+    from app.api.v1 import vision as vision_module
+
+    # 路由接线兜底（幂等）：member 测试文件独立运行时保证 vision 端点可达
+    paths = {getattr(route, "path", "") for route in main_app.routes}
+    if "/v1/vision/recognize" not in paths:
+        main_app.include_router(vision_module.router, prefix="/v1")
+
+    class _StubHighProvider(VisionProvider):
+        """桩视觉 provider（测试用）：恒定返回 1 个 high 置信识别项（模型类）。"""
+
+        def recognize(self, image_bytes: bytes) -> list[RecognizedItem]:
+            """返回固定识别项（函数）。
+
+            参数：
+                image_bytes：图片字节（忽略）。
+
+            返回值：
+                list[RecognizedItem]：单项 high（番茄）。
+
+            异常：
+                无。
+            """
+            return [RecognizedItem(name="番茄", confidence="high", ingredient_id=1)]
+
+    monkeypatch.setattr(vision_module, "get_vision_provider", lambda: _StubHighProvider())
+    monkeypatch.setattr(vision_module, "_UPLOAD_BASE_DIR", tmp_path)
+
+    anon = _unique_anon()
+    headers = {"X-Anonymous-Id": anon}
+    upload = {"file": ("photo.jpg", b"fake-jpeg-bytes-for-quota-linkage", "image/jpeg")}
+    try:
+        # 支付前：免费档额度 4
+        before = client.post("/v1/vision/recognize", files=upload, headers=headers)
+        assert before.status_code == 200
+        assert before.json()["quota"]["limit"] == 4
+
+        order = _create_order(client, anon, "monthly")
+        assert client.post(f"/v1/member/orders/{order['order_no']}/mock-pay").status_code == 200
+
+        # 支付后：会员档额度 10（权益即时生效）
+        after = client.post("/v1/vision/recognize", files=upload, headers=headers)
+        assert after.status_code == 200
+        assert after.json()["quota"]["limit"] == 10
+
+        # 双口径一致：/v1/member/me 与 vision 响应的会员额度相同
+        me = client.get("/v1/member/me", headers=headers).json()
+        assert me["is_member"] is True
+        assert me["quota"]["limit"] == 10
+    finally:
+        _delete_user_with_orders(anon)

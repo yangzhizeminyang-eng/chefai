@@ -191,7 +191,9 @@ def get_recipe_detail(
         "difficulty": difficulty_label(recipe.difficulty),
         "time_minutes": recipe.time_minutes,
         "servings": target_servings,
-        "calories_kcal": float(recipe.calories_kcal) if recipe.calories_kcal is not None else None,
+        # 🔴 每份口径（M5 收口）：DB calories_kcal 存储语义为全菜总量（seed 与 HowToCook
+        # 语料一致），头部「X kcal/份」按基准份数折算，与 /nutrition 的每份 kcal 同源相等。
+        "calories_kcal": round(float(recipe.calories_kcal) / base_servings, 1) if recipe.calories_kcal is not None else None,
         "allergen_codes": list(recipe.allergen_codes or []),
         "equipment": list(recipe.equipment or []),
         "main_ingredients": [i.model_dump() for i in main_items],
