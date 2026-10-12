@@ -27,6 +27,8 @@ import type {
   HomeResponse,
   InnovationAdoptResponse,
   InnovationFeedbackBody,
+  InnovationJobCreated,
+  InnovationJobStatusResponse,
   InnovationPrecheckResponse,
   InnovationRecipe,
   InnovationReuseResponse,
@@ -603,14 +605,38 @@ export function postInnovationPrecheck(ingredients: string[]): Promise<Innovatio
 }
 
 /**
- * 生成创新菜谱（POST /v1/innovation/generate）。
+ * 生成创新菜谱（POST /v1/innovation/generate，同步兼容口）。
  * P1 DEF-01：LLM 表达实测 10–30s（后端 25s 硬超时 + 模板降级兜底），本请求
  * 显式传 60s per-request 超时覆盖实例默认 12s，否则用户侧 100% ERR_ABORTED。
+ * 主链路已迁移异步 job（见 postInnovationJobCreate / getInnovationJob，M-01），
+ * 本接口保留向后兼容（smoke / 既有调用不破）。
  * @param ingredients 食材名列表
  * @returns 创新菜谱实体（含创新依据与强制声明；basis.generated_by 标注 llm/template）
  */
 export function postInnovationGenerate(ingredients: string[]): Promise<InnovationRecipe> {
   return apiClient.post('/v1/innovation/generate', { ingredients }, { timeout: INNOVATION_GENERATE_TIMEOUT_MS })
+}
+
+/**
+ * 提交创新生成异步任务（POST /v1/innovation/jobs，M-01 异步化主链路）。
+ * 后端校验后线程池执行生成并秒级返回 202（job 排队中），LLM 波动被 job 状态吸收，
+ * 前端不再依赖 60s 同步长请求；提交本身不等 LLM，30s 超时仅为提交链路留余量。
+ * @param ingredients 食材名列表
+ * @returns 任务创建结果（job_id + status=pending）
+ */
+export function postInnovationJobCreate(ingredients: string[]): Promise<InnovationJobCreated> {
+  return apiClient.post('/v1/innovation/jobs', { ingredients }, { timeout: 30000 })
+}
+
+/**
+ * 查询创新生成任务状态（GET /v1/innovation/jobs/{job_id}）。
+ * 前端以 2.5s 间隔轮询本接口直至终态：succeeded（含完整 recipe）/ failed（含 error）/
+ * blocked（含 issues）；404 = 任务不存在或他人 job（跨用户隔离，由拦截器归一为错误）。
+ * @param jobId 任务 ID（来自 postInnovationJobCreate 返回）
+ * @returns 任务状态（含 recipe / issues / error 视终态而定）
+ */
+export function getInnovationJob(jobId: string): Promise<InnovationJobStatusResponse> {
+  return apiClient.get(`/v1/innovation/jobs/${jobId}`)
 }
 
 /**
@@ -652,10 +678,15 @@ export function postInnovationFeedback(id: number, body: InnovationFeedbackBody)
 
 /* ── 图像识别 ── */
 
+/** 视觉识别 per-request 超时（毫秒）：真实视觉模型 P95 延迟可达 15~20s，覆盖实例默认 12s */
+const VISION_RECOGNIZE_TIMEOUT_MS = 30000
+
 /**
  * 冰箱照片识别（POST /v1/vision/recognize，multipart 上传）。
  * request_id 由 axios 拦截器放入 X-Request-Id 头（FormData 体不注入 JSON 字段）。
- * @param file 图像文件（前端已压缩至 ≤1MB）
+ * 超时显式放宽到 30s（覆盖实例默认 12s）：真实视觉模型（qwen omni 系列，流式收集）
+ * P95 延迟可达 15~20s，沿用默认超时会误杀正常请求导致用户侧 100% 超时报错。
+ * @param file 图像文件（前端已压缩至 ≤1MB 且长边 ≤1280px）
  * @returns 识别结果 + 剩余额度 + 降级标记
  */
 export function postVisionRecognize(file: File): Promise<VisionRecognizeResponse> {
@@ -663,6 +694,7 @@ export function postVisionRecognize(file: File): Promise<VisionRecognizeResponse
   form.append('file', file)
   return apiClient.post('/v1/vision/recognize', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: VISION_RECOGNIZE_TIMEOUT_MS,
   })
 }
 

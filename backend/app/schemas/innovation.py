@@ -6,7 +6,9 @@
     - 生成：InnovationGenerateRequest / InnovationRecipeOut（201 生成结果，含 basis 依据
       与 nutrition 估算、disclaimer 强制标识）；
     - 状态机与复用：AdoptResponse / IndexResponse / ReuseResponse；
-    - 反馈回流：InnovationFeedbackRequest / InnovationFeedbackResponse。
+    - 反馈回流：InnovationFeedbackRequest / InnovationFeedbackResponse；
+    - 异步任务（M-01）：InnovationJobCreatedResponse / InnovationJobStatusResponse
+      （提交即返回 job_id + 轮询终态，LLM 上游慢时不再依赖同步长请求）。
 
 红线：
     所有创新域响应体均携带 is_ai_innovated=true 与 disclaimer 字段（强制标识，
@@ -229,6 +231,51 @@ class InnovationFeedbackResponse(BaseModel):
     disclaimer: str = DISCLAIMER_TEXT
 
 
+class InnovationJobCreatedResponse(BaseModel):
+    """创新异步生成任务受理响应体（模型类，M-01 异步化）。
+
+    说明：
+        POST /v1/innovation/jobs 提交即返回（HTTP 202）：生成在后台线程池执行，
+        前端持 job_id 轮询 GET /v1/innovation/jobs/{job_id} 取终态；同步 /generate
+        保留向后兼容。
+
+    属性：
+        job_id：异步任务 ID（injob_ 前缀 + 12 位 hex）。
+        status：受理时任务状态（恒 pending）。
+        request_id：幂等键回显（供 trace 取证，可缺省）。
+    """
+
+    job_id: str
+    status: str = "pending"
+    request_id: str | None = None
+
+
+class InnovationJobStatusResponse(BaseModel):
+    """创新异步生成任务状态响应体（模型类，M-01 异步化轮询返回）。
+
+    说明：
+        status ∈ pending | running | succeeded | failed | blocked：succeeded 时
+        recipe 为完整创新菜结构（🔴 is_ai_innovated=true 与 disclaimer 恒带，
+        与同步 /generate 同构）；blocked 时 issues 为拦截原因；failed 时 error
+        为面向用户文案。未知/他人 job 统一 404（跨用户隔离，不泄露存在性）。
+
+    属性：
+        job_id：异步任务 ID。
+        status：任务状态（pending / running / succeeded / failed / blocked）。
+        recipe：创新菜完整结构（仅 succeeded 返回）。
+        issues：拦截原因列表（仅 blocked 返回，type + message）。
+        error：失败文案（仅 failed 返回）。
+        request_id：幂等键回显（可缺省）。
+    """
+
+    job_id: str
+    status: str
+    recipe: InnovationRecipeOut | None = None
+    issues: list[InnovationIssue] = Field(default_factory=list)
+    error: str | None = None
+    request_id: str | None = None
+
+
 __all__ = [
     "DISCLAIMER_TEXT",
     "IssueType",
@@ -243,4 +290,6 @@ __all__ = [
     "InnovationReuseResponse",
     "InnovationFeedbackRequest",
     "InnovationFeedbackResponse",
+    "InnovationJobCreatedResponse",
+    "InnovationJobStatusResponse",
 ]

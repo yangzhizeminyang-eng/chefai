@@ -9,11 +9,20 @@
       source='ai_private' 私有向量分区）；
     POST /v1/innovation/recipes/{id}/reuse：复用（本人 indexed/adopted，跨用户隔离）；
     POST /v1/innovation/recipes/{id}/feedback：评分回流（rating≥4 规则权重 +0.1、
-      ≤2 −0.1，夹 [0.1, 3.0]）。
+      ≤2 −0.1，夹 [0.1, 3.0]）；
+    POST /v1/innovation/jobs：提交异步生成任务（202 立即返回 job_id，M-01：
+      LLM 上游慢时同步长请求连接挂死，改「提交 + 轮询」链路）；
+    GET  /v1/innovation/jobs/{job_id}：轮询异步任务状态（succeeded 取 recipe /
+      failed 取 error / blocked 取 issues；未知/他人 job 统一 404）。
+
+    🔴 阶段一设计取舍（异步 job store）：单进程内存字典 + 锁——演示环境单进程
+    部署，进程重启后 job 丢失（客户端轮询 404 按失败重试即可恢复）；阶段二多
+    副本部署再迁 DB 表 + 状态机（改进方案 M-01「job 表 + 状态机」），端点契约
+    与跨用户隔离口径不变。同步 /generate 保留向后兼容，既有 7 端点零改动。
 
 🔴 红线：
     - 所有响应含 is_ai_innovated=true 与 disclaimer 字段（AI 创新强制标识）；
-    - switch.innovation=false → 全部 7 端点 503 {code: INNOVATION_MAINTENANCE}
+    - switch.innovation=false → 全部 9 端点 503 {code: INNOVATION_MAINTENANCE}
       维护态（入口隐藏由前端处理，服务端统一拒绝）；
     - 搭配结论必须查表（子图实现），LLM 无权决定搭配。
 """
@@ -21,6 +30,10 @@
 from __future__ import annotations
 
 import hashlib
+import threading
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
@@ -46,6 +59,8 @@ from app.schemas.innovation import (
     InnovationGenerateRequest,
     InnovationGenerateResponse,
     InnovationIssue,
+    InnovationJobCreatedResponse,
+    InnovationJobStatusResponse,
     InnovationPrecheckRequest,
     InnovationPrecheckResponse,
     InnovationRecipeOut,
@@ -535,3 +550,289 @@ def post_innovation_feedback(
                     adjusted += 1
     session.commit()
     return InnovationFeedbackResponse(status="ok", adjusted_rules=adjusted)
+
+
+# ---------------------------------------------------------------------------
+# 8)/9) 异步生成任务（M-01：LLM 上游慢（60s~2min）时同步长请求连接挂死，
+#       改「提交即返回 job_id + 轮询终态」链路；同步 /generate 保留向后兼容）
+# ---------------------------------------------------------------------------
+# 异步 job 状态机（status 取值）：pending（已受理未执行）→ running（worker 执行中）
+# → 终态三选一：succeeded（产出 recipe）/ failed（error 文案）/ blocked（风控拦截 issues）。
+# 终态即冻结（不可逆），轮询方以终态为准收尾。
+
+# 阶段一内存 job store：dict + 锁（🔴 读写一律持 _JOBS_LOCK，worker 与路由分属不同
+# 线程）。job 记录结构：{job_id, user_db_id, status, recipe, issues, error,
+# request_id, created_at, finished_at}。设计取舍：演示环境单进程部署，进程重启后
+# job 丢失（客户端轮询 404 按失败重试即可恢复）；阶段二多副本部署再迁 DB 表 + 状态机
+# （改进方案 M-01「job 表 + 状态机」），端点契约与跨用户隔离口径不变。
+_INNOVATION_JOBS: dict[str, dict] = {}
+_JOBS_LOCK = threading.Lock()
+
+# 已完成 job 断线续查保留窗口（秒）：终态写入 finished_at，超窗 job 在新建时顺手清理
+# （防 store 无界增长；10 分钟足够前端断线重连后补查一次结果）。
+_JOB_RETENTION_SECONDS = 600
+
+# 异步 job 执行线程池：LLM 25s 硬超时 + template 降级已在 job 内兜底（单任务最长
+# 数十秒），max_workers=4 满足演示环境并发；线程名前缀便于日志定位。
+_INNOVATION_JOB_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="innov-job")
+
+# job 执行失败兜底文案（failed 终态面向用户话术，不透出内部异常细节）
+_JOB_FAILED_MESSAGE = "AI 创新生成失败，请稍后重试"
+
+
+def _cleanup_finished_jobs_locked(now_ts: float) -> None:
+    """清理超过保留窗口的已完成 job（函数，调用方必须已持有 _JOBS_LOCK）。
+
+    说明：
+        仅回收 finished_at 非空且超 _JOB_RETENTION_SECONDS 的终态 job；
+        pending/running 未到终态永不回收（避免轮询方拿到「凭空消失」的任务）。
+
+    参数：
+        now_ts：当前时间戳（time.time()，秒）。
+
+    返回值：
+        None。
+
+    异常：
+        无（纯内存遍历）。
+    """
+    deadline = now_ts - _JOB_RETENTION_SECONDS
+    stale_ids = [
+        job_id
+        for job_id, record in _INNOVATION_JOBS.items()
+        if record.get("finished_at") is not None and float(record["finished_at"]) < deadline
+    ]
+    for job_id in stale_ids:
+        _INNOVATION_JOBS.pop(job_id, None)
+    if stale_ids:
+        logger.info("innovation jobs cleaned up: %s", stale_ids)
+
+
+def _finish_job_locked(job_id: str, status: str, *, recipe: dict | None = None,
+                       issues: list[dict] | None = None, error: str | None = None,
+                       request_id: str | None = None) -> None:
+    """把 job 写入终态（函数，调用方必须已持有 _JOBS_LOCK）。
+
+    说明：
+        终态写入即冻结（succeeded / failed / blocked 不可逆），同时记录
+        finished_at（供断线续查窗口清理）与幂等键回显。
+
+    参数：
+        job_id：异步任务 ID。
+        status：终态（succeeded / failed / blocked）。
+        recipe：创新菜响应 dict（仅 succeeded 提供）。
+        issues：拦截原因列表（blocked / failed 时可提供）。
+        error：失败文案（仅 failed 提供）。
+        request_id：幂等键回显（编排层可能重新生成，优先取其返回值）。
+
+    返回值：
+        None。
+
+    异常：
+        无（job 记录在提交时已建立，查无记录静默跳过——进程级 store 被外部清空
+        的防御分支）。
+    """
+    record = _INNOVATION_JOBS.get(job_id)
+    if record is None:
+        return
+    record["status"] = status
+    record["recipe"] = recipe
+    record["issues"] = list(issues or [])
+    record["error"] = error
+    record["request_id"] = request_id or record.get("request_id")
+    record["finished_at"] = time.time()
+
+
+def _run_innovation_job(job_id: str, user_db_id: int, ingredients: list[str],
+                        request_id: str, user_id_hash: str | None) -> None:
+    """异步 job 执行体（线程池 worker 函数）。
+
+    说明：
+        执行 run_innovation_generate（🔴 自管 DB session，本函数不开新 session）：
+        blocked=True → status=blocked 存 issues（拦截语义与同步接口一致）；
+        有 result → succeeded 存 recipe（完整创新菜结构，is_ai_innovated 与
+        disclaimer 恒带）；blocked=False 但无 result（子图兜底响应）→ failed 存
+        error 文案。run_innovation_generate 理论上不抛异常（内部全捕获 + 25s
+        LLM 硬超时 + template 降级兜底），此处再防御性兜底 failed，保证 job 必达
+        终态（轮询方永不悬挂）。
+
+    参数：
+        job_id：异步任务 ID。
+        user_db_id：用户数据库 ID（提交时在请求线程提取，避免 worker 访问已关闭
+          请求会话的 ORM 实例）。
+        ingredients：食材名列表。
+        request_id：幂等键（透传编排层取证）。
+        user_id_hash：用户标识哈希（sha256 前 12 位，trace 落库脱敏）。
+
+    返回值：
+        None。
+
+    异常：
+        不向外抛出（全捕获兜底为 failed 终态）。
+    """
+    with _JOBS_LOCK:
+        record = _INNOVATION_JOBS.get(job_id)
+        if record is not None:
+            record["status"] = "running"
+    try:
+        outcome = run_innovation_generate(
+            user_db_id=int(user_db_id),
+            ingredients=[str(i) for i in ingredients],
+            request_id=request_id,
+            user_id_hash=user_id_hash,
+        )
+    except Exception as exc:  # noqa: BLE001 —— 防御性兜底（编排层理论上不抛）
+        logger.error("innovation job crashed (job_id=%s, request_id=%s): %s", job_id, request_id, exc)
+        with _JOBS_LOCK:
+            _finish_job_locked(job_id, "failed", error=_JOB_FAILED_MESSAGE)
+        return
+
+    with _JOBS_LOCK:
+        if outcome.get("blocked"):
+            # 风控拦截：终态 blocked + 拦截原因（前端展示拦截卡）
+            _finish_job_locked(
+                job_id,
+                "blocked",
+                issues=_issues_body(outcome.get("issues")),
+                request_id=outcome.get("request_id"),
+            )
+        elif outcome.get("result"):
+            # 生成成功：完整创新菜结构（与同步 /generate 的 recipe 同构）
+            _finish_job_locked(
+                job_id,
+                "succeeded",
+                recipe=outcome["result"],
+                request_id=outcome.get("request_id"),
+            )
+        else:
+            # 非 blocked 但无产出（子图异常兜底响应）：按失败语义
+            logger.warning(
+                "innovation job produced no result (job_id=%s, request_id=%s)", job_id, request_id
+            )
+            _finish_job_locked(
+                job_id,
+                "failed",
+                issues=_issues_body(outcome.get("issues")),
+                error=_JOB_FAILED_MESSAGE,
+                request_id=outcome.get("request_id"),
+            )
+
+
+@router.post("/jobs", response_model=InnovationJobCreatedResponse, summary="提交 AI 创新异步生成任务（202 立即受理）")
+def post_innovation_job(
+    payload: InnovationGenerateRequest,
+    request: Request,
+    session: Session = Depends(get_db),
+) -> JSONResponse:
+    """提交创新异步生成任务端点（函数）。
+
+    说明：
+        M-01 异步化：同步 /generate 在 LLM 上游慢（60s~2min）时长时间占用连接；
+        本端点维护态校验通过后立即返回 202 {job_id, status:"pending", request_id}，
+        生成在模块级线程池执行（run_innovation_generate 的 25s LLM 硬超时 +
+        template 降级在 job 内兜底不变），前端持 job_id 轮询
+        GET /v1/innovation/jobs/{job_id} 取终态。同步 /generate 保留向后兼容，
+        请求体与其同构（ingredients ≥1）。
+
+        🔴 阶段一设计取舍：单进程内存 job store（dict + 锁），演示环境单进程部署；
+        进程重启后 job 丢失（客户端轮询 404 按失败重试即可恢复）；阶段二多副本
+        部署再迁 DB 表 + 状态机（改进方案 M-01「job 表 + 状态机」），端点契约与
+        跨用户隔离口径不变。新建 job 时顺手清理 finished_at 超过 10 分钟的已完成
+        job（断线续查窗口）。
+
+    参数：
+        payload：生成请求体（ingredients ≥1，与同步 /generate 同构）。
+        request：FastAPI 请求对象（读身份头/幂等键）。
+        session：请求级数据库会话。
+
+    返回值：
+        JSONResponse：202 {job_id, status:"pending", request_id} / 503 维护态。
+
+    异常：
+        不向外抛业务异常（身份解析/数据库异常由全局异常处理器兜底）。
+    """
+    if not _innovation_switch_on(session):
+        return _maintenance_response()
+    user = get_current_user(request, session)
+    rid = resolve_request_id(payload.request_id, request)
+    job_id = f"injob_{uuid.uuid4().hex[:12]}"
+    now_ts = time.time()
+    with _JOBS_LOCK:
+        # 顺手清理断线续查窗口之外的已完成 job（持锁内回收，防 store 无界增长）
+        _cleanup_finished_jobs_locked(now_ts)
+        _INNOVATION_JOBS[job_id] = {
+            "job_id": job_id,
+            "user_db_id": int(user.id),
+            "status": "pending",
+            "recipe": None,
+            "issues": [],
+            "error": None,
+            "request_id": rid,
+            "created_at": now_ts,
+            "finished_at": None,
+        }
+    # 提交线程池（fire-and-forget）：worker 全捕获必达终态，future 无需消费；
+    # 用户标识在请求线程提取（worker 不触碰已关闭请求会话的 ORM 实例）
+    _INNOVATION_JOB_EXECUTOR.submit(
+        _run_innovation_job,
+        job_id,
+        int(user.id),
+        [str(i) for i in payload.ingredients],
+        rid,
+        _user_hash(user),
+    )
+    logger.info("innovation job submitted (job_id=%s, request_id=%s)", job_id, rid)
+    return JSONResponse(
+        status_code=202,
+        content={"job_id": job_id, "status": "pending", "request_id": rid},
+        headers={"X-Request-Id": rid},
+    )
+
+
+@router.get("/jobs/{job_id}", response_model=InnovationJobStatusResponse, summary="查询 AI 创新异步生成任务状态（轮询）")
+def get_innovation_job(
+    job_id: str,
+    request: Request,
+    session: Session = Depends(get_db),
+) -> InnovationJobStatusResponse | JSONResponse:
+    """查询创新异步任务状态端点（函数）。
+
+    说明：
+        轮询返回任务状态：pending（已受理未执行）/ running（执行中）/ succeeded
+        （recipe 为完整创新菜结构，🔴 is_ai_innovated=true 与 disclaimer 恒带）/
+        failed（error 为面向用户文案）/ blocked（issues 为拦截原因）。终态即冻结，
+        轮询方可安全停止。🔴 跨用户隔离：不存在与他人的 job 统一 404（不泄露
+        存在性）；阶段一内存 store 进程重启后 job 丢失 → 404（客户端按失败重试），
+        阶段二迁 DB 表后语义不变（改进方案 M-01「job 表 + 状态机」）。
+
+    参数：
+        job_id：异步任务 ID（POST /v1/innovation/jobs 返回）。
+        request：FastAPI 请求对象（读身份头）。
+        session：请求级数据库会话。
+
+    返回值：
+        InnovationJobStatusResponse | JSONResponse：200 任务状态 / 404（未知或他人
+        job）/ 503 维护态。
+
+    异常：
+        HTTPException 404（统一错误 JSON）；身份解析/数据库异常由全局处理器兜底。
+    """
+    if not _innovation_switch_on(session):
+        return _maintenance_response()
+    user = get_current_user(request, session)
+    with _JOBS_LOCK:
+        # 持锁内浅拷贝快照（worker 终态为整块引用替换，快照无写撕裂）
+        record = _INNOVATION_JOBS.get(job_id)
+        snapshot = dict(record) if record is not None else None
+    if snapshot is None or int(snapshot.get("user_db_id") or 0) != int(user.id):
+        # 🔴 不存在与他人的 job 统一 404（跨用户隔离，不泄露存在性）
+        raise api_error(404, ERR_NOT_FOUND, "任务不存在", f"job_id={job_id}")
+    recipe = snapshot.get("recipe")
+    return InnovationJobStatusResponse(
+        job_id=job_id,
+        status=str(snapshot.get("status") or "pending"),
+        recipe=InnovationRecipeOut(**recipe) if isinstance(recipe, dict) else None,
+        issues=list(snapshot.get("issues") or []),
+        error=snapshot.get("error"),
+        request_id=snapshot.get("request_id"),
+    )

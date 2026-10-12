@@ -7,7 +7,8 @@
  *       ③ 识别结果：高置信默认勾选（绿色区）/ 低置信黄色区需人工勾选确认；
  *       ④ 额度显示（quota.used/limit）+ 降级提示条（degraded → 信息条）；
  *       ⑤ 确认入库：POST /v1/vision/confirm → 勾选食材加入已选（ingredients store）→ 跳 /select；
- *       ⑥ 失败/降级：错误 alert +「改为手选」按钮（跳 /select）。
+ *       ⑥ 失败/降级/空结果：错误 alert 与空结果提示均补「或改为手选」引导（跳 /select）。
+ * 识别等待文案对齐真实视觉模型耗时（通常 3–8 秒，最长约 20 秒，接口 30s 超时）。
  * 三态：上传前 / 识别中（动画）/ 结果与异常；深色模式全变量适配。
  */
 import { computed, ref } from 'vue'
@@ -83,7 +84,7 @@ async function handleUpload(options: { file: UploadRawFile }): Promise<void> {
     }
     checkedNames.value = next
     if ((res.recognized ?? []).length === 0) {
-      ElMessage.info('没认出食材，换个角度再拍一张试试')
+      ElMessage.info('没认出食材，换个角度再拍一张试试，或改为手选')
     }
   } catch (e) {
     error.value = e as ApiError
@@ -217,7 +218,7 @@ function resetAll(): void {
       <div v-else-if="recognizing" class="recognizing">
         <el-skeleton :rows="3" animated class="recognizing-skeleton" />
         <p class="recognizing-text">
-          {{ compressing ? '正在压缩图片…' : '正在识别食材…' }}
+          {{ compressing ? '正在压缩图片…' : '正在识别食材…通常 3–8 秒，最长约 20 秒' }}
         </p>
       </div>
 
@@ -261,10 +262,10 @@ function resetAll(): void {
           </div>
         </div>
 
-        <!-- 空结果 -->
+        <!-- 空结果（引导重拍或改手选） -->
         <el-empty
           v-if="(result.recognized ?? []).length === 0"
-          description="没认出食材，换个角度再试一次"
+          description="没认出食材，换个角度再拍，或改为手选"
           :image-size="80"
         />
 

@@ -30,11 +30,14 @@
 #                   ⑩ 首页聚合：GET /v1/home 200 且 entries 字段存在；
 #                   ⑪ 后台链路：/admin/v1/auth/login(admin) → dashboard/cost 200；
 #                   ⑫ P95 采样：recommend×5 P95≤6s / 菜谱详情≤2s / healthz≤500ms。
-#         （T7 收尾增补至 14 组断言）
+#         （T7 收尾增补至 14 组断言，T8 再增补至 15 组断言）
 #                   ⑬ 创新生成降级来源：generate(土豆+青椒, 90s) → 200/201 且
 #                     recipe.basis.generated_by ∈ {"llm","template"}（25s 硬超时降级口径）；
 #                   ⑭ 求助关键词库：创建烹饪会话 → help「盐放多了怎么办」→ blocked=false
 #                     且 answers 非空且不含回退前缀「以下是本步要点」（关键词库优先命中）。
+#                   ⑮ 视觉确认与深链直连（T8 增补，接口级不花 VLM 费用）：confirm 混合名单
+#                     added=2 且伪食材进 skipped；recognize 缺 file 字段 → 422；
+#                     profile 深链直连 200（/v1/profile 根路径 404，实际子深链 /v1/profile/skill）。
 #         - docker: 转调 docker compose（-DockerCmd up|down|build|logs|ps）；
 #                   docker 不可用时明确报错提示安装 Docker Desktop；up 后轮询 /v1/healthz
 #                   就绪（最多 60 秒）再输出访问地址。
@@ -1422,13 +1425,66 @@ switch ($Action) {
             $fail++
         }
 
+        # ⑮ 视觉确认与深链直连（T8 增补）：均为接口级断言，不发送真实大图、不产生
+        #    VLM 调用费用。a) confirm 混合名单：真实食材计入 added、伪食材列入 skipped；
+        #    b) recognize 不带 file 字段（JSON 请求体打到 multipart 端点）→ 422；
+        #    c) profile 深链直连 → 200。
+        #    （注：/v1/profile 根路径实测 404——profile 路由仅暴露 family/skill/diet-goal
+        #    三个子深链，此处按实际可用深链 /v1/profile/skill 断言，与前端档案页
+        #    实载接口一致）
+        Write-Info "⑮ 视觉确认与深链直连（confirm 混合名单 / recognize 缺 file 422 / profile 深链）..."
+        $ok15a = $false
+        $ok15b = $false
+        $ok15c = $false
+        $detail15 = ''
+        # a) confirm：番茄/土豆为库内真实食材 → added=2；「不存在的伪食材XX」→ skipped
+        $confirm15 = Invoke-JsonPost -Url ("http://127.0.0.1:{0}/v1/vision/confirm" -f $bePortEff) `
+            -Body '{"names":["番茄","土豆","不存在的伪食材XX"]}' -Headers $h6
+        $skipped15 = @()
+        if ($confirm15.Body -and $confirm15.Body.PSObject.Properties['skipped']) { $skipped15 = @($confirm15.Body.skipped) }
+        $fakeHit15 = @($skipped15 | Where-Object { "$_" -eq '不存在的伪食材XX' })
+        if ($confirm15.StatusCode -eq 200 -and $confirm15.Body -and `
+            $confirm15.Body.PSObject.Properties['added'] -and [int]$confirm15.Body.added -eq 2 -and `
+            $fakeHit15.Count -eq 1) {
+            $ok15a = $true
+        }
+        else {
+            $added15 = if ($confirm15.Body -and $confirm15.Body.PSObject.Properties['added']) { $confirm15.Body.added } else { '?' }
+            $detail15 = "confirm(http={0} added={1} skipped=[{2}])" -f $confirm15.StatusCode, $added15, ($skipped15 -join ',')
+        }
+        # b) recognize 缺 file 字段：POST JSON 空 body 打到 multipart 端点 → 422 校验错误
+        $recog15 = Invoke-JsonPost -Url ("http://127.0.0.1:{0}/v1/vision/recognize" -f $bePortEff) -Body '{}'
+        if ($recog15.StatusCode -eq 422) {
+            $ok15b = $true
+        }
+        else {
+            $detail15 = "{0}; recognize 缺 file http={1}（期望 422）" -f $detail15, $recog15.StatusCode
+        }
+        # c) profile 深链直连（/v1/profile 根路径 404，实际子深链 /v1/profile/skill）
+        $anon15 = 'smoke_deep_' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
+        $prof15 = Invoke-JsonGet -Url ("http://127.0.0.1:{0}/v1/profile/skill" -f $bePortEff) `
+            -Headers @{ 'X-Anonymous-Id' = $anon15 }
+        if ($prof15.StatusCode -eq 200 -and $prof15.Body -and $prof15.Body.PSObject.Properties['cooking_level']) {
+            $ok15c = $true
+        }
+        else {
+            $detail15 = "{0}; profile 深链 http={1}" -f $detail15, $prof15.StatusCode
+        }
+        if ($ok15a -and $ok15b -and $ok15c) {
+            Write-Ok "⑮ 视觉确认与深链直连: confirm added=2 且 skipped=[不存在的伪食材XX]；recognize 缺 file=422；/v1/profile/skill=200"
+        }
+        else {
+            Write-Fail ("⑮ 视觉确认与深链直连失败: {0}" -f $detail15)
+            $fail++
+        }
+
         # 汇总：任一断言失败退出码 1
         Write-Host "===== 冒烟验证结束 =====" -ForegroundColor Cyan
         if ($fail -gt 0) {
             Write-Fail ("冒烟验证：{0} 组断言未通过" -f $fail)
             exit 1
         }
-        Write-Ok "冒烟验证：14 组断言全部通过"
+        Write-Ok "冒烟验证：15 组断言全部通过"
     }
 
     # ============ docker：docker compose 转调（-DockerCmd up|down|build|logs|ps） ============

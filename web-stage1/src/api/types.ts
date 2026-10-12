@@ -1085,6 +1085,47 @@ export interface InnovationFeedbackBody {
   comment?: string
 }
 
+/** 创新预检/任务拦截原因条目（blocked 时随 precheck 或 job 状态返回，对齐后端 InnovationIssue） */
+export interface InnovationIssue {
+  /** 拦截类型（high_risk 高危 / allergen 过敏原 / special_population 特殊人群 / taboo 搭配禁忌） */
+  type?: string
+  /** 面向用户的拦截话术 */
+  message?: string
+  /** 命中的规则编号（可选，后端给出时前端拦截卡展示） */
+  rule_id?: string
+}
+
+/* ── AI 创新异步任务（M-01：POST /v1/innovation/jobs + GET /v1/innovation/jobs/{job_id}）── */
+
+/** 创新生成任务状态（后端五态状态机：pending → running → succeeded / failed / blocked） */
+export type InnovationJobStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'blocked'
+
+/** 创新生成任务创建响应体（POST /v1/innovation/jobs，202；后端秒级返回，不阻塞等 LLM） */
+export interface InnovationJobCreated {
+  /** 任务 ID（后续轮询凭据） */
+  job_id: string
+  /** 初始状态（恒为 pending） */
+  status: 'pending'
+  /** 幂等键回显（可选） */
+  request_id?: string
+}
+
+/** 创新生成任务状态响应体（GET /v1/innovation/jobs/{job_id}，前端 2.5s 间隔轮询直至终态） */
+export interface InnovationJobStatusResponse {
+  /** 任务 ID */
+  job_id: string
+  /** 当前状态（pending/running 为中间态，succeeded/failed/blocked 为终态） */
+  status: InnovationJobStatus
+  /** 生成成功的创新菜谱（succeeded 时完整返回，结构同同步 generate；其余为 null 或缺省） */
+  recipe?: InnovationRecipe | null
+  /** 风控拦截详情（blocked 时返回，页面映射为拦截卡） */
+  issues?: InnovationIssue[]
+  /** 失败原因说明（failed 时返回，可重试） */
+  error?: string | null
+  /** 幂等键回显（可选） */
+  request_id?: string | null
+}
+
 /* ── 图像识别（/v1/vision/*）── */
 
 /** 识别响应体（POST /v1/vision/recognize，multipart file） */

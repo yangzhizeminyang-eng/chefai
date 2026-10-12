@@ -2,11 +2,17 @@
 
 职责：
     基于 pydantic-settings 读取 backend/.env 环境配置，提供全局单例 Settings，
-    供数据库连接、LLM 客户端、应用启动等模块统一消费，禁止在代码中硬编码连接参数。
+    供数据库连接、LLM 客户端、视觉识别（VLM）客户端、应用启动等模块统一消费，
+    禁止在代码中硬编码连接参数。
 
 环境变量：
     DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME：PostgreSQL 连接信息
     LLM_BASE_URL / LLM_API_KEY / LLM_MODEL / LLM_TIMEOUT_SECONDS：OpenAI 兼容大模型参数
+    VISION_PROVIDER / VISION_BASE_URL / VISION_API_KEY / VISION_MODEL /
+    VISION_TIMEOUT_SECONDS / VISION_MAX_ITEMS：真实视觉模型（VLM）参数——
+    VISION_PROVIDER 取 'mock'（缺省，确定性 mock）或 'vlm'（阿里云百炼
+    qwen omni 系列多模态模型，经 OpenAI 兼容协议调用）；
+    VISION_MAX_ITEMS 为单次识别返回条目上限（超出的条目被截断）。
     APP_HOST / APP_PORT：应用监听地址与端口
 
 异常：
@@ -34,6 +40,12 @@ class Settings(BaseSettings):
         LLM_API_KEY：大模型 API Key。
         LLM_MODEL：模型名称。
         LLM_TIMEOUT_SECONDS：LLM 请求超时秒数。
+        VISION_PROVIDER：视觉识别提供方取值（'mock' 缺省 / 'vlm' 真实视觉模型）。
+        VISION_BASE_URL：视觉模型 OpenAI 兼容服务地址（vlm 时必填，如阿里云百炼）。
+        VISION_API_KEY：视觉模型 API Key。
+        VISION_MODEL：视觉模型名称（如 qwen3.8-omni-flash）。
+        VISION_TIMEOUT_SECONDS：视觉模型请求超时秒数（拍照识别 P95 预算对齐 20s）。
+        VISION_MAX_ITEMS：单次识别返回条目上限（超出截断，防噪声刷屏）。
         APP_HOST：FastAPI 监听主机。
         APP_PORT：FastAPI 监听端口。
 
@@ -60,6 +72,15 @@ class Settings(BaseSettings):
     LLM_API_KEY: str = ""
     LLM_MODEL: str = "deepseek-flash"
     LLM_TIMEOUT_SECONDS: int = 20
+
+    # 视觉模型（VLM，OpenAI 兼容协议；VISION_PROVIDER='vlm' 时启用真实识别，
+    # 缺省 mock 保持阶段一行为可随时回退）
+    VISION_PROVIDER: str = "mock"
+    VISION_BASE_URL: str = ""
+    VISION_API_KEY: str = ""
+    VISION_MODEL: str = ""
+    VISION_TIMEOUT_SECONDS: int = 20
+    VISION_MAX_ITEMS: int = 12
 
     # 应用
     APP_HOST: str = "0.0.0.0"

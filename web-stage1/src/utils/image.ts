@@ -1,7 +1,9 @@
 /**
  * 文件职责：图像压缩工具（Task 9 / 识别页上传前的前端压缩）。
- * - compressImage(file, maxBytes)：超过 maxBytes 的图片按「位图缩放 + JPEG 质量递减」
- *   逐步压缩至 maxBytes 以内（输出统一 JPEG；原图已达标则原样透传不重编码）；
+ * - compressImage(file, maxBytes, maxEdge)：先按长边 ≤ maxEdge（默认 1280px）做等比
+ *   下采样（真实视觉模型按像素计 token，长边 1280 可显著降低识别成本与延迟），
+ *   再按「位图缩放 + JPEG 质量递减」逐步压缩至 maxBytes 以内（输出统一 JPEG；
+ *   无需下采样且体积已达标时原样透传不重编码）；
  * - computeScaledSize：等比缩放尺寸计算（纯函数，可单测）；
  * - 依赖浏览器能力（createImageBitmap / canvas / Blob），node 单测通过 mock 全局
  *   document / createImageBitmap 覆盖主流程（见 __tests__/image.spec.ts）。
@@ -107,24 +109,34 @@ function blobToFile(blob: Blob, originalName: string): File {
 }
 
 /**
- * 图片压缩主流程：
- * ① 原图 ≤ maxBytes → 直接透传（不重编码，避免无谓画质损失）；
- * ② 否则加载位图 → 交替「降 JPEG 质量 / 缩尺寸」重编码，直至 ≤ maxBytes 或尝试耗尽；
- * ③ 尝试耗尽仍超标时返回达到的最小结果（尽力压缩，交由后端二次校验兜底）。
+ * 图片压缩主流程（识别页上传前处理）：
+ * ① 加载位图后先做长边下采样判定：longEdge > maxEdge 时初始缩放系数 = maxEdge / longEdge
+ *    （等比、只缩不放大）——视觉模型按像素计 token，长边压到 1280px 可显著降低
+ *    识别成本与延迟（4032×3024 手机原图 → 1280×960）；
+ * ② 无需下采样（initialScale === 1）且原图 ≤ maxBytes → 直接透传（不重编码，避免无谓画质损失）；
+ * ③ 否则进入「降 JPEG 质量 / 缩尺寸」交替重编码循环，直至 ≤ maxBytes 或尝试耗尽；
+ * ④ 尝试耗尽仍超标时返回达到的最小结果（尽力压缩，交由后端二次校验兜底）。
+ * 注意透传语义变化：体积达标但长边超限的图片现在也会下采样重编码（不再透传原图）。
  * @param file 用户选择的图像文件
  * @param maxBytes 目标字节上限（如 1MB = 1024*1024）
- * @returns 压缩后的 File（JPEG；已达标的原图原样返回）
+ * @param maxEdge 长边像素上限（默认 1280；等比下采样只缩不放大）
+ * @returns 压缩后的 File（JPEG；无需下采样且已达标的原图原样返回）
  * @throws Error 非图片文件 / 当前环境不支持 canvas / 图片读取失败时抛出
  */
-export async function compressImage(file: File, maxBytes: number): Promise<File> {
-  // 参数与类型守卫
+export async function compressImage(file: File, maxBytes: number, maxEdge: number = 1280): Promise<File> {
+  // 参数与类型守卫（下采样判定需先加载位图，故环境检查前置到位图加载之前）
   if (!(file instanceof File)) throw new Error('请选择图片文件')
-  if (file.size <= maxBytes) return file
   if (typeof document === 'undefined') throw new Error('当前环境不支持图片压缩')
 
   const image = await loadImage(file)
   try {
-    let scale = 1
+    // 长边下采样判定：longEdge 超限则按比例等比缩小（只缩不放大）
+    const longEdge = Math.max(image.width, image.height)
+    const initialScale = longEdge > maxEdge ? maxEdge / longEdge : 1
+    // 无需下采样且体积达标 → 原样透传（同一引用返回，不重编码）
+    if (initialScale === 1 && file.size <= maxBytes) return file
+
+    let scale = initialScale
     let quality = START_QUALITY
     let smallest: File | null = null
     let smallestSize = Number.POSITIVE_INFINITY

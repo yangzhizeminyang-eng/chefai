@@ -19,6 +19,9 @@ from fastapi.testclient import TestClient
 # 降级路径本身即为架构设计的一部分（D7：模型不可用时主链路仍完整可演示）。
 os.environ.setdefault("LLM_BASE_URL", "http://127.0.0.1:9")
 os.environ.setdefault("LLM_API_KEY", "test-offline")
+# 视觉识别同样离线化：强制 mock provider（.env 的 VISION_PROVIDER=vlm 仅用于
+# 本地/线上服务进程；测试进程绝不真实调用 VLM，防网络抖动与额度消耗）。
+os.environ.setdefault("VISION_PROVIDER", "mock")
 
 from app.main import app  # noqa: E402  —— 必须在环境变量设置之后导入
 

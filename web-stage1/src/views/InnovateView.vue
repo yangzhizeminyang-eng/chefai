@@ -3,9 +3,9 @@
  * 视图职责：AI 创新菜页（Task 9 / 路由 /innovate）。
  * 区块：① 顶部固定警示条「AI 创新·未经人工审核」；
  *       ② 食材输入（复用食材库多选 + 自定义输入）；
- *       ③ 生成按钮 → precheck（命中拦截展示拦截话术卡）→ generate
- *          （加载动画「正在基于食材性质与搭配规则创新…通常 10–30 秒，最长约 1 分钟」，
- *          请求走 60s 专用超时，见 endpoints.postInnovationGenerate）；
+ *       ③ 生成按钮 → precheck（命中拦截展示拦截话术卡）→ 提交异步生成 job 并轮询
+ *          （加载动画「已提交生成任务，正在基于食材性质与搭配规则创新…完成后自动
+ *          展示（通常 10–60 秒）」，链路见 stores/innovation.generate）；
  *       ④ 结果卡：菜名 / 量化用量清单 / 步骤 / 创新依据（搭配规则 + 食性标注）/
  *          营养（缺失灰字）/ 强制声明；采纳（adopt → toast → 入「我的创新菜」）；
  *          复用（reuse → 弹确认后展示详情可再采纳）；评分反馈（el-rate + 评论）；
@@ -260,7 +260,7 @@ onMounted(() => {
 
         <div v-if="innovationStore.generating" class="generating">
           <el-skeleton :rows="4" animated class="generating-skeleton" />
-          <p class="generating-text">正在基于食材性质与搭配规则创新…通常 10–30 秒，最长约 1 分钟</p>
+          <p class="generating-text">已提交生成任务，正在基于食材性质与搭配规则创新…完成后自动展示（通常 10–60 秒）</p>
         </div>
 
         <!-- 异常 -->

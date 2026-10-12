@@ -39,15 +39,22 @@ export default defineConfig({
     // strictPort=true：端口被占用时 vite 启动失败退出，而不是静默漂移到 5174/5175
     port: 5173,
     strictPort: true,
-    // 开发代理：/v1（业务 API）与 /api（健康检查等）统一转发到后端
+    // 开发代理：/v1（业务 API）与 /api（健康检查等）统一转发到后端；
+    // timeout / proxyTimeout（http-proxy 选项，测试报告 C-02）：显式放宽到 120s，
+    // 防止长耗时请求（视觉识别 30s、创新同步兼容口 60s、异步 job 轮询长链路）
+    // 被 dev proxy 默认超时提前断开（连接空闲 timeout + 响应等待 proxyTimeout 双侧兜底）
     proxy: {
       '/v1': {
         target: BACKEND_TARGET,
         changeOrigin: true,
+        timeout: 120000,
+        proxyTimeout: 120000,
       },
       '/api': {
         target: BACKEND_TARGET,
         changeOrigin: true,
+        timeout: 120000,
+        proxyTimeout: 120000,
       },
     },
   },
