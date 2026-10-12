@@ -1,7 +1,13 @@
 <script setup lang="ts">
 /**
  * 视图职责：W-01 食材选择页（手选简版，对齐 UI 清单 W-01 行）。
- * 区块：① 顶部搜索框（食材过滤 + 回车走统一 ask 消费链路 stores/ask.submitQuestion；
+ * 区块：⓪ 菜谱搜索结果条（DEF-02：消费 ?q=，先调 GET /v1/recipes?q= 菜谱搜索，
+ *          命中 ≥1 条 → 顶部呈现「找到 N 道含「q」的菜谱」结果条（可点进详情、
+ *          可关闭、可展开全部），同时保留食材页正常功能；
+ *          未命中菜谱 → 回退食材名定位（关键词过滤到该食材，若命中）；
+ *          双双未命中 → 既有「试试更宽泛的关键词」空态，不新增空态；
+ *          q 消费完成后 router.replace 清理 query，避免刷新重复触发）
+ *       ① 顶部搜索框（食材过滤 + 回车走统一 ask 消费链路 stores/ask.submitQuestion；
  *          空输入单条提示、提问与过滤 if/else 互斥，杜绝多路 toast 同时触发；
  *          chat 回答就地展示 AskChatCard；recipe_search 落推荐态跳 W-02；blocked 跳 W-05）
  *       ② 分类栏（全部 + 10 类，映射 store categories）
@@ -13,10 +19,12 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Check } from '@element-plus/icons-vue'
-import type { Ingredient } from '@/api/types'
+import type { Ingredient, RecipeSearchItem } from '@/api/types'
+import { getRecipes } from '@/api/endpoints'
 import { useIngredientsStore } from '@/stores/ingredients'
 import { useAskStore } from '@/stores/ask'
 import { useConfigStore } from '@/stores/config'
+import { classifyQueryResult } from '@/utils/searchRouting'
 import { toastInfo, toastWarning } from '@/utils/toast'
 import AskChatCard from '@/components/AskChatCard.vue'
 import DisclaimerBar from '@/components/DisclaimerBar.vue'
@@ -43,6 +51,17 @@ let searchTimer: ReturnType<typeof setTimeout> | null = null
 
 /** 提问意图判定正则：含疑问词/问号等视为「提问」而非纯过滤 */
 const QUESTION_PATTERN = /[?？]|吗|呢|怎么|怎样|如何|什么|哪些|多少|能不能|可不可以|行不行|可以|推荐/
+
+/** 菜谱结果条展示关键词（qBarKeyword = 消费的 ?q=） */
+const qBarKeyword = ref('')
+/** 菜谱结果条条目（默认首页搜索 3 条，展开后拉更多） */
+const recipeHits = ref<RecipeSearchItem[]>([])
+/** 菜谱搜索总命中数 */
+const recipeTotal = ref(0)
+/** 是否展示菜谱结果条（用户手动关闭后不再出现） */
+const showRecipeBar = ref(false)
+/** 结果条是否已展开（展开后拉取 page_size=20） */
+const barExpanded = ref(false)
 
 /** 底部已选摘要：最多展示前 6 个食材名 */
 const selectedPreview = computed(() => {
@@ -143,6 +162,72 @@ function goRecommend(): void {
   void router.push('/recommend')
 }
 
+/**
+ * 消费路由 ?q= 查询词（DEF-02：首页短菜名/降级搜索跳转带来的查询词不再丢失）。
+ * 流程：先保证食材库就绪 → 调 GET /v1/recipes?q= 菜谱搜索 → 按 classifyQueryResult 分类：
+ * - 命中菜谱 → 顶部呈现结果条（最多 3 条 + 展开全部），关键词置空保留食材页全量功能；
+ * - 未命中菜谱但命中食材 → 回退食材名定位（关键词过滤到该食材，防抖远程搜索照常）；
+ * - 双双未命中 → 关键词照常回填，走既有「试试更宽泛的关键词」空态（不新增空态）。
+ * 处理完成后 router.replace 清理 q（不重挂组件），避免刷新重复触发搜索。
+ * @param q 查询词（空串时仅加载食材库，不做搜索）
+ * @returns 无
+ */
+async function consumeQueryQ(q: string): Promise<void> {
+  // 食材库先就绪（回退定位判定依赖全量列表）
+  if (!ingredientsStore.list.length) {
+    await ingredientsStore.loadIngredients()
+  }
+  if (!q) return
+  let hits: RecipeSearchItem[] = []
+  let total = 0
+  try {
+    const res = await getRecipes({ q, page: 1, page_size: 3 })
+    hits = res.items ?? []
+    total = res.total ?? hits.length
+  } catch {
+    // 菜谱搜索失败：按未命中处理回退食材定位，不阻塞食材页主功能
+    hits = []
+  }
+  const kind = classifyQueryResult(hits, q, ingredientsStore.list)
+  if (kind === 'recipes') {
+    // 命中菜谱：顶部结果条；关键词保持为空，食材网格保留全量可选
+    qBarKeyword.value = q
+    recipeHits.value = hits
+    recipeTotal.value = total
+    barExpanded.value = false
+    showRecipeBar.value = true
+  } else {
+    // 回退食材名定位（ingredient 过滤命中 / none 走既有空态）
+    keyword.value = q
+  }
+  // q 已消费：清理 query，防止刷新后重复触发搜索
+  const clearedQuery = { ...route.query }
+  delete clearedQuery.q
+  void router.replace({ query: clearedQuery })
+}
+
+/**
+ * 展开菜谱结果条：拉取更多命中条目（page_size=20，失败保持当前 3 条）。
+ * @returns 无
+ */
+async function expandRecipeHits(): Promise<void> {
+  barExpanded.value = true
+  try {
+    const res = await getRecipes({ q: qBarKeyword.value, page: 1, page_size: 20 })
+    recipeHits.value = res.items ?? []
+  } catch {
+    // 展开失败保持当前条目，不打断浏览
+  }
+}
+
+/**
+ * 关闭菜谱结果条（用户手动交互后可关闭，本次停留不再出现）。
+ * @returns 无
+ */
+function closeRecipeBar(): void {
+  showRecipeBar.value = false
+}
+
 // 关键词变化：400ms 防抖后走后端搜索（含别名匹配）；清空则按当前分类重拉
 watch(keyword, (val) => {
   if (searchTimer) clearTimeout(searchTimer)
@@ -159,11 +244,10 @@ watch(activeCategory, () => {
   reloadList()
 })
 
-// 挂载：回填首页降级搜索词（?q=，触发本地过滤与防抖远程搜索），并拉取全量食材
+// 挂载：消费首页跳转带来的 ?q=（先搜菜谱、再回退食材定位），并拉取全量食材
 onMounted(() => {
   const q = typeof route.query.q === 'string' ? route.query.q.trim() : ''
-  if (q) keyword.value = q
-  void ingredientsStore.loadIngredients()
+  void consumeQueryQ(q)
 })
 </script>
 
@@ -180,6 +264,34 @@ onMounted(() => {
       placeholder="搜索食材，或直接输入问题回车"
       @keyup.enter="onSearchEnter"
     />
+
+    <!-- ⓪ 菜谱搜索结果条（DEF-02）：?q= 命中菜谱时顶部呈现，可点进详情、可关闭、可展开 -->
+    <div v-if="showRecipeBar" class="q-recipe-bar">
+      <div class="q-bar-head">
+        <span class="q-bar-title">找到 {{ recipeTotal }} 道含「{{ qBarKeyword }}」的菜谱</span>
+        <el-button link size="small" @click="closeRecipeBar">关闭</el-button>
+      </div>
+      <div class="q-bar-list">
+        <button
+          v-for="r in recipeHits"
+          :key="r.id"
+          type="button"
+          class="q-bar-item"
+          @click="router.push(`/recipe/${r.id}`)"
+        >
+          {{ r.title }}
+        </button>
+        <el-button
+          v-if="!barExpanded && recipeTotal > recipeHits.length"
+          link
+          size="small"
+          type="primary"
+          @click="expandRecipeHits"
+        >
+          查看全部 {{ recipeTotal }} 道
+        </el-button>
+      </div>
+    </div>
 
     <!-- chat 就地展示卡：受限问答结果（含问句回显与免责小字），无内容不渲染 -->
     <AskChatCard class="select-chat" />
@@ -279,6 +391,52 @@ onMounted(() => {
 .select-chat {
   max-width: 560px;
   margin-bottom: 14px;
+}
+
+/* ── 菜谱搜索结果条（DEF-02）── */
+.q-recipe-bar {
+  max-width: 560px;
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--el-color-primary-light-7);
+  border-radius: 10px;
+  background: var(--el-color-primary-light-9);
+}
+
+.q-bar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.q-bar-title {
+  font-size: var(--font-sm);
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.q-bar-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.q-bar-item {
+  padding: 4px 12px;
+  border: 1px solid var(--el-color-primary-light-5);
+  border-radius: 999px;
+  background: var(--card-bg);
+  color: var(--el-color-primary);
+  font-size: var(--font-sm);
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.q-bar-item:hover {
+  background: var(--el-color-primary-light-8);
 }
 
 .category-bar {

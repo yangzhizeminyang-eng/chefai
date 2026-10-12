@@ -78,6 +78,8 @@ class HistoryItemOut(BaseModel):
         recipe_name：菜名。
         finished_at：完成时间（ISO 8601）。
         rating：完成时评分（未评分 None）。
+        duration_minutes：本次烹饪耗时分钟数（completed_at - created_at 向上取整；
+            无完成时间的旧数据为 None）。
     """
 
     session_id: int
@@ -85,6 +87,7 @@ class HistoryItemOut(BaseModel):
     recipe_name: str
     finished_at: str | None = None
     rating: int | None = None
+    duration_minutes: int | None = None
 
 
 class HistoryOut(BaseModel):

@@ -144,20 +144,43 @@ Windows 下也可以直接双击 `scripts\start.bat` 一键启动；启动失败
 
 当前指标：`app/safety` 全模块 99%~100%、`app/ability/ranking.py` 98%、`migrations.py` 84%（数字可复现；单文件 `app/core/migrations` 的 `--cov` 路径在 pytest-cov 7.1 下不生效，如需单独查看请用 `--cov=app/core`）。
 
-## 9. 已知限制
+## 9. 接口变更（2026-10-10 缺陷修复批次）
+
+> 本轮缺陷修复（Wave1）共 8 条变更，逐项记录如下。口径核对以 `http://127.0.0.1:8000/docs`（OpenAPI）为准；测试覆盖见 `tests/test_innovation_degrade.py`、`tests/test_api_recipes_search.py`、`tests/test_ask_ingredient_merge.py`、`tests/test_cooking_help_topics.py`、`tests/test_performance.py`。
+
+### 9.1 变更明细
+
+| # | 端点 / 位置 | 变更内容 |
+| --- | --- | --- |
+| 1 | `POST /v1/innovation/generate` | LLM 表达阶段新增 **25s 硬超时**（`LLM_HARD_TIMEOUT_SECONDS`，前端本接口专用 60s 超时，后端必须在其内返回）；超时/异常/量化违例时降级为「规则模板表达」（配比模板量化用量 + 技法白名单 + 搭配依据拼装），响应结构完整不变。生成来源以 **`basis.generated_by`** 标注：LLM 成功 = `"llm"`、降级 = `"template"`（枚举二值）；`is_ai_innovated=true` 与 `disclaimer` 恒带不变。改动：`graph/subgraphs/innovation.py` + `api/v1/innovation.py` |
+| 2 | `GET /v1/recipes?q=&page=&page_size=` | **新增菜谱搜索端点**：`q` 模糊匹配菜名 ILIKE 或「菜谱引用了名称/别名命中 q 的食材」（仅 `published`）；菜名直接命中排在食材命中前。响应 `{items:[{id,title,difficulty,time_minutes,calories_kcal}], total, page, page_size}`；`page≥1`（默认 1）、`page_size 1~50`（默认 10），非法 422 统一错误体；查询类接口豁免幂等。改动：`api/v1/recipes.py` |
+| 3 | `POST /v1/ask` | **recommend 意图检索增强**：从问句中按最长匹配提取命中食材名（含别名归一，`ability/retrieval.extract_ingredient_names_from_text`）并入推荐检索入参，提升「土豆和牛肉能一起做什么」类问法的召回覆盖。响应契约不变（`intent=recommend` 仍只回 `trace_id`，前端再调 `/v1/recommend`）。改动：`ability/retrieval.py` + `graph/subgraphs/recommend.py` |
+| 4 | `POST /v1/cooking/sessions/{id}/help` | 新增 **10 类高频求助关键词库**（`_match_help_topic`）优先命中：返回针对性常识要点（≤3 条）；**未命中回退当前步骤结构化要点，首条带「以下是本步要点：」前缀**明示回退口径。全程不调 LLM；拦截（input/output 闸门）与限次（每会话 3 次，429）语义不变。改动：`api/v1/cooking.py` |
+| 5 | `POST /v1/cooking/sessions/{id}/finish` | 新增 **completed 会话评分补录**语义：会话已完成且本次请求显式携带 `rating` → 不再 409，补写 `recipe_feedback(feedback_type='cooked', rating, tags, session_id)`；每会话至多一条 cooked 评价，**重复补录 → 409「该次烹饪已完成评价」**。无评分负载（`rating=null`）的重复 finish 仍 409，幂等语义不变。补录响应 `{session, nutrition: null, meal_record_id: null}`（完成时已落餐次/营养，不重算）。改动：`api/v1/cooking.py` |
+| 6 | `POST /v1/recommend/filtered` | 后端无改动；**前端修复了重放调用**（store `fetchFilteredItems`）。重放契约：请求 `ingredients ≥1` + 可选 `allergen_codes/dietary_restrictions/difficulty_cap/equipment`；响应 `{filtered:[{recipe_id, recipe_name, reason, reasons:[{type, detail}]}], total_filtered}`，`reason` 取 `reasons` 首项 `type`（归因类型：allergen/taboo/difficulty/equipment），候选为空返回空列表 |
+| 7 | `POST /v1/vision/recognize` | **免费识别额度 4→3 次/日**（`api/v1/vision.py FREE_DAILY_LIMIT=3`；会员仍 10 次/日）。响应 `quota.{used, limit, remaining}` 同步口径；额度不足 429（响应体携带 quota）。降级/低置信不扣额度红线不变 |
+| 8 | `POST /v1/recommend`（排序侧） | **缺料上限**（`ability/ranking.py MAX_MISSING_INGREDIENTS=8`）：`missing` 数量 >8 的菜谱在「需要多买几样」档档内截断前整条跳过，不入结果、不占 Top 8 名额；三档结构（`can_cook_now` / `missing_1_2` / `need_more`）与 `rank_reasons` 契约不变 |
+
+### 9.2 向后兼容性说明
+
+- **响应均为超集或新增端点**：#1 `basis.generated_by` 为新增字段、#2 为纯新增端点、#3/#4/#8 仅服务端行为增强（响应结构不变）、#6 后端无改动——旧前端可继续运行。
+- **两处行为变化需前端感知**：#5 finish 从「completed + rating 一律 409」放宽为「补录成功一次、再重复才 409」；#7 免费额度收紧为 3 次/日（前端额度文案已同步）。
+- **无字段删除/改名**，无鉴权口径变化；幂等、风控一票否决、降级（D7）等既有语义全部保持。
+
+## 10. 已知限制
 
 1. **bge-m3 本地向量检索未引入**：保留 `EMBEDDING_MODE` 配置语义与适配器接口（`recipe_embedding` 预留表已建）；数百篇语料规模下「关键词 + 别名 + 覆盖率」混合召回满足阶段一演示，引入 2GB+ 权重与 torch 依赖收益不匹配（05-V1.1 §12.2 将其定义为可切换项）。
 2. **模块 O「AI 菜品创新」不纳入阶段一**：变更单 CR-20261008-01 未签字生效（其 §五约定未生效前不得开发）；阶段一仅落地第 5 个远程开关 `switch.innovation` 的配置，不实现 subgraph / 新表 / 页面。
 3. **mypy 未引入**：存量代码类型注解不全，全仓改造范围不可控；静态检查暂由 ruff（E/F/W/I/B/UP）承担，mypy 列为后续改进项。
 4. **`app/ability/retrieval.py` 覆盖率 55%**：文本召回分支（ILIKE/别名匹配）暂无独立单测，整体由 API 集成测试间接覆盖；不在质量门硬指标内（硬指标为 `app/safety` 全模块与 `ranking.py`），列为后续补测项。
 
-## 10. 15 模块接口清单摘要
+## 11. 15 模块接口清单摘要
 
 > 完整契约见 `http://127.0.0.1:8000/docs`（OpenAPI）。鉴权两种口径：
 > - **用户侧 `/v1/**`**：`X-Anonymous-Id` 请求头携带匿名会话 ID（`/v1/auth/anonymous` 签发）；缺失时多数端点自动 upsert 匿名用户兜底（演示友好，正式接入应显式携带）。
 > - **后台 `/admin/v1/**`**：`POST /admin/v1/auth/login`（username/password）换 JWT，后续请求 `Authorization: Bearer <access_token>`；内置账号 `admin`，密码取环境变量 `ADMIN_PASSWORD`（缺省 `Admin@123456`，**演示密钥，上线前务必改密**）；JWT 密钥取 `ADMIN_JWT_SECRET`（缺省仅限本地开发）。
 
-### 10.1 用户侧 /v1（X-Anonymous-Id）
+### 11.1 用户侧 /v1（X-Anonymous-Id）
 
 | Tag | 方法 路径 | 说明 |
 | --- | --- | --- |
@@ -218,7 +241,7 @@ Windows 下也可以直接双击 `scripts\start.bat` 一键启动；启动失败
 | 追溯 | GET `/v1/trace/{request_id}` | Agent 调度 trace 详情（W-06 面板） |
 | 配置 | GET `/v1/config/switches` | 远程开关（5 模块布尔值） |
 
-### 10.2 后台 /admin/v1（JWT Bearer）
+### 11.2 后台 /admin/v1（JWT Bearer）
 
 | Tag | 方法 路径 | 说明 |
 | --- | --- | --- |
@@ -258,7 +281,7 @@ Windows 下也可以直接双击 `scripts\start.bat` 一键启动；启动失败
 | 创新规则库 | POST `/admin/v1/innovation/recipes/{id}/inspect` | 创新菜巡检（只报告不升格） |
 | 创新规则库 | POST `/admin/v1/innovation/recipes/{id}/remove` | 创新菜下架（→removed） |
 
-## 11. Docker Compose 部署（容器栈）
+## 12. Docker Compose 部署（容器栈）
 
 文件：根目录 `docker-compose.yml`（db + api + web + redis）+ `backend/Dockerfile` + 根级 `Dockerfile.web`（单镜像 nginx 托管两套前端）+ `nginx/nginx.conf`。
 

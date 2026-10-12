@@ -3,10 +3,20 @@
  * - 请求拦截器：为 POST 请求自动生成 request_id（req_ + 时间戳 + 随机短串，已带则不覆盖），
  *   并统一携带 X-Anonymous-Id（匿名会话）与 X-Request-Id（链路追踪）请求头；
  * - 响应拦截器：将 HTTP/网络错误归一为 { code, message } 结构抛出，
- *   超时（>12s）与网络不可用给出固定中文提示。
+ *   超时与网络不可用给出固定中文提示。
+ * - 按请求超时覆盖（P1 DEF-01）：本模块导出的 apiClient 即 axios 实例，
+ *   请求方法天然透传第三参 config（如 apiClient.post(url, data, { timeout })），
+ *   per-request timeout 会覆盖实例默认超时；未覆盖时走 DEFAULT_TIMEOUT_MS（12s）。
+ *   长耗时接口（如创新生成 LLM 表达 10–30s）应显式传更大的 timeout。
  */
 import axios, { type AxiosError, type AxiosInstance, type InternalAxiosRequestConfig } from 'axios'
 import type { ApiError } from './types'
+
+/** 全局默认超时（毫秒）：普通请求口径不变 */
+export const DEFAULT_TIMEOUT_MS = 12000
+
+/** 创新生成专用超时（毫秒）：后端 LLM 表达带 25s 硬超时 + 模板降级兜底，60s 内必回响应 */
+export const INNOVATION_GENERATE_TIMEOUT_MS = 60000
 
 /** 携带自定义头的请求配置类型（扩展 InternalAxiosRequestConfig） */
 interface RequestConfigWithHeaders extends InternalAxiosRequestConfig {
@@ -35,8 +45,9 @@ function createApiClient(): AxiosInstance {
   const client = axios.create({
     // 统一走相对路径，由 vite 代理转发到 http://localhost:8000
     baseURL: '/',
-    // 超时 12s：超时归一为「加载超时，请重试」
-    timeout: 12000,
+    // 默认超时 12s：可被单个请求的 config.timeout 覆盖（见文件头「按请求超时覆盖」）；
+    // 超时统一归一为「加载超时，请重试」
+    timeout: DEFAULT_TIMEOUT_MS,
   })
 
   // ── 请求拦截器：request_id + 匿名头 ──

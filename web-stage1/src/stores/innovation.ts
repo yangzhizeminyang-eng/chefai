@@ -3,7 +3,8 @@
  * - precheck → generate 主链路：预检命中拦截时暂存 blocked 信息（页面展示拦截话术卡）；
  * - current：当前生成的创新菜谱实体（含创新依据 / 营养 / 强制声明）；
  * - myRecipes：已采纳的「我的创新菜」（本次会话内存态，进入页面时可重拉）；
- * - generating：生成中标记（页面据此展示「正在基于食材性质与搭配规则创新…」动画）。
+ * - generating：生成中标记（页面据此展示「正在基于食材性质与搭配规则创新…通常
+ *   10–30 秒，最长约 1 分钟」动画；generate 请求走 60s 专用超时）。
  */
 import { defineStore } from 'pinia'
 import {

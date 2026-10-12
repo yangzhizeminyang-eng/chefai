@@ -160,6 +160,10 @@ def post_recommend(
     说明：
         编排执行由 app.graph.runner.run_recommend 完成（双侧闸门 + 一票否决 + trace 落库）；
         本端点负责幂等缓存与响应展示适配。
+        排序侧契约（ability/ranking.py）：三档 match_level（can_cook_now /
+        missing_1_2 / need_more）取 Top 8；DEF-12 缺料上限——missing 数量
+        >MAX_MISSING_INGREDIENTS(8) 的菜谱在「需要多买几样」档档内截断前整条
+        跳过，不入结果、不占 Top 8 名额；rank_reasons 逐条可解释。
 
     参数：
         payload：推荐请求体（ingredients ≥1 由 Pydantic 校验）。

@@ -127,6 +127,19 @@ function formatTime(iso: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+/**
+ * 历史条目「评分 · 耗时」摘要文案（DEF-08：菜名+日期下方展示）。
+ * @param item 历史条目（rating/duration_minutes 均可缺省）
+ * @returns 摘要文案：评分缺省显示「未评分」，耗时空缺不拼接
+ *   （如「★5 · 用时 25 分钟」「未评分」「★4 · 用时 12 分钟」）
+ */
+function historyMetaText(item: { rating?: number | null; duration_minutes?: number | null }): string {
+  const ratingText = item.rating != null ? `★${item.rating}` : '未评分'
+  return item.duration_minutes != null
+    ? `${ratingText} · 用时 ${item.duration_minutes} 分钟`
+    : ratingText
+}
+
 /* ── 营养汇总 ── */
 
 /** 汇总数据 */
@@ -230,7 +243,7 @@ async function onManualSubmit(): Promise<void> {
 /** 设置本地缓冲 */
 const settingsForm = ref({
   font_size: 'normal' as 'normal' | 'large' | 'xlarge',
-  unit: 'metric' as 'metric' | 'imperial',
+  unit: 'gram' as 'gram' | 'milliliter' | 'spoon',
   voice_enabled: false,
   reminder_enabled: false,
 })
@@ -428,15 +441,10 @@ onMounted(() => {
           <div class="hist-info">
             <span class="hist-name">{{ h.recipe_name }}</span>
             <span class="hist-time">{{ formatTime(h.finished_at) }}</span>
+            <!-- 评分 · 耗时摘要（DEF-08）：rating 空缺显示「未评分」，duration 空缺不显示 -->
+            <span class="hist-meta">{{ historyMetaText(h) }}</span>
           </div>
           <div class="hist-actions">
-            <el-rate
-              v-if="h.rating"
-              :model-value="h.rating"
-              disabled
-              size="small"
-              class="hist-rate"
-            />
             <el-button size="small" type="primary" plain @click="onCookAgain(h.recipe_id)">
               再做一次
             </el-button>
@@ -576,9 +584,11 @@ onMounted(() => {
 
       <div class="setting-row">
         <span class="setting-label">计量单位</span>
+        <!-- 计量单位三选（PRD §5.4：克 / 毫升 / 勺；历史 metric/imperial 由 store 读时迁移） -->
         <el-radio-group v-model="settingsForm.unit">
-          <el-radio-button value="metric">公制（g / ml）</el-radio-button>
-          <el-radio-button value="imperial">英制（oz / lb）</el-radio-button>
+          <el-radio-button value="gram">克（g）</el-radio-button>
+          <el-radio-button value="milliliter">毫升（ml）</el-radio-button>
+          <el-radio-button value="spoon">勺（参照 1 勺 ≈ 15ml）</el-radio-button>
         </el-radio-group>
       </div>
 
@@ -764,16 +774,18 @@ onMounted(() => {
   color: var(--color-info);
 }
 
+/* 历史条目「评分 · 耗时」摘要行（DEF-08） */
+.hist-meta {
+  font-size: var(--font-sm);
+  color: var(--el-color-primary);
+}
+
 .fav-actions,
 .hist-actions {
   flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.hist-rate {
-  margin-right: 4px;
 }
 
 /* ── 拿手菜 ── */

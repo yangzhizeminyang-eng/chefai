@@ -198,6 +198,32 @@ export interface RecipeDetail {
   source_label: string
 }
 
+/** 菜谱搜索结果条目（GET /v1/recipes?q= 列表项） */
+export interface RecipeSearchItem {
+  /** 菜谱 ID */
+  id: number
+  /** 菜名 */
+  title: string
+  /** 难度三档文案（easy / medium / hard） */
+  difficulty: 'easy' | 'medium' | 'hard'
+  /** 总耗时（分钟，可 null 表示未标注） */
+  time_minutes: number | null
+  /** 热量（kcal，可 null 表示未纳入统计） */
+  calories_kcal: number | null
+}
+
+/** 菜谱搜索响应体（GET /v1/recipes） */
+export interface RecipeSearchResponse {
+  /** 当前页菜谱条目 */
+  items: RecipeSearchItem[]
+  /** 总命中数 */
+  total: number
+  /** 当前页码 */
+  page: number
+  /** 每页条数 */
+  page_size: number
+}
+
 /** 营养估算结果（GET /v1/recipes/{id}/nutrition） */
 export interface NutritionResult {
   /** 每份热量（kcal，唯一口径；DB calories_kcal 优先，缺失时回退估算） */
@@ -373,26 +399,61 @@ export interface ApiError {
   detail?: unknown
 }
 
-/** 被过滤菜谱条目（W-02「显示被我过滤掉的菜」开关打开时，后端可选返回的清单项） */
-export interface FilteredRecipeItem {
-  /** 菜谱 ID */
-  recipe_id: number
-  /** 菜名 */
-  title: string
-  /** 过滤原因列表（如「含花生：与过敏原冲突」） */
-  filter_reasons: string[]
-  /** 原三档归属（可选，供展示参考） */
-  match_level?: RecommendResultItem['match_level']
+/** 单条过滤原因（POST /v1/recommend/filtered 响应 reasons 元素直译：{type, detail}） */
+export interface FilteredReason {
+  /**
+   * 原因类型码：allergen 致敏原 / taboo 忌口 / difficulty 难度超限 / equipment 缺少设备
+   */
+  type: string
+  /** 中文明细说明（后端直出文案，如「命中过敏原：花生」「缺少设备：燃气灶」） */
+  detail: string
 }
 
 /**
- * 推荐响应扩展视图（仅追加，不改原契约）：RecommendResponse 加上可选的被过滤清单。
- * 后端在 options.show_filtered=true 时可能返回 filtered 列表（清单模式），
- * 也可能只返回 filtered_by 计数（计数模式），W-02 两种都支持。
+ * 被过滤菜谱条目（POST /v1/recommend/filtered 响应 filtered 元素）。
+ * 后端字段名为 recipe_name，前端映射为 title（与推荐结果条目字段名对齐）。
  */
-export type RecommendResponseWithFiltered = RecommendResponse & {
-  /** 被过滤菜谱清单（清单模式，可选） */
-  filtered?: FilteredRecipeItem[]
+export interface FilteredRecipeItem {
+  /** 菜谱 ID */
+  recipe_id: number
+  /** 菜名（后端 recipe_name 映射） */
+  title: string
+  /** 全部过滤原因列表（{type, detail} 结构，后端直译） */
+  filter_reasons: FilteredReason[]
+}
+
+/** 布尔硬过滤重放请求体（POST /v1/recommend/filtered，口径对齐主推荐实际生效的过滤条件） */
+export interface FilteredRecommendRequestBody {
+  /** 已选食材列表（形态同 POST /v1/recommend 的 ingredients） */
+  ingredients: RecommendRequest['ingredients']
+  /** 过敏原 code 集合（家庭成员并集，来自家庭档案；缺省空） */
+  allergen_codes?: string[]
+  /** 忌口标记集合（家庭成员并集，来自家庭档案；缺省空） */
+  dietary_restrictions?: string[]
+  /** 难度上限 1~5（可选；主推荐管线未启用难度上限时不传） */
+  difficulty_cap?: number
+  /** 用户已有设备清单（来自厨艺与设备档案；缺省空 = 不启用设备过滤） */
+  equipment?: string[]
+}
+
+/** 布尔硬过滤重放响应单个条目（后端直译：recipe_name / reason / reasons 结构） */
+export interface FilteredRecommendItemRaw {
+  /** 菜谱 ID */
+  recipe_id: number
+  /** 菜名（后端字段名，前端映射为 FilteredRecipeItem.title） */
+  recipe_name: string
+  /** 主过滤原因类型码（兼容保留；多原因并存时按优先级取首项） */
+  reason: string
+  /** 全部过滤原因列表（{type, detail} 结构） */
+  reasons: FilteredReason[]
+}
+
+/** 布尔硬过滤重放响应体（POST /v1/recommend/filtered） */
+export interface FilteredRecommendResponse {
+  /** 被过滤菜谱列表（后端直译结构） */
+  filtered: FilteredRecommendItemRaw[]
+  /** 被过滤菜谱总数 */
+  total_filtered: number
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -758,6 +819,8 @@ export interface HistoryItem {
   finished_at: string
   /** 用户评分 1~5（可选） */
   rating?: number | null
+  /** 本次烹饪耗时分钟数（完成-创建向上取整；无完成时间的旧数据为 null） */
+  duration_minutes?: number | null
 }
 
 /** 烹饪历史响应体 */
@@ -788,8 +851,8 @@ export interface SignatureDishesResponse {
 export interface SettingsData {
   /** 字号档位：normal 标准 / large 大 / xlarge 特大 */
   font_size: 'normal' | 'large' | 'xlarge'
-  /** 单位制：metric 公制 / imperial 英制 */
-  unit: 'metric' | 'imperial'
+  /** 计量单位三选（PRD §5.4）：gram 克 / milliliter 毫升 / spoon 勺（历史值 metric/imperial 由 store 读时迁移） */
+  unit: 'gram' | 'milliliter' | 'spoon'
   /** 语音播报开关 */
   voice_enabled: boolean
   /** 做菜提醒开关 */
@@ -976,6 +1039,8 @@ export interface InnovationRecipe {
     pairings: InnovationPairing[]
     /** 食性标注列表 */
     properties: InnovationProperty[]
+    /** 生成来源（P1 DEF-01）：llm = LLM 表达成功 / template = LLM 超时或失败降级规则模板 */
+    generated_by?: 'llm' | 'template'
   }
   /** 营养估算（缺失项为 null，excluded 列出未纳入食材） */
   nutrition: {

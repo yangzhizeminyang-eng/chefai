@@ -9,6 +9,9 @@
  *          L4-1 去重后不再单独渲染免责条，估算口径说明由后端 estimate_note 承担）
  *       ⑪ 来源标注 ⑫ 底部固定条（免责 + 开始做菜，冲突时二次确认；
  *          L4-1 去重：免责声明全页仅此 1 处渲染）。
+ * DEF-07 修复：完成页「查看营养」跳转携带 query（expand_nutrition=1 + servings），
+ *       详情加载成功后应用入口 query：营养区自动展开、份数按 query 初始化并走
+ *       既有缩放管线刷新用量/营养，修复「查看营养丢份数」。
  * 三态：加载 = 详情骨架屏；异常 = el-alert + 重试（404 → 「菜谱不存在」）；空态仅 404 场景。
  */
 import { computed, ref, watch } from 'vue'
@@ -17,7 +20,10 @@ import { ElMessage } from 'element-plus'
 import { getNutrition, getRecipe } from '@/api/endpoints'
 import type { ApiError, NutritionResult, RecipeDetail, RecipeIngredientItem } from '@/api/types'
 import { useCookingStore } from '@/stores/cooking'
+import { useMeStore } from '@/stores/me'
 import { scaleStepHint } from '@/utils/scaling'
+import { formatAmountText } from '@/utils/unit'
+import { parseNutritionQuery } from '@/utils/nutritionQuery'
 import AllergenAlertBar from '@/components/AllergenAlertBar.vue'
 import DisclaimerBar from '@/components/DisclaimerBar.vue'
 
@@ -26,6 +32,23 @@ const route = useRoute()
 const router = useRouter()
 /** 烹饪 store：创建会话并快照步骤（W-04 数据源） */
 const cookingStore = useCookingStore()
+/** 个人中心 store：读取用户计量单位设置（DEF-09 单位三选） */
+const meStore = useMeStore()
+
+/**
+ * 计量单位展示模式（DEF-09：PRD §5.4 克/毫升/勺三选）。
+ * @returns 用户设置的展示模式（未加载/为空时默认 gram）
+ */
+const unitMode = computed(() => meStore.settings?.unit ?? 'gram')
+
+/**
+ * 食材表用量展示（DEF-09：按用户单位模式格式化用量字符串）。
+ * @param amount 后端拼好的用量字符串（如「200g」「2 勺」）
+ * @returns 格式化后的用量文案（spoon 模式下 ml 类换算为勺/茶匙）
+ */
+function amountDisplay(amount: string): string {
+  return formatAmountText(amount, unitMode.value)
+}
 
 /** 菜谱详情 */
 const detail = ref<RecipeDetail | null>(null)
@@ -149,6 +172,8 @@ async function loadDetail(): Promise<void> {
     // 同步菜谱基准份数（不触发缩放重算）；该值同时作为步骤提示缩放的分母
     servings.value = detail.value.servings || 1
     baseServings.value = detail.value.servings || 1
+    // 应用完成页「查看营养」携带的入口 query（DEF-07：自动展开营养 + 带份数初始化）
+    await applyNutritionEntryQuery()
   } catch (e) {
     error.value = e as ApiError
     detail.value = null
@@ -160,7 +185,7 @@ async function loadDetail(): Promise<void> {
 /**
  * 份数变更：并行重拉详情（用量重算）与营养估算（营养同步重算）。
  * 快速变更时以序号守卫，丢弃过期响应。
- * @param val 新份数（1~8）
+ * @param val 新份数（1~8；DEF-07 query 入口允许 1~20，后端缩放参数上限 50 兜底）
  * @returns 无
  */
 async function onServingsChange(val: number | undefined): Promise<void> {
@@ -201,17 +226,43 @@ async function onServingsChange(val: number | undefined): Promise<void> {
  */
 async function toggleNutrition(): Promise<void> {
   showNutrition.value = !showNutrition.value
-  if (showNutrition.value && !nutrition.value && detail.value) {
-    nutritionLoading.value = true
-    nutritionError.value = null
-    try {
-      nutrition.value = await getNutrition(detail.value.id, servings.value)
-    } catch (e) {
-      nutritionError.value = e as ApiError
-    } finally {
-      nutritionLoading.value = false
-    }
+  if (showNutrition.value) await loadNutrition()
+}
+
+/**
+ * 懒加载营养估算（DEF-07 抽取：展开入口与 query 自动展开共用；已加载/加载中跳过）。
+ * @returns 无
+ */
+async function loadNutrition(): Promise<void> {
+  if (!detail.value || nutrition.value || nutritionLoading.value) return
+  nutritionLoading.value = true
+  nutritionError.value = null
+  try {
+    nutrition.value = await getNutrition(detail.value.id, servings.value)
+  } catch (e) {
+    nutritionError.value = e as ApiError
+  } finally {
+    nutritionLoading.value = false
   }
+}
+
+/**
+ * 应用完成页「查看营养」携带的入口 query（DEF-07 修复丢份数）。
+ * - expand_nutrition=1 → 营养估算区自动展开（showNutrition 置 true）；
+ * - servings 合法（1~20 整数）→ 初始化份数并走既有缩放管线（onServingsChange
+ *   重拉详情与营养，用量/营养按份数同步刷新）；份数与当前基准一致时跳过重拉；
+ * - 仅展开、未触发缩放管线时懒加载营养（此时按当前份数取数）。
+ * 无有效 query（普通进入详情页）时为空操作。
+ * @returns 无
+ */
+async function applyNutritionEntryQuery(): Promise<void> {
+  const parsed = parseNutritionQuery(route.query)
+  if (!parsed.expand && parsed.servings == null) return
+  if (parsed.expand) showNutrition.value = true
+  if (parsed.servings != null && parsed.servings !== servings.value) {
+    await onServingsChange(parsed.servings)
+  }
+  if (parsed.expand && !nutrition.value) await loadNutrition()
 }
 
 /**
@@ -353,7 +404,9 @@ watch(
           :empty-text="`暂无${section.title}`"
         >
           <el-table-column prop="name" label="名称" min-width="120" />
-          <el-table-column prop="amount" label="用量" min-width="120" />
+          <el-table-column label="用量" min-width="120">
+            <template #default="{ row }">{{ amountDisplay(row.amount) }}</template>
+          </el-table-column>
           <el-table-column label="致敏原标注" min-width="180">
             <template #default="{ row }">
               <template v-if="row.allergens && row.allergens.length > 0">

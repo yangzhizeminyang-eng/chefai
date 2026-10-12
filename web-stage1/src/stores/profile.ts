@@ -19,6 +19,20 @@ import {
   putSkillProfile,
 } from '@/api/endpoints'
 import type { ApiError, DietGoal, FamilyMember, FamilyProfile, SkillProfile } from '@/api/types'
+import { useSessionStore } from './session'
+
+/**
+ * 确保匿名会话 ID 就绪（函数）。
+ * 背景（T8 复测发现）：直接深链进入 /profile 建档时，若 anonymous_id 尚未懒获取
+ * （localStorage 为空），api 拦截器不带 X-Anonymous-Id，后端会为该请求临时新建
+ * 匿名用户 —— 过敏原档案被挂到「孤儿用户」，后续推荐用另一匿名 ID 检索时查不到
+ * 档案，导致过敏原布尔硬过滤失效（RL-6 回归风险）。
+ * 因此档案的全部读写操作前必须先 ensureAnonymousId。
+ * @returns 匿名 ID（后端不可用时为本地兜底 ID，流程不阻塞）
+ */
+async function ensureAnonReady(): Promise<string> {
+  return useSessionStore().ensureAnonymousId()
+}
 
 export const useProfileStore = defineStore('profile', {
   state: () => ({
@@ -43,6 +57,8 @@ export const useProfileStore = defineStore('profile', {
      * @returns 无
      */
     async loadAll(): Promise<void> {
+      // 匿名 ID 就绪先行：避免读侧请求为空身份（GET family 无家庭会自动建档，防孤儿用户）
+      await ensureAnonReady()
       this.loading = true
       this.error = null
       const results = await Promise.allSettled([
@@ -67,6 +83,8 @@ export const useProfileStore = defineStore('profile', {
      * @returns 创建后的成员（含 id）
      */
     async addMember(member: Omit<FamilyMember, 'id'>): Promise<FamilyMember> {
+      // 匿名 ID 就绪先行（RL-6：过敏原必须挂在当前会话用户下，硬过滤才能立即生效）
+      await ensureAnonReady()
       this.saving = true
       try {
         const created = await postFamilyMember(member)
@@ -85,6 +103,8 @@ export const useProfileStore = defineStore('profile', {
      * @returns 更新后的成员
      */
     async updateMember(member: FamilyMember): Promise<FamilyMember> {
+      // 匿名 ID 就绪先行（同 addMember，防孤儿用户）
+      await ensureAnonReady()
       this.saving = true
       try {
         const updated = await putFamilyMember(member.id, member)
@@ -106,6 +126,8 @@ export const useProfileStore = defineStore('profile', {
      * @returns 无
      */
     async removeMember(id: number): Promise<void> {
+      // 匿名 ID 就绪先行（同 addMember，防孤儿用户）
+      await ensureAnonReady()
       this.saving = true
       try {
         await deleteFamilyMember(id)
@@ -124,6 +146,8 @@ export const useProfileStore = defineStore('profile', {
      * @returns 保存后的档案
      */
     async saveFamily(name: string, members: FamilyMember[]): Promise<FamilyProfile> {
+      // 匿名 ID 就绪先行（同 addMember，防孤儿用户）
+      await ensureAnonReady()
       this.saving = true
       try {
         const saved = await putFamilyProfile({ name, members })
@@ -140,6 +164,8 @@ export const useProfileStore = defineStore('profile', {
      * @returns 保存后的档案
      */
     async saveSkill(skill: SkillProfile): Promise<SkillProfile> {
+      // 匿名 ID 就绪先行（同 addMember，防孤儿用户）
+      await ensureAnonReady()
       this.saving = true
       try {
         const saved = await putSkillProfile(skill)
@@ -156,6 +182,8 @@ export const useProfileStore = defineStore('profile', {
      * @returns 保存后的目标
      */
     async saveGoal(goal: DietGoal): Promise<DietGoal> {
+      // 匿名 ID 就绪先行（同 addMember，防孤儿用户）
+      await ensureAnonReady()
       this.saving = true
       try {
         const saved = await putDietGoal(goal)

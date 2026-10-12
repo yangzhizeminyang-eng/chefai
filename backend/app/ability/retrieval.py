@@ -30,6 +30,7 @@ from app.ability.embedding import (
     lazy_backfill,
     probe_pgvector,
 )
+from app.ability.ranking import is_valid_ingredient_name
 from app.core.db import engine
 from app.core.logging import get_logger
 from app.models import Ingredient, IngredientAlias, Recipe, RecipeEmbedding, RecipeIngredient
@@ -92,6 +93,100 @@ def match_ingredients_in_text(session: Session, text_value: str) -> tuple[list[i
             matched_ids.append(int(ing_id))
             matched_names.append(alias)
     return matched_ids, matched_names
+
+
+# 问句文本并入食材的默认上限（OBS-03：命中 ≤10 个去重食材名）
+TEXT_MATCH_LIMIT = 10
+
+
+def _match_terms_longest_first(
+    text_value: str, terms: list[tuple[str, str]], limit: int = TEXT_MATCH_LIMIT
+) -> list[str]:
+    """词表最长匹配纯函数（函数，OBS-03 核心）。
+
+    说明：
+        按词长倒序逐一尝试子串匹配，命中区间标记为「已消费」——长词
+        （如「土豆淀粉」）优先于其子串短词（如「土豆」），避免同一文本区间
+        被长短两词重复命中；别名命中归一到主名后按食材名去重。
+        纯函数不依赖数据库，便于单测直接构造词表验证。
+
+    参数：
+        text_value：用户输入文本（调用方保证非空）。
+        terms：(匹配词, 归一食材名) 元组列表（词表）。
+        limit：返回食材名上限（默认 10）。
+
+    返回值：
+        list[str]：去重后的食材名列表（≤limit，按首次命中顺序）。
+
+    异常：
+        无。
+    """
+    matched_names: list[str] = []
+    consumed: list[tuple[int, int]] = []
+    # 词长倒序（同长按归一名稳定排序）：长词优先消费文本区间
+    ordered = sorted(terms, key=lambda pair: (-len(pair[0]), pair[1]))
+    for term, display in ordered:
+        if len(matched_names) >= limit:
+            break
+        if not term or term not in text_value or not display:
+            continue
+        start = text_value.find(term)
+        while start != -1:
+            end = start + len(term)
+            # 该出现位置与已消费区间重叠 → 已被更长词覆盖，尝试下一个出现位置
+            if any(start < c_end and c_start < end for c_start, c_end in consumed):
+                start = text_value.find(term, start + 1)
+                continue
+            consumed.append((start, end))
+            if display not in matched_names:
+                matched_names.append(display)
+            break  # 同一词只消费一处区间（避免重复计入）
+    return matched_names
+
+
+def extract_ingredient_names_from_text(
+    session: Session, text_value: str, limit: int = TEXT_MATCH_LIMIT
+) -> list[str]:
+    """从自然语言问句中提取食材名（最长匹配优先，OBS-03）（函数）。
+
+    说明：
+        与 match_ingredients_in_text 的「全量收集」口径不同，本函数按最长匹配
+        消费文本区间：「土豆淀粉」命中后不再让「土豆」在同一区间重复命中；
+        别名命中归一到主名；结果去重且上限 limit（默认 10），供推荐检索
+        把问句食材并入 ingredients 入参。
+
+    参数：
+        session：数据库会话。
+        text_value：用户自然语言输入。
+        limit：返回食材名上限（默认 10）。
+
+    返回值：
+        list[str]：去重食材名列表（≤limit；查询异常返回空列表并告警）。
+
+    异常：
+        不抛出（数据库异常告警后返回空列表，不阻断推荐链路）。
+    """
+    if not text_value or not text_value.strip():
+        return []
+    try:
+        terms: list[tuple[str, str]] = [
+            (str(name).strip(), str(name).strip())
+            for (name,) in session.execute(select(Ingredient.name)).all()
+            if name and str(name).strip()
+        ]
+        alias_rows = session.execute(
+            select(IngredientAlias.alias, Ingredient.name)
+            .join(Ingredient, Ingredient.id == IngredientAlias.ingredient_id)
+        ).all()
+        for alias, ing_name in alias_rows:
+            alias_text = str(alias or "").strip()
+            if alias_text:
+                display = str(ing_name or "").strip() or alias_text
+                terms.append((alias_text, display))
+        return _match_terms_longest_first(text_value.strip(), terms, limit)
+    except Exception as exc:  # noqa: BLE001 —— 提取失败并入空集，不阻断主链路
+        logger.warning("extract ingredient names from text failed: %s", exc)
+        return []
 
 
 def _vector_search_pgvector(query_vector: list[float], include_private_owner: int | None) -> dict[int, float]:
@@ -333,7 +428,9 @@ def retrieve_candidates(
             for ri, ing_name in items:
                 if ri.amount_type == "seasoning":
                     seasoning_names.append(ing_name)
-                else:
+                elif is_valid_ingredient_name(ing_name):
+                    # DEF-04：无名/纯数字脏名不入主料清单（源头杜绝「缺 1」类脏标签，
+                    # 覆盖率分母随之干净；排序层 missing 生成处另有同口径防御过滤）
                     main_names.append(ing_name)
                 if id_set and ri.ingredient_id in id_set:
                     covered_names.append(ing_name)
@@ -379,7 +476,9 @@ def retrieve_candidates(
 __all__ = [
     "DEFAULT_LIMIT",
     "DEFAULT_TOP_K",
+    "TEXT_MATCH_LIMIT",
     "ensure_embeddings",
+    "extract_ingredient_names_from_text",
     "match_ingredients_in_text",
     "retrieve_candidates",
 ]

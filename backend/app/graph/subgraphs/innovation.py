@@ -18,9 +18,12 @@
       conflict 命中 → 记入依据并要求 generate 避开；recommend 命中 → 正向依据；
       技法建议须在 technique_library 白名单（in_whitelist=true）内才允许进 prompt。
     - innovation_generate：受约束生成——LLM 输出 JSON（技法白名单约束 + 用量
-      100% 量化（禁「适量/少许/若干」）+ 步骤含 duration_sec）；LLM 失败降级
-      本地模板生成器（无 LLM 环境演示可用）；量化校验违例重试一次、再违例用
-      本地模板替换（保证输出 100% 量化）；生成后过 RiskEngine output 闸门；
+      100% 量化（禁「适量/少许/若干」）+ 步骤含 duration_sec）；LLM 表达调用带
+      25s 硬超时（_chat_with_hard_timeout，P1 DEF-01：前端创新生成请求专用超时
+      60s，后端必须在其内给出确定性响应）；LLM 超时/失败/量化违例重试后再违例
+      均降级本地规则模板生成器（沿用配比模板量化用量 + 技法白名单 + 搭配依据，
+      无 LLM 环境演示可用，输出 100% 量化）；生成来源落 basis.generated_by
+      （成功 LLM="llm"、降级="template"）；生成后过 RiskEngine output 闸门；
       落库 innovation_recipe（status='generated'、is_ai_innovated=True（模型默认
       恒真）、visibility='private'、basis 引用搭配规则与性质可追溯）。
 
@@ -33,6 +36,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import operator
 import re
@@ -88,6 +92,48 @@ _LOCAL_SEASONINGS: tuple[dict, ...] = (
     {"name": "生抽", "amount": 10.0, "unit": "ml"},
 )
 
+# ---------------------------------------------------------------------------
+# LLM 表达硬超时（P1 DEF-01）：LLM 表达实测可达 30s+，openai SDK 内部还带网络
+# 重试，仅靠客户端 timeout 挡不住；前端创新生成请求专用超时 60s，后端必须在其
+# 内给出确定性响应 → LLM 调用超过 LLM_HARD_TIMEOUT_SECONDS 即放弃并降级规则模板
+# ---------------------------------------------------------------------------
+LLM_HARD_TIMEOUT_SECONDS = 25.0
+
+# LLM 硬超时执行器（进程级线程池复用）。刻意不用 with 上下文：with 退出会 join
+# 尚未返回的 LLM 线程，令超时失效；超时后线程在后台继续跑完（LLM 客户端自带
+# 请求超时，线程最终必然终止），其结果被丢弃。
+_LLM_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="innovation_llm")
+
+
+def _chat_with_hard_timeout(client, system: str, user: str, temperature: float):
+    """带硬超时的 LLM 表达调用（函数，P1 DEF-01 降级路径入口）。
+
+    说明：
+        将 client.chat 提交到进程级线程池并以 future.result(timeout=...) 等待；
+        超过 LLM_HARD_TIMEOUT_SECONDS 抛 LLMError（调用方据此走规则模板降级），
+        不再阻塞请求线程。测试可通过 monkeypatch 模块属性 LLM_HARD_TIMEOUT_SECONDS
+        调小以模拟超时。
+
+    参数：
+        client：LLM 客户端（app.ability.llm.LLMClient 或同签名替身）。
+        system：系统提示词。
+        user：用户消息。
+        temperature：采样温度。
+
+    返回值：
+        LLMResult：补全结果（与 client.chat 同口径）。
+
+    异常：
+        LLMError：等待超时（concurrent.futures.TimeoutError 归一包装）或线程内
+        chat 抛出的 LLMError 原样透传。
+    """
+    future = _LLM_EXECUTOR.submit(client.chat, system, user, temperature)
+    try:
+        return future.result(timeout=LLM_HARD_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError as exc:
+        future.cancel()  # 运行中的 future 无法取消，仅尽力标记；结果由 GC 丢弃
+        raise LLMError(f"LLM hard timeout after {LLM_HARD_TIMEOUT_SECONDS}s") from exc
+
 
 class InnovationState(TypedDict, total=False):
     """创新子图内部状态（模型类）。
@@ -109,7 +155,8 @@ class InnovationState(TypedDict, total=False):
         properties：食材五属性列表（缺失项 missing=true 标注）。
         pairings：搭配规则命中列表（recommend+conflict，含 rule_id 供回流）。
         techniques_whitelist：technique_library 白名单技法名列表。
-        generated_by：生成来源（llm / local_template）。
+        generated_by：生成来源（llm = LLM 表达成功 / template = LLM 硬超时或失败后
+          的规则模板降级）。
         result：最终创新菜响应 dict（generate 落库后产出）。
         sub_trace：子图内 trace span 列表（operator.add 累加）。
     """
@@ -675,12 +722,13 @@ def _is_quantified(draft: dict | None) -> bool:
 
 
 def _local_template_recipe(names: list[str], pairings: list[dict], techniques: list[str]) -> dict:
-    """本地模板生成器（函数，LLM 失败降级路径）。
+    """规则模板生成器（函数，LLM 失败/硬超时降级路径）。
 
     说明：
         基于搭配规则 recommend 对的建议技法（须在白名单内）+ 常规三步结构拼一道
-        简单菜谱，用量 100% 量化（与现有问答兜底同模式），保证无 LLM 环境
-        演示可用（D7：模型不可用时主链路仍完整）。
+        简单菜谱，用量 100% 量化（与现有问答兜底同模式），保证无 LLM 环境或
+        LLM 硬超时（P1 DEF-01）时主链路仍完整（D7：模型不可用时主链路仍完整）。
+        降级时 basis.generated_by 标注 "template"（由调用方写入）。
 
     参数：
         names：食材名列表。
@@ -1040,10 +1088,12 @@ def make_innovation_generate_node():
         """受约束生成节点（函数）。
 
         说明：
-            LLM 生成（技法白名单 + 用量 100% 量化 + 步骤含时长）→ 量化校验
-            违例重试一次、再违例本地模板替换 → output 闸门 → 落库 innovation_recipe
-            （status='generated'、is_ai_innovated=True、visibility='private'、basis
-            可追溯）→ 产出 result。
+            LLM 生成（技法白名单 + 用量 100% 量化 + 步骤含时长；每次调用带 25s
+            硬超时，见 _chat_with_hard_timeout / LLM_HARD_TIMEOUT_SECONDS）→
+            量化校验违例重试一次、再违例本地模板替换；LLM 硬超时/异常同样直接
+            降级规则模板 → output 闸门 → 落库 innovation_recipe（status='generated'、
+            is_ai_innovated=True、visibility='private'、basis 可追溯，generated_by
+            标注生成来源："llm"=LLM 成功 / "template"=规则模板降级）→ 产出 result。
 
         参数：
             state：子图状态（names/properties/pairings/techniques 已就绪）。
@@ -1053,7 +1103,7 @@ def make_innovation_generate_node():
             output 闸门拦截时返回 {"blocked": True, "issues": [...], "sub_trace": [span]}。
 
         异常：
-            不抛出（LLM 失败降级本地模板；落库异常返回 blocked 保守响应）。
+            不抛出（LLM 硬超时/失败降级规则模板；落库异常返回 blocked 保守响应）。
         """
         start = now_ms()
         if state.get("blocked"):
@@ -1066,11 +1116,11 @@ def make_innovation_generate_node():
 
         span_extra: dict = {}
         draft: dict | None = None
-        generated_by = "local_template"
+        generated_by = "template"
         try:
             client = get_llm_client()
             system, user = _build_prompts(names, properties, pairings, techniques)
-            res = client.chat(system, user, temperature=0.4)
+            res = _chat_with_hard_timeout(client, system, user, 0.4)
             draft = _parse_llm_recipe(res.content)
             span_extra = {
                 "model_name": res.model,
@@ -1079,13 +1129,13 @@ def make_innovation_generate_node():
                 "cost_cents": res.cost_cents,
             }
             if draft is None or not _is_quantified(draft):
-                # 量化违例 → 重试一次（prompt 强化量化要求）
+                # 量化违例 → 重试一次（prompt 强化量化要求；重试同样受 25s 硬超时约束）
                 retry_system = (
                     "上一轮输出未通过量化校验。所有用量必须给出数值与单位（g/ml/个/勺等），"
                     "所有步骤必须给出正整数 duration_sec，严禁「适量/少许/若干」。\n"
                 )
                 try:
-                    res2 = client.chat(retry_system + system, user, temperature=0.1)
+                    res2 = _chat_with_hard_timeout(client, retry_system + system, user, 0.1)
                     draft2 = _parse_llm_recipe(res2.content)
                     span_extra["prompt_tokens"] = int(span_extra.get("prompt_tokens") or 0) + res2.prompt_tokens
                     span_extra["completion_tokens"] = (
@@ -1101,16 +1151,16 @@ def make_innovation_generate_node():
                 except LLMError:
                     draft = None
         except LLMError as exc:
-            # LLM 不可用（网络级失败）：不重试，直接本地模板降级（D7 主链路完整）
-            logger.warning("innovation llm unavailable, fallback to local template: %s", exc)
+            # LLM 硬超时或不可用（网络级失败）：不重试，直接规则模板降级（P1 DEF-01：前端 60s 内必回响应）
+            logger.warning("innovation llm unavailable/hard-timeout, fallback to template: %s", exc)
             draft = None
 
         if _is_quantified(draft):
             generated_by = "llm"
         else:
-            # 🔴 再违例/不可用 → 本地模板替换，保证输出 100% 量化
+            # 🔴 硬超时/再违例/不可用 → 规则模板替换，保证输出 100% 量化（generated_by="template"）
             draft = _local_template_recipe(names, pairings, techniques)
-            generated_by = "local_template"
+            generated_by = "template"
 
         # ---- output 闸门（生成内容过 RiskEngine output 扫描，命中替换/拦截）----
         output_text = draft["name"] + " " + " ".join(

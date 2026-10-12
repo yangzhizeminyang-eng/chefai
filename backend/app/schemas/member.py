@@ -64,13 +64,13 @@ class MemberQuotaOut(BaseModel):
 
     属性：
         used：当日已用次数。
-        limit：当日总额度（会员 10 / 免费 4）。
+        limit：当日总额度（会员 10 / 免费 3）。
         remaining：当日剩余次数。
     """
 
     used: int = 0
-    limit: int = 4
-    remaining: int = 4
+    limit: int = 3
+    remaining: int = 3
 
 
 class MemberMeResponse(BaseModel):

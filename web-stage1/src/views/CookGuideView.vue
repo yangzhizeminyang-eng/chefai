@@ -32,6 +32,14 @@
  *          断点恢复失败时回退本地快照渲染步骤，不依赖网络；
  *       ⑬ 免手语音（PRD US-F4）：Web Speech API 指令白名单本地解析（utils/voiceCommand），
  *          「下一步/上一步/暂停/继续」映射到既有切换与计时器处理函数。
+ * DEF-05 修复：
+ *       ⑭ 完成页评分组件：完成面板新增 el-rate 星级 + 标签多选（PRD P-18：太咸/
+ *          太淡/火大了/完美/成品卖相差）+「提交评价」，携带 {rating, tags} 调
+ *          finish 端点幂等补录评分（completed 会话带 rating 不再 409）；成功或
+ *          409 后进入已评价态，不阻断「再做一次/返回首页/查看营养」，不评价可直接离开。
+ * DEF-07 修复：
+ *       ⑮ 「查看营养」跳转携带 query（expand_nutrition=1 + 本次份数 servings），
+ *          详情页自动展开营养区并按份数初始化，修复「查看营养丢份数」。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -40,8 +48,11 @@ import { Mic as MicIcon, Timer as TimerIcon } from '@element-plus/icons-vue'
 import { finishCookingSession, getRecipe, postCookingHelp } from '@/api/endpoints'
 import type { ApiError, RecipeStep } from '@/api/types'
 import { useCookingStore } from '@/stores/cooking'
+import { useMeStore } from '@/stores/me'
 import { MultiTimer, formatCountdown, type TimerSnapshot } from '@/utils/timer'
 import { scaleStepHint } from '@/utils/scaling'
+import { buildNutritionQuery } from '@/utils/nutritionQuery'
+import { formatAmountText } from '@/utils/unit'
 import {
   getRecipeSnapshot,
   recallSessionRecipe,
@@ -61,6 +72,8 @@ const route = useRoute()
 const router = useRouter()
 /** 烹饪 store：会话 / 本地步骤索引 / 本地切换动作 */
 const cookingStore = useCookingStore()
+/** 个人中心 store：读取用户计量单位设置（DEF-09 单位三选） */
+const meStore = useMeStore()
 
 /** 会话恢复失败标记（内存与本地缓存均无 → 提示后回 /select） */
 const restoreFailed = ref(false)
@@ -130,11 +143,12 @@ const hintFactor = computed<number>(() => {
 })
 
 /**
- * 当前步骤缩放后的本步用量提示（响应式：随当前步骤与份数联动重算）。
- * @returns 缩放后的提示文案；无提示返回空串
+ * 当前步骤缩放后的本步用量提示（响应式：随当前步骤与份数联动重算；
+ * DEF-09：再按用户计量单位模式格式化，spoon 模式下 ml 类片段换算为勺/茶匙）。
+ * @returns 缩放并按单位模式格式化后的提示文案；无提示返回空串
  */
 const scaledAmountHint = computed<string>(() =>
-  scaleStepHint(currentStep.value?.amount_hint, hintFactor.value),
+  formatAmountText(scaleStepHint(currentStep.value?.amount_hint, hintFactor.value), meStore.settings?.unit ?? 'gram'),
 )
 
 /**
@@ -169,7 +183,7 @@ function onExit(): void {
     })
 }
 
-/** ═══ R5/L4 完成态落地 ═══ */
+/* ═══ R5/L4 完成态落地 ═══ */
 
 /** 完成态标记：true = 展示本页收尾面板（不再直接跳回 /select） */
 const finished = ref(false)
@@ -182,11 +196,13 @@ const restarting = ref(false)
  * 在 clearSession 清空 store 前保存（菜名需临时拉取菜谱详情补齐）。
  */
 const finishedInfo = ref<{
+  /** 关联会话 ID（DEF-05 完成页「提交评价」调 finish 幂等评分补录用） */
+  sessionId: string
   /** 关联菜谱 ID（「再做一次」重建会话 /「查看营养」跳详情页用） */
   recipeId: number
   /** 菜谱名（详情拉取失败时模板兜底「本次菜谱」） */
   title: string
-  /** 本次份数（再做一次沿用） */
+  /** 本次份数（再做一次沿用 /「查看营养」带份数跳转） */
   servings: number
   /** 步骤快照（再做一次重建会话的步骤数据源） */
   steps: RecipeStep[]
@@ -210,6 +226,80 @@ const finishSubTitle = computed<string>(() => {
  */
 const canRestart = computed<boolean>(() => (finishedInfo.value?.steps.length ?? 0) > 0)
 
+/* ═══ DEF-05 完成页评价组件 ═══ */
+
+/** 评价标签选项（PRD P-18：太咸/太淡/火大了/完美，另附「成品卖相差」） */
+const RATING_TAGS: readonly string[] = ['太咸', '太淡', '火大了', '完美', '成品卖相差']
+
+/** 完成面板星级评分（1~5，0 = 未选择） */
+const feedbackRating = ref(0)
+/** 已勾选的评价标签（可多选，可空 = 只交星级） */
+const feedbackTags = ref<string[]>([])
+/** 评价提交进行中 */
+const feedbackSubmitting = ref(false)
+/** 评价已提交（含 409 幂等命中后的已评价态；置位后组件禁用、不阻断其他按钮） */
+const feedbackSubmitted = ref(false)
+
+/**
+ * 切换评价标签勾选状态（el-check-tag change 落点）。
+ * @param tag 标签名
+ * @returns 无
+ */
+function toggleFeedbackTag(tag: string): void {
+  if (feedbackSubmitted.value) return
+  const idx = feedbackTags.value.indexOf(tag)
+  if (idx >= 0) {
+    feedbackTags.value.splice(idx, 1)
+  } else {
+    feedbackTags.value.push(tag)
+  }
+}
+
+/**
+ * 重置完成页评价组件状态（「再做一次」开启新一轮烹饪时调用）。
+ * @returns 无
+ */
+function resetFeedback(): void {
+  feedbackRating.value = 0
+  feedbackTags.value = []
+  feedbackSubmitting.value = false
+  feedbackSubmitted.value = false
+}
+
+/**
+ * 完成页「提交评价」（DEF-05）：调 finish 端点携带 {rating, tags} 幂等补录评分。
+ * - 成功 → 已评价态（按钮 disabled + 文案「已提交，谢谢反馈」）；
+ * - 409（重复 finish / 重复评价）→ 友好提示「该次烹饪已完成评价」并置已评价态，
+ *   不抛错误堆栈；不评价直接离开也允许（不强制）。
+ * @returns 无
+ * @throws finishCookingSession 失败时以 ElMessage 提示（409 除外）
+ */
+async function onFeedbackSubmit(): Promise<void> {
+  const info = finishedInfo.value
+  if (!info || feedbackSubmitting.value || feedbackSubmitted.value) return
+  if (!feedbackRating.value) {
+    ElMessage.warning('请先选择星级评分')
+    return
+  }
+  feedbackSubmitting.value = true
+  try {
+    await finishCookingSession(info.sessionId, feedbackRating.value, [...feedbackTags.value])
+    feedbackSubmitted.value = true
+    ElMessage.success('已提交，谢谢反馈')
+  } catch (e) {
+    const err = e as ApiError
+    if (err.code === 409) {
+      // finish 幂等语义：会话已完成评价（或并发重复提交）→ 按已评价态友好收口
+      feedbackSubmitted.value = true
+      ElMessage.info('该次烹饪已完成评价')
+    } else {
+      ElMessage.error(err.message || '评价提交失败，请重试')
+    }
+  } finally {
+    feedbackSubmitting.value = false
+  }
+}
+
 /**
  * 最后一步点「完成」：调 finishCookingSession 结束会话（完成记录照旧落库）→
  * 保存完成态快照（并行拉取菜名，失败不阻塞）→ 清理本地缓存与 store →
@@ -231,6 +321,7 @@ async function onFinish(): Promise<void> {
     // clearSession 会清空 store，完成面板与「再做一次」所需数据先落快照
     //（steps 为引用替换式清空，此处保存的旧数组引用内容不受影响）
     finishedInfo.value = {
+      sessionId: session.id,
       recipeId: session.recipe_id,
       title: detail?.title ?? '',
       servings: session.servings ?? 1,
@@ -260,6 +351,8 @@ async function onCookAgain(): Promise<void> {
     await cookingStore.startSession(info.recipeId, info.servings, info.steps, info.baseServings)
     finished.value = false
     finishedInfo.value = null
+    // 新一轮烹饪：重置评价组件（星级/标签/已评价态）
+    resetFeedback()
     // 新会话建立成功：同步刷新离线快照与 sessionId 映射（fire-and-forget，失败不影响引导）
     void saveOfflineSnapshot()
     void router.replace(`/cook/${cookingStore.session?.id ?? ''}`)
@@ -279,12 +372,20 @@ function goHome(): void {
 }
 
 /**
- * 完成态「查看营养」：跳转本菜谱详情页（营养估算入口在详情页内，一步可达的最小路径）。
+ * 完成态「查看营养」（DEF-07 修复丢份数）：跳转本菜谱详情页，query 携带
+ * expand_nutrition=1（详情页自动展开营养区）与本次份数 servings（1~20 整数，
+ * 详情页据此初始化份数并走既有缩放管线刷新用量/营养）。
  * @returns 无
  */
 function goNutrition(): void {
-  const id = finishedInfo.value?.recipeId
-  if (id != null) void router.push(`/recipe/${id}`)
+  const info = finishedInfo.value
+  if (info?.recipeId == null) return
+  // buildNutritionQuery 形参为后端 snake_case 契约（recipe_id/servings），
+  // 完成态快照为前端 camelCase（recipeId/servings）——仅做形状对齐，运行时取值不变
+  void router.push({
+    path: `/recipe/${info.recipeId}`,
+    query: buildNutritionQuery({ recipe_id: info.recipeId, servings: info.servings }),
+  })
 }
 
 /**
@@ -731,10 +832,38 @@ onBeforeUnmount(() => {
     </el-empty>
 
     <!-- ⑩ R5/L4 完成态落地：完成后停留本页展示收尾面板（注意分支顺序必须位于
-         totalSteps === 0 兜底之前——完成时 store 已清空，totalSteps 为 0） -->
+         totalSteps === 0 兜底之前——完成时 store 已清空，totalSteps 为 0）；
+         DEF-05：面板内新增评价区（星级 + 标签 + 提交评价，可跳过不强制），
+         「再做一次 / 返回首页 / 查看营养」不受评价状态阻断 -->
     <div v-else-if="finished" class="cook-finish">
       <el-result icon="success" title="恭喜，这道菜完成了！" :sub-title="finishSubTitle">
         <template #extra>
+          <!-- DEF-05 评价区：el-rate 星级（1~5，可清空）+ 标签多选（el-check-tag）+
+               提交评价（未选星级禁用；已提交/409 后进入已评价态） -->
+          <div class="cook-feedback">
+            <p class="cook-feedback-title">这道菜做得怎么样？</p>
+            <el-rate v-model="feedbackRating" clearable :disabled="feedbackSubmitted" />
+            <div class="cook-feedback-tags">
+              <el-check-tag
+                v-for="tag in RATING_TAGS"
+                :key="tag"
+                :checked="feedbackTags.includes(tag)"
+                :disabled="feedbackSubmitted"
+                @change="toggleFeedbackTag(tag)"
+              >
+                {{ tag }}
+              </el-check-tag>
+            </div>
+            <el-button
+              type="primary"
+              class="cook-finish-btn"
+              :loading="feedbackSubmitting"
+              :disabled="feedbackSubmitted || !feedbackRating"
+              @click="onFeedbackSubmit"
+            >
+              {{ feedbackSubmitted ? '已提交，谢谢反馈' : '提交评价' }}
+            </el-button>
+          </div>
           <el-button
             type="primary"
             size="large"
@@ -1187,6 +1316,32 @@ onBeforeUnmount(() => {
 .cook-finish-btn {
   min-width: 132px;
   min-height: 44px;
+}
+
+/* ── DEF-05 完成页评价区 ── */
+.cook-feedback {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  max-width: 420px;
+  margin: 0 auto 18px;
+  padding-bottom: 16px;
+  border-bottom: 1px dashed var(--color-info-border);
+}
+
+.cook-feedback-title {
+  margin: 0;
+  font-size: var(--font-md);
+  color: var(--text-main);
+}
+
+.cook-feedback-tags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
 }
 
 /* ── R7 修复：计时器抽屉自定义 header（标题 + 具名关闭按钮）── */

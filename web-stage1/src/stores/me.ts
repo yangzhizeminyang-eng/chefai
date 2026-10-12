@@ -35,6 +35,7 @@ import type {
   SettingsData,
   SignatureDish,
 } from '@/api/types'
+import { migrateUnitSetting } from '@/utils/unit'
 
 export const useMeStore = defineStore('me', {
   state: () => ({
@@ -148,13 +149,16 @@ export const useMeStore = defineStore('me', {
     },
 
     /**
-     * 拉取用户设置。
+     * 拉取用户设置（读时兼容：历史单位值 metric/imperial 经 migrateUnitSetting
+     * 迁移为新三选枚举 gram/milliliter/spoon，迁移一次后全站读取即新值口径）。
      * @returns 无
      */
     async loadSettings(): Promise<void> {
       this.settingsError = null
       try {
-        this.settings = await getSettings()
+        const loaded = await getSettings()
+        // 单位键迁移（DEF-09）：旧值 metric→gram、imperial→milliliter，新值直通
+        this.settings = { ...loaded, unit: migrateUnitSetting(loaded.unit) }
       } catch (e) {
         this.settingsError = e as ApiError
       }

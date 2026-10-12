@@ -119,7 +119,7 @@ def test_member_plan_structure(client: TestClient) -> None:
     """价目表结构（函数）。
 
     说明：
-        三档价格 2500/6800/22800 分；权益四项；preview_only=true；
+        三档价格 2500/6800/22800 分；权益六项（PRD §8.9）；preview_only=true；
         渠道 miniprogram_virtual；政策提示非空。
 
     参数：
@@ -143,7 +143,14 @@ def test_member_plan_structure(client: TestClient) -> None:
     for plan in body["plans"]:
         assert plan["price_cents"] == expected_prices[plan["product_type"]]
         assert plan["name"] == expected_names[plan["product_type"]]
-        assert plan["benefits"] == ["不限次 AI 识别", "一周饮食计划", "营养周报", "免广告"]
+        assert plan["benefits"] == [
+            "不限次推荐与识别",
+            "一周饮食计划自动生成",
+            "智能购物清单编排",
+            "营养周报",
+            "家庭多成员差异化定制",
+            "去广告",
+        ]
         assert plan["preview_only"] is True
 
 
@@ -198,7 +205,7 @@ def test_create_order_invalid_product_type_422(client: TestClient) -> None:
 
 
 def test_mock_pay_success_and_member_status(client: TestClient) -> None:
-    """mock-pay 成功：paid_at 写入 + is_member 判定 + 额度 limit 4→10（函数）。
+    """mock-pay 成功：paid_at 写入 + is_member 判定 + 额度 limit 3→10（函数）。
 
     参数：
         client：TestClient fixture。
@@ -211,10 +218,10 @@ def test_mock_pay_success_and_member_status(client: TestClient) -> None:
     """
     anon = _unique_anon()
     try:
-        # 支付前：非会员，免费额度 4
+        # 支付前：非会员，免费额度 3
         me_before = client.get("/v1/member/me", headers={"X-Anonymous-Id": anon}).json()
         assert me_before["is_member"] is False
-        assert me_before["quota"]["limit"] == 4
+        assert me_before["quota"]["limit"] == 3
 
         order = _create_order(client, anon, "monthly")
         resp = client.post(
@@ -442,7 +449,7 @@ def test_quota_consume_refund_functions() -> None:
 
     说明：
         直接调用 app.ability.member 服务函数（T5 vision 将按此签名集成）：
-        - get_quota：免费档 limit=4；
+        - get_quota：免费档 limit=3；
         - consume_quota：used 递增、remaining 递减、超额抛 ValueError；
         - refund_quota：used 回补（下限 0）；
         - 跨日重置：preferences 中 date 非当日 → used 归零。
@@ -464,20 +471,20 @@ def test_quota_consume_refund_functions() -> None:
             session.commit()
             uid = int(user.id)
 
-        # 初始额度：免费档 4/日
+        # 初始额度：免费档 3/日
         with SessionLocal() as session:
             quota = get_quota(session, uid)
-        assert quota == {"used": 0, "limit": 4, "remaining": 4}
+        assert quota == {"used": 0, "limit": 3, "remaining": 3}
 
         # 消费 1 次 → used=1
         with SessionLocal() as session:
             quota = consume_quota(session, uid, 1)
-        assert quota == {"used": 1, "limit": 4, "remaining": 3}
+        assert quota == {"used": 1, "limit": 3, "remaining": 2}
 
         # 回补 1 次 → used=0（下限 0）
         with SessionLocal() as session:
             quota = refund_quota(session, uid, 1)
-        assert quota == {"used": 0, "limit": 4, "remaining": 4}
+        assert quota == {"used": 0, "limit": 3, "remaining": 3}
 
         # 回补到 0 以下不产生负数
         with SessionLocal() as session:
@@ -486,7 +493,7 @@ def test_quota_consume_refund_functions() -> None:
 
         # 消费至满额后再消费 → ValueError
         with SessionLocal() as session:
-            for _ in range(4):
+            for _ in range(3):
                 consume_quota(session, uid, 1)
         with SessionLocal() as session:
             with pytest.raises(ValueError):
@@ -524,7 +531,7 @@ def test_create_order_repeat_creates_independent_pending_orders(client: TestClie
         1) 重复创建仅产生独立 pending 订单（创建动作本身无扣费语义）；
         2) 全部订单 paid_at / wx_transaction_id 为空（无自动扣费）；
         3) mock-pay 仅作用于指定订单，其余订单保持 pending（状态机隔离），
-           且支付前会员权益不生效（is_member=False、免费额度 4）。
+           且支付前会员权益不生效（is_member=False、免费额度 3）。
 
     参数：
         client：TestClient fixture。
@@ -547,10 +554,10 @@ def test_create_order_repeat_creates_independent_pending_orders(client: TestClie
             assert order["wx_transaction_id"] is None
             assert order["amount_cents"] == 2500
 
-        # 创建不产生任何权益：未支付维持免费档 4（无「下单即扣费」红线）
+        # 创建不产生任何权益：未支付维持免费档 3（无「下单即扣费」红线）
         me = client.get("/v1/member/me", headers={"X-Anonymous-Id": anon}).json()
         assert me["is_member"] is False
-        assert me["quota"]["limit"] == 4
+        assert me["quota"]["limit"] == 3
         assert me["quota"]["used"] == 0
 
         # mock-pay 仅作用于指定订单：另一笔保持 pending（状态机隔离，不连带扣费）
@@ -575,12 +582,12 @@ def test_create_order_repeat_creates_independent_pending_orders(client: TestClie
 def test_member_paid_vision_quota_linkage(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    """mock-pay 后会员识别额度即时生效 10/日；未支付维持免费 4（函数）。
+    """mock-pay 后会员识别额度即时生效 10/日；未支付维持免费 3（函数）。
 
     说明：
         vision 模块会员判定与会员口径同源（order 表存在 paid 订单，每请求直查）；
         以桩 provider（恒 high 置信）打通识别扣减链路，断言：
-        - 支付前 recognize 响应 quota.limit == 4（免费档）；
+        - 支付前 recognize 响应 quota.limit == 3（免费档）；
         - mock-pay 成功后 recognize 响应 quota.limit == 10（会员权益即时生效）；
         - /v1/member/me 与 vision 响应的会员额度口径一致（limit 均为 10）。
 
@@ -627,10 +634,10 @@ def test_member_paid_vision_quota_linkage(
     headers = {"X-Anonymous-Id": anon}
     upload = {"file": ("photo.jpg", b"fake-jpeg-bytes-for-quota-linkage", "image/jpeg")}
     try:
-        # 支付前：免费档额度 4
+        # 支付前：免费档额度 3
         before = client.post("/v1/vision/recognize", files=upload, headers=headers)
         assert before.status_code == 200
-        assert before.json()["quota"]["limit"] == 4
+        assert before.json()["quota"]["limit"] == 3
 
         order = _create_order(client, anon, "monthly")
         assert client.post(f"/v1/member/orders/{order['order_no']}/mock-pay").status_code == 200

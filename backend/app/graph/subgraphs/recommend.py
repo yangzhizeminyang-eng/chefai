@@ -22,6 +22,13 @@
     - recipe_rank：7 因子加权 + rank_reasons + 三档 match_level，Top 8；
       E.9 反馈接线：state 带数字 user_id 时加载 feedback_penalty（dislike 菜谱 -0.5）
       传入 weighted_rank（state 无 user_id 时跳过，空惩罚不影响排序）。
+
+OBS-03（NL 问句食材并入）：
+    主图包装节点 subgraph_recommend_node 在构建子图入参时，把问句文本与食材库
+    （名称+别名）做最长匹配（extract_ingredient_names_from_text，「土豆淀粉」
+    优先于「土豆」，避免同区间重复命中），命中 ≤10 个去重食材名并入
+    ingredients 入参（与已选食材合并去重，上限 10）；不涉及意图识别与风控
+    逻辑，仅增强推荐检索的食材入参。
 """
 
 from __future__ import annotations
@@ -34,7 +41,7 @@ from typing import Annotated, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from app.ability import hard_filter, load_weights, retrieve_candidates
-from app.ability.retrieval import match_ingredients_in_text
+from app.ability.retrieval import extract_ingredient_names_from_text, match_ingredients_in_text
 from app.core.db import SessionLocal
 from app.core.logging import get_logger
 from app.graph.nodes.common import make_span, now_ms
@@ -43,6 +50,75 @@ from app.graph.registry import register
 from app.safety import SafetyProfile
 
 logger = get_logger(__name__)
+
+# 合并后食材入参总上限（OBS-03：已选食材 + 问句命中的食材去重合并后 ≤10）
+MERGED_INGREDIENT_CAP = 10
+
+
+def _merge_text_ingredients(raw_ingredients: list, text_value: str) -> list:
+    """把问句文本命中的食材并入推荐检索的 ingredients 入参（函数，OBS-03）。
+
+    说明：
+        仅当文本命中 ≥1 个食材时生效（纯已选食材路径行为完全不变）；
+        已选食材在前（显式选择优先），问句命中的食材名（最长匹配、去重）
+        追加在后，合并总上限 MERGED_INGREDIENT_CAP（10）。
+
+    参数：
+        raw_ingredients：原 ingredients 入参（字符串 / {ingredient_id} / {name} 混合形态）。
+        text_value：问句文本（可空）。
+
+    返回值：
+        list：合并去重后的食材入参（≤上限；文本未命中食材时原样返回）。
+
+    异常：
+        不抛出（提取异常降级为原始入参，不阻断推荐链路）。
+    """
+    if not text_value or not text_value.strip():
+        return raw_ingredients
+    try:
+        with SessionLocal() as session:
+            text_names = extract_ingredient_names_from_text(session, text_value)
+    except Exception as exc:  # noqa: BLE001 —— 提取失败按「未并入」处理
+        logger.warning("merge text ingredients failed: %s", exc)
+        return raw_ingredients
+    if not text_names:
+        return raw_ingredients
+
+    def _item_name(item) -> str:
+        """读取食材条目的名称键（内部函数）。
+
+        参数：
+            item：字符串食材名或 {name} / {ingredient_id} 字典。
+
+        返回值：
+            str：名称字符串（仅带 ingredient_id 的字典形态返回空串）。
+
+        异常：
+            无。
+        """
+        if isinstance(item, str):
+            return item.strip()
+        if isinstance(item, dict):
+            return str(item.get("name") or "").strip()
+        return ""
+
+    merged: list = []
+    seen: set[str] = set()
+    for item in raw_ingredients or []:
+        name = _item_name(item)
+        if name and name in seen:
+            continue
+        if name:
+            seen.add(name)
+        merged.append(item)
+    for name in text_names:
+        if len(merged) >= MERGED_INGREDIENT_CAP:
+            break
+        if name in seen:
+            continue
+        seen.add(name)
+        merged.append(name)
+    return merged[:MERGED_INGREDIENT_CAP]
 
 
 class RecommendSubgraphState(TypedDict, total=False):
@@ -418,7 +494,11 @@ def make_recommend_subgraph_node():
             "request_id": state.get("request_id"),
             "trace_id": state.get("trace_id"),
             "input_text": state.get("input_text") or "",
-            "ingredients": state.get("ingredients") or [],
+            # OBS-03：recommend 意图分支把问句文本命中的食材并入检索入参
+            # （与已选食材合并去重，上限 10；文本未命中时行为与改造前完全一致）
+            "ingredients": _merge_text_ingredients(
+                state.get("ingredients") or [], state.get("input_text") or ""
+            ),
             "safety_profile": state.get("safety_profile") or {},
             # E.9 反馈接线：透传数字 user_id（runner 未注入时为 None，rank 节点空惩罚）
             "user_id": state.get("user_id"),

@@ -254,7 +254,11 @@ def post_innovation_generate(
         生成前自动先跑 precheck 逻辑（run_innovation_generate 内部复用同一核心
         函数）：拦截 → 200 {ok:false, blocked:true, issues, ...}；成功 → 201 创新菜
         完整结构（is_ai_innovated=true、disclaimer 恒带、basis 依据可追溯）。
-        LLM 离线时子图自动降级本地模板（量化校验代码强制，输出 100% 量化）。
+        LLM 表达调用带 25s 硬超时（LLM_HARD_TIMEOUT_SECONDS，P1 DEF-01：前端
+        本接口专用 60s 超时，后端必须在其内返回）；LLM 超时/异常/量化违例时降级
+        为「规则模板表达」（沿用配比模板量化用量 + 技法白名单 + 搭配依据拼装，
+        量化校验代码强制，输出 100% 量化），响应结构完整不变；生成来源以
+        basis.generated_by 标注：LLM 成功 = "llm"、降级 = "template"。
 
     参数：
         payload：生成请求体（ingredients ≥1）。

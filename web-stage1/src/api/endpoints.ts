@@ -3,7 +3,7 @@
  * 每个函数对应一个后端接口，返回类型来自 types.ts 的契约定义；
  * 错误统一由 axios 拦截器归一为 { code, message } 抛出。
  */
-import apiClient from './index'
+import apiClient, { INNOVATION_GENERATE_TIMEOUT_MS } from './index'
 import type {
   AnonymousResponse,
   AskResponse,
@@ -21,6 +21,8 @@ import type {
   FavoritesResponse,
   FeedbackCreateResponse,
   FeedbackDetailResponse,
+  FilteredRecommendRequestBody,
+  FilteredRecommendResponse,
   HistoryResponse,
   HomeResponse,
   InnovationAdoptResponse,
@@ -45,6 +47,7 @@ import type {
   RecommendRequest,
   RecommendResponse,
   RecipeDetail,
+  RecipeSearchResponse,
   SettingsData,
   ShoppingCreateBody,
   ShoppingListResponse,
@@ -109,6 +112,18 @@ export function postRecommend(body: RecommendRequest): Promise<RecommendResponse
 }
 
 /**
+ * 布尔硬过滤重放（POST /v1/recommend/filtered）：W-02「显示被我过滤掉的菜」明细数据源。
+ * 以用户食材 + 档案过敏原/忌口/设备现场重放布尔硬过滤，返回会被移除的菜谱及
+ * {type, detail} 结构化原因；主推荐响应不含 filtered 明细（仅 filtered_by 计数），
+ * 清单必须通过本接口获取。
+ * @param body 重放请求体（ingredients + allergen_codes/dietary_restrictions/equipment 等）
+ * @returns 被过滤菜谱列表与总数
+ */
+export function postRecommendFiltered(body: FilteredRecommendRequestBody): Promise<FilteredRecommendResponse> {
+  return apiClient.post('/v1/recommend/filtered', body)
+}
+
+/**
  * 获取菜谱详情（GET /v1/recipes/{id}），支持 servings 缩放重算。
  * @param id 菜谱 ID
  * @param servings 份数（可选，缺省用菜谱基准份数）
@@ -116,6 +131,22 @@ export function postRecommend(body: RecommendRequest): Promise<RecommendResponse
  */
 export function getRecipe(id: number | string, servings?: number): Promise<RecipeDetail> {
   return apiClient.get(`/v1/recipes/${id}`, { params: servings != null ? { servings } : undefined })
+}
+
+/**
+ * 菜谱搜索（GET /v1/recipes?q=&page=&page_size=，DEF-02 后端配套）。
+ * q 模糊匹配菜名与食材名/别名，仅返回已发布菜谱；q 缺省返回全部分页列表。
+ * @param params.q 搜索关键词（可选）
+ * @param params.page 页码（可选，默认 1）
+ * @param params.page_size 每页条数（可选，默认 10，上限 50）
+ * @returns 菜谱列表 + 总命中数
+ */
+export function getRecipes(params?: {
+  q?: string
+  page?: number
+  page_size?: number
+}): Promise<RecipeSearchResponse> {
+  return apiClient.get('/v1/recipes', { params })
 }
 
 /**
@@ -151,13 +182,19 @@ export function patchCookingSession(
 }
 
 /**
- * 完成烹饪会话（POST /v1/cooking/sessions/{id}/finish），可选评分。
+ * 完成烹饪会话（POST /v1/cooking/sessions/{id}/finish），可选评分与标签。
+ * DEF-05：完成页评价组件携带 {rating, tags} 提交；会话已 completed 时后端对带
+ * rating 的请求做幂等评分补录（重复补录 409「该次烹饪已完成评价」）。
  * @param sessionId 会话 ID
  * @param rating 评分 1~5（可选，null 表示跳过评分）
+ * @param tags 评价标签列表（可选，如 ['太咸', '完美']）
  * @returns 完成后的烹饪会话
  */
-export function finishCookingSession(sessionId: string, rating?: number): Promise<CookingSession> {
-  return apiClient.post(`/v1/cooking/sessions/${sessionId}/finish`, { rating: rating ?? null })
+export function finishCookingSession(sessionId: string, rating?: number | null, tags?: string[]): Promise<CookingSession> {
+  return apiClient.post(`/v1/cooking/sessions/${sessionId}/finish`, {
+    rating: rating ?? null,
+    tags: tags ?? [],
+  })
 }
 
 /**
@@ -567,11 +604,13 @@ export function postInnovationPrecheck(ingredients: string[]): Promise<Innovatio
 
 /**
  * 生成创新菜谱（POST /v1/innovation/generate）。
+ * P1 DEF-01：LLM 表达实测 10–30s（后端 25s 硬超时 + 模板降级兜底），本请求
+ * 显式传 60s per-request 超时覆盖实例默认 12s，否则用户侧 100% ERR_ABORTED。
  * @param ingredients 食材名列表
- * @returns 创新菜谱实体（含创新依据与强制声明）
+ * @returns 创新菜谱实体（含创新依据与强制声明；basis.generated_by 标注 llm/template）
  */
 export function postInnovationGenerate(ingredients: string[]): Promise<InnovationRecipe> {
-  return apiClient.post('/v1/innovation/generate', { ingredients })
+  return apiClient.post('/v1/innovation/generate', { ingredients }, { timeout: INNOVATION_GENERATE_TIMEOUT_MS })
 }
 
 /**

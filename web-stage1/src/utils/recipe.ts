@@ -140,3 +140,73 @@ export function formatCost(cents: number | null): string {
   if (cents == null) return '-'
   return `¥${(cents / 100).toFixed(4)}`
 }
+
+/**
+ * 缺料名有效性判定（DEF-04 前端防御，与后端 is_valid_ingredient_name 口径一致）。
+ * 规则：strip 后为空，或不含任何文字字符（字母/汉字等 Unicode 字母，
+ * 纯数字「1」/符号「<」均无效）视为脏名——后端 ingredient 表历史脏行
+ * （name 为纯数字）会在缺料标签中渲染出「缺 1」，前端需兜底剔除。
+ * @param raw 原始缺料项（容错任意类型）
+ * @returns true 表示有效（保留展示）；false 表示脏名（剔除）
+ */
+function isValidMissingName(raw: unknown): boolean {
+  const name = typeof raw === 'string' ? raw : raw == null ? '' : String(raw)
+  const text = name.trim()
+  if (!text) return false
+  // 至少含一个 Unicode 文字字符（\p{L}）才可展示
+  return /\p{L}/u.test(text)
+}
+
+/**
+ * 过滤缺料列表中的脏项（DEF-04 前端防御纯函数）。
+ * 对后端 missing_ingredients 做展示前兜底：剔除无名/纯数字/纯符号项并去重
+ * （同名列合并，避免 v-for :key 重复告警）；正常名称保持原顺序原文本。
+ * @param missing 后端返回的缺失食材名列表（可为 null/undefined）
+ * @returns 过滤去重后的有效缺料名列表（strip 后文本）
+ */
+export function filterValidMissing(
+  missing: ReadonlyArray<unknown> | null | undefined,
+): string[] {
+  if (!missing) return []
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const raw of missing) {
+    const name = typeof raw === 'string' ? raw : raw == null ? '' : String(raw)
+    const text = name.trim()
+    if (!text || seen.has(text)) continue
+    if (isValidMissingName(text)) {
+      seen.add(text)
+      out.push(text)
+    }
+  }
+  return out
+}
+
+/** 缺料标签折叠结果（foldMissingTags 返回值） */
+export interface FoldedMissingTags {
+  /** 折叠态直接展示的缺料名（前 limit 个，已过滤脏项） */
+  visible: string[]
+  /** 被折叠的数量（= 总数 − limit，最小为 0；>0 时展示「等 N 样」展开入口） */
+  overflow: number
+}
+
+/** 缺料标签折叠阈值：超过该数量折叠为「前 N 个 + 等 N 样」（DEF-12） */
+export const MISSING_TAGS_VISIBLE_LIMIT = 5
+
+/**
+ * 缺料标签折叠（DEF-12 纯函数）：缺料超过阈值时只展示前 5 个，
+ * 余量以「等 N 样」折叠项呈现（由调用方提供点击展开交互）。
+ * @param missing 已过滤脏项后的缺料名列表
+ * @param limit 直接展示数量上限（缺省 5）
+ * @returns 折叠结果：visible（前 limit 个）与 overflow（折叠数量，≥0）
+ */
+export function foldMissingTags(
+  missing: ReadonlyArray<string>,
+  limit: number = MISSING_TAGS_VISIBLE_LIMIT,
+): FoldedMissingTags {
+  const list = missing ?? []
+  return {
+    visible: list.slice(0, limit),
+    overflow: Math.max(0, list.length - limit),
+  }
+}

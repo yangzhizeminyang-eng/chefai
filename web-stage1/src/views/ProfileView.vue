@@ -460,7 +460,7 @@ onMounted(async () => {
       <!-- ② 厨艺与设备 -->
       <div class="profile-section">
         <h2 class="section-title">厨艺与设备</h2>
-        <p class="section-hint">按你现有的锅具推荐，缺设备的菜不会出现。</p>
+        <p class="section-hint">按你现有的锅具推荐，缺设备的菜会明确标注。</p>
 
         <div class="skill-level">
           <span class="skill-label">厨艺水平：</span>

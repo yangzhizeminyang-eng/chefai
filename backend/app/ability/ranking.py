@@ -9,6 +9,10 @@
     - weighted_rank：7 因子加权排序（coverage/expiring/taste/goal/difficulty/history/popularity），
       权重从 remote_config `rank.weights` 读取（缺失用默认值），冷启动时 history 权重按比例
       摊给 coverage/popularity；每条产出 ≥1 条中文 rank_reasons 与三档 match_level，取 Top 8；
+      DEF-04：missing_ingredients 生成时过滤无名/纯数字脏项（is_valid_ingredient_name）；
+      DEF-12：「需要多买几样」档位在档内截断前排除 missing 数量 > MAX_MISSING_INGREDIENTS(8)
+      的菜谱（缺料口径与 missing_ingredients 一致，被排除项不占 Top 8 名额，不影响
+      「如实说明宁缺毋滥」逻辑——低质候选整体不进入结果，而非降权填充）；
     - E.9 反馈立即生效：weighted_rank 支持可选 feedback_penalty（recipe_id→扣分），
       dislike 的菜谱总分 -0.5 并追加理由「你曾表示不喜欢」；配套 load_feedback_penalty
       从 recipe_feedback 表加载该扣分映射。
@@ -53,6 +57,39 @@ _DEFAULT_DIFFICULTY_CAP = 3
 
 # E.9 dislike 反馈惩罚分值（反馈立即生效：dislike 菜谱总分 -0.5）
 FEEDBACK_DISLIKE_PENALTY = 0.5
+
+# 「需要多买几样」档位缺料数量上限（DEF-12：缺料 >8 样的低质推荐不入结果，
+# 避免用户面对一长串采购清单；过滤发生在档内截断前，不占 Top 8 名额）
+MAX_MISSING_INGREDIENTS = 8
+
+
+def is_valid_ingredient_name(name: object) -> bool:
+    """判定食材名是否为有效可展示名称（DEF-04，函数）。
+
+    说明：
+        语料导入的脏数据防护：名称 strip 后为空、不含任何文字字符
+        （字母/汉字等 Unicode 字母，如纯数字「1」、符号「<」）均视为无效；
+        「缺 1」类脏标签即源于 ingredient 表存在 name 为纯数字的脏行。
+        本函数为纯函数，供检索装配（main_ingredient_names）与排序生成
+        missing_ingredients 双层过滤共用，与前端 filterValidMissing 口径一致。
+
+    参数：
+        name：待校验的食材名（容错任意类型；None/数字等按 str() 转换后判定）。
+
+    返回值：
+        bool：True 表示有效（保留）；False 表示无效（过滤）。
+
+    异常：
+        无。
+    """
+    if name is None:
+        return False
+    text = name if isinstance(name, str) else str(name)
+    text = text.strip()
+    if not text:
+        return False
+    # 必须至少含一个文字字符（Unicode 字母）：剔除纯数字与纯符号
+    return any(ch.isalpha() for ch in text)
 
 # ---------------------------------------------------------------------------
 # 设备维度硬过滤（缺陷 M2/P6/S8 修复：用户档案仅持炒锅时，需燃气灶的菜谱必须完全不出现）
@@ -305,6 +342,10 @@ def weighted_rank(
         E.9 反馈立即生效：feedback_penalty 命中的菜谱（用户 dislike 过）在总分上
         直接扣减对应分值（load_feedback_penalty 产出 dislike → -0.5），并在
         rank_reasons 追加「你曾表示不喜欢」。
+        DEF-04：主料名先经 is_valid_ingredient_name 过滤（无名/纯数字脏项不参与
+        覆盖率分母与 missing 生成，杜绝「缺 1」类脏标签）。
+        DEF-12：missing 数量 > MAX_MISSING_INGREDIENTS 的菜谱在档内截断前整条
+        跳过（低质采购清单不进入「需要多买几样」档，也不占 Top 8 名额）。
 
     参数：
         filtered：hard_filter 输出的候选列表。
@@ -337,10 +378,14 @@ def weighted_rank(
     results: list[dict] = []
     for cand in filtered:
         try:
-            main_names = cand.get("main_ingredient_names") or []
+            # DEF-04：主料名先过滤脏项（无名/纯数字），覆盖率分母与 missing 口径随之干净
+            raw_main_names = cand.get("main_ingredient_names") or []
+            main_names = [n for n in raw_main_names if is_valid_ingredient_name(n)]
             total_main = len(main_names)
             covered_count = int(cand.get("covered_count") or 0)
-            missing_names = [n for n in main_names if n not in (cand.get("covered_names") or [])]
+            missing_names = [
+                n for n in main_names if n not in (cand.get("covered_names") or [])
+            ]
             coverage = (covered_count / total_main) if total_main > 0 else 0.0
 
             difficulty_score = (
@@ -362,7 +407,15 @@ def weighted_rank(
                 score -= penalty
 
             # 三档划分：missing==0 现在就能做；1~2 差 1–2 样；≥3 需要多买（覆盖率≥0.3 才进 need_more 口径）
+            # DEF-12：缺料 >MAX_MISSING_INGREDIENTS(8) 的低质推荐在档内截断前整条跳过——
+            # 不入任何档、不占 Top 8 名额（缺料口径与 missing_names 一致，已剔除脏项）
             missing_n = len(missing_names)
+            if missing_n > MAX_MISSING_INGREDIENTS:
+                logger.debug(
+                    "weighted_rank skip candidate %s: missing %d > %d",
+                    cand.get("recipe_id"), missing_n, MAX_MISSING_INGREDIENTS,
+                )
+                continue
             if missing_n == 0:
                 match_level = "can_cook_now"
             elif missing_n <= 2:

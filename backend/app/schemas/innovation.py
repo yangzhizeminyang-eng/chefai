@@ -124,7 +124,9 @@ class InnovationRecipeOut(BaseModel):
         name：AI 创新菜名。
         ingredients：量化食材列表（[{name, amount, unit}]）。
         steps：步骤列表（[{no, description, duration_sec, tips}]）。
-        basis：创新依据（pairings/properties/techniques_whitelist/generated_by）。
+        basis：创新依据（pairings/properties/techniques_whitelist/generated_by；
+        generated_by ∈ {"llm", "template"}——llm=LLM 表达成功，template=LLM
+        25s 硬超时或失败后的规则模板降级，P1 DEF-01）。
         nutrition：营养估算（total/per_serving/excluded_items/estimate_note）。
         status：状态机（generated / adopted / indexed / removed）。
         is_ai_innovated：🔴 恒 true（模型默认，AI 创新强制标识）。

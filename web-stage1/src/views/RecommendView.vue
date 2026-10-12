@@ -11,16 +11,23 @@
  *          ?request_id= 跳转 W-06 面板自动查询（M6/T3 ID 串联修复）。
  *       ⑦ 过敏原警示条（G-03，§10.2 ②：askMode 搜索结果含致敏原时页面顶部强制红色警示）。
  * ask 直达态（recommend store askMode）：「问厨娘」搜索结果已按 recipe_ids 拉详情落库，
- * 挂载时不重发手选推荐；卡片隐藏覆盖率列、页面隐藏过滤开关与「不足 8 条」说明（语义不适配）。
+ * 挂载时不重发手选推荐（无论是否残留手选食材，防止问答结果被覆写）；卡片隐藏覆盖率列、
+ * 页面隐藏过滤开关与「不足 8 条」说明（语义不适配）。
  * 三态：加载 = 骨架屏 +「正在为你挑选…」；空 = 「放宽到差 1–2 样」/「补充食材」；异常 = el-alert + 重试。
  */
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import type { RecommendResultItem } from '@/api/types'
-import { useIngredientsStore } from '@/stores/ingredients'
-import { useRecommendStore } from '@/stores/recommend'
-import { allergenLabel, coveragePercent, groupResults } from '@/utils/recipe'
+import { filterReasonLabel, useRecommendStore } from '@/stores/recommend'
+import {
+  MISSING_TAGS_VISIBLE_LIMIT,
+  allergenLabel,
+  coveragePercent,
+  filterValidMissing,
+  foldMissingTags,
+  groupResults,
+} from '@/utils/recipe'
 import AllergenAlertBar from '@/components/AllergenAlertBar.vue'
 import DisclaimerBar from '@/components/DisclaimerBar.vue'
 
@@ -28,8 +35,6 @@ import DisclaimerBar from '@/components/DisclaimerBar.vue'
 const router = useRouter()
 /** 推荐 store：三档结果 / 加载态 / 过滤数据 / trace */
 const recommendStore = useRecommendStore()
-/** 食材 store（已选数量校验） */
-const ingredientsStore = useIngredientsStore()
 
 /** 三档分组定义（顺序即展示顺序） */
 const GROUPS = [
@@ -91,6 +96,78 @@ function difficultyLabel(d: RecommendResultItem['difficulty']): string {
   return DIFFICULTY_LABELS[d]
 }
 
+// ── DEF-04/DEF-12：缺料标签过滤 + 折叠（逻辑抽至 utils/recipe 纯函数，此处仅接线） ──
+
+/** 已展开缺料折叠的菜谱 ID 集合（点击「等 N 样」后展示该卡片全部缺料标签） */
+const expandedMissing = ref(new Set<number>())
+
+/**
+ * 单卡片缺料展示态：先过滤脏项（DEF-04：无名/纯数字项剔除），再按阈值折叠
+ * （DEF-12：超过 MISSING_TAGS_VISIBLE_LIMIT(5) 折叠为前 5 个 + 等 N 样）。
+ * @param item 推荐结果条目
+ * @returns valid：过滤后的完整缺料列表；visible：折叠态展示列表；overflow：折叠数量
+ */
+function missingDisplay(item: RecommendResultItem): {
+  valid: string[]
+  visible: string[]
+  overflow: number
+} {
+  const valid = filterValidMissing(item.missing_ingredients)
+  const folded = foldMissingTags(valid, MISSING_TAGS_VISIBLE_LIMIT)
+  return { valid, visible: folded.visible, overflow: folded.overflow }
+}
+
+/**
+ * 单卡片当前应展示的缺料标签列表：已展开（或未超阈值）展示全量，否则只展示前 5 个。
+ * @param item 推荐结果条目
+ * @returns 展示用缺料名列表
+ */
+function visibleMissing(item: RecommendResultItem): string[] {
+  const display = missingDisplay(item)
+  return expandedMissing.value.has(item.recipe_id) || display.overflow === 0
+    ? display.valid
+    : display.visible
+}
+
+/**
+ * 单卡片是否需要渲染「等 N 样」折叠入口。
+ * @param item 推荐结果条目
+ * @returns true 表示有被折叠项且尚未展开
+ */
+function hasMissingOverflow(item: RecommendResultItem): boolean {
+  return missingDisplay(item).overflow > 0 && !expandedMissing.value.has(item.recipe_id)
+}
+
+/**
+ * 单卡片被折叠的缺料数量（「等 N 样」文案用）。
+ * @param item 推荐结果条目
+ * @returns 折叠数量（≥0）
+ */
+function missingOverflowCount(item: RecommendResultItem): number {
+  return missingDisplay(item).overflow
+}
+
+/**
+ * 点击「等 N 样」展开该卡片全部缺料标签（点击后入口消失，不提供再收起，保持交互简单）。
+ * @param recipeId 菜谱 ID
+ * @returns 无
+ */
+function expandMissing(recipeId: number): void {
+  expandedMissing.value.add(recipeId)
+}
+
+/**
+ * 过滤原因类型码 → 原因标签颜色（type 中文映射在 stores/recommend.filterReasonLabel，
+ * 此处仅负责视觉分级：过敏原红色警示 / 忌口橙色提醒 / 难度与设备中性灰）。
+ * @param type 原因类型码（allergen / taboo / difficulty / equipment）
+ * @returns Element Plus tag 颜色类型
+ */
+function reasonTagType(type: string): 'danger' | 'warning' | 'info' {
+  if (type === 'allergen') return 'danger'
+  if (type === 'taboo') return 'warning'
+  return 'info'
+}
+
 /**
  * 卡片点击 → 菜谱详情 W-03。
  * @param recipeId 菜谱 ID
@@ -107,7 +184,11 @@ function goDetail(recipeId: number): void {
  * @returns 无
  */
 async function initialFetch(): Promise<void> {
-  if (recommendStore.askMode && ingredientsStore.selectedCount === 0) return
+  // ask 直达态一律不重拉手选推荐：用户经「问厨娘」进入时展示问答检索结果，
+  // 即使本地残留手选食材（sessionStorage 持久化）也不可覆写，否则问句结果丢失
+  // （T8 系统复测发现的展示缺陷：有手选缓存时 ask 结果被手选推荐顶掉）。
+  // 回到手选推荐的路径：摘要栏「改手选」入口或「选择食材」导航。
+  if (recommendStore.askMode) return
   await recommendStore.fetchRecommend()
   if (recommendStore.blockedPayload) void router.push('/blocked')
 }
@@ -119,6 +200,18 @@ async function initialFetch(): Promise<void> {
 async function onFilterSwitchChange(): Promise<void> {
   await recommendStore.fetchRecommend(true)
   if (recommendStore.blockedPayload) void router.push('/blocked')
+}
+
+/**
+ * DEF-14：点击「显示被我过滤掉的菜」文字（按钮化热区）翻转开关。
+ * 文字为独立 button（el-switch 根节点自带 onClick 切换，包裹式 label 会双触发），
+ * 手动翻转 store 后复用既有 onFilterSwitchChange 链路（语义与 @change 完全一致，
+ * 不改变 T3 的 fetchFilteredItems 调用时机）。
+ * @returns 无
+ */
+async function onSwitchLabelClick(): Promise<void> {
+  recommendStore.showFilteredItems = !recommendStore.showFilteredItems
+  await onFilterSwitchChange()
 }
 
 /**
@@ -185,9 +278,12 @@ onMounted(() => {
           <el-button link type="primary" size="small" @click="goSelect">编辑食材</el-button>
         </template>
       </div>
-      <!-- 被过滤展示开关：ask 直达态无过滤数据（切换会以空食材强发请求），隐藏 -->
+      <!-- 被过滤展示开关：ask 直达态无过滤数据（切换会以空食材强发请求），隐藏。
+           DEF-14：文字按钮化 + 44px 命中热区，点击文字即翻转开关（与 @change 同链路） -->
       <div v-if="!recommendStore.askMode" class="summary-switch">
-        <span class="switch-label">显示被我过滤掉的菜</span>
+        <button type="button" class="switch-label" @click="onSwitchLabelClick">
+          显示被我过滤掉的菜
+        </button>
         <el-switch v-model="recommendStore.showFilteredItems" @change="onFilterSwitchChange" />
       </div>
     </div>
@@ -267,12 +363,15 @@ onMounted(() => {
           show-icon
         />
 
-        <!-- 被过滤菜谱区（开关打开时）：清单模式 / 计数模式双支持；
+        <!-- 被过滤菜谱区（开关打开时）：明细来自 /v1/recommend/filtered 重放接口，
+             空清单回退 filtered_summary 统计行（两者不并存弹重复）；
              ask 直达态无过滤语义（搜索结果不做布尔硬过滤），随开关一并隐藏，
              避免开关残留为 true 时 ask 结果页渲染无意义的「被过滤的菜谱」空区块 -->
         <template v-if="recommendStore.showFilteredItems && !recommendStore.askMode">
           <el-divider class="filtered-divider">被过滤的菜谱（默认不会出现在推荐中）</el-divider>
           <template v-if="recommendStore.filteredItems.length > 0">
+            <!-- 统计行保留在明细上方（与明细并存时不重复弹） -->
+            <p v-if="filteredSummary" class="filtered-summary">{{ filteredSummary }}</p>
             <div
               v-for="f in recommendStore.filteredItems"
               :key="f.recipe_id"
@@ -280,9 +379,22 @@ onMounted(() => {
               role="button"
               @click="goDetail(f.recipe_id)"
             >
-              <span class="filtered-title">{{ f.title }}</span>
-              <el-tag type="danger" size="small" effect="plain">已过滤</el-tag>
-              <span class="filtered-reason">{{ f.filter_reasons.join('；') }}</span>
+              <div class="filtered-head">
+                <span class="filtered-title">{{ f.title }}</span>
+                <el-tag type="danger" size="small" effect="plain">已过滤</el-tag>
+              </div>
+              <!-- 原因列表：type 中文映射统一走 filterReasonLabel，detail 直出后端文案 -->
+              <div class="filtered-reasons">
+                <el-tag
+                  v-for="(r, i) in f.filter_reasons"
+                  :key="`${f.recipe_id}-${i}`"
+                  :type="reasonTagType(r.type)"
+                  size="small"
+                  effect="plain"
+                >
+                  {{ filterReasonLabel(r.type) }}：{{ r.detail }}
+                </el-tag>
+              </div>
             </div>
           </template>
           <p v-else-if="filteredSummary" class="filtered-summary">{{ filteredSummary }}</p>
@@ -310,8 +422,9 @@ onMounted(() => {
               >
                 <div class="card-head">
                   <span class="card-title">{{ item.title }}</span>
-                  <!-- ④ 为什么推荐给你：rank_reasons 弹层 -->
-                  <el-popover placement="top" :width="320" trigger="hover">
+                  <!-- ④ 为什么推荐给你：rank_reasons 弹层（DEF-13：hover → click 触发，
+                       误悬浮不再弹出；按钮可聚焦，click 触发保留键盘可达性） -->
+                  <el-popover placement="top" :width="320" trigger="click">
                     <template #reference>
                       <el-button link type="primary" size="small" @click.stop>
                         为什么推荐给你
@@ -333,14 +446,32 @@ onMounted(() => {
                     📦 覆盖率 {{ coveragePercent(item.covered_ingredients, item.missing_ingredients) }}%
                   </span>
                 </div>
-                <div v-if="item.missing_ingredients.length > 0 || item.required_equipment.length > 0" class="card-tags">
+                <!-- 缺料标签区（DEF-04：渲染前过滤无名/纯数字脏项；DEF-12：>5 个折叠为
+                     前 5 个 + 「等 N 样」，点击展开全部）。ask 直达态 covered/missing 为空，
+                     过滤后为空数组时区块随条件不渲染 -->
+                <div
+                  v-if="visibleMissing(item).length > 0 || item.required_equipment.length > 0"
+                  class="card-tags"
+                >
                   <el-tag
-                    v-for="m in item.missing_ingredients"
+                    v-for="m in visibleMissing(item)"
                     :key="`miss-${m}`"
                     type="warning"
                     size="small"
                   >
                     缺 {{ m }}
+                  </el-tag>
+                  <!-- 折叠入口：点击展开该卡片全部缺料标签（.stop 防止冒泡触发卡片跳详情） -->
+                  <el-tag
+                    v-if="hasMissingOverflow(item)"
+                    class="missing-more"
+                    type="warning"
+                    size="small"
+                    effect="plain"
+                    role="button"
+                    @click.stop="expandMissing(item.recipe_id)"
+                  >
+                    等 {{ missingOverflowCount(item) }} 样
                   </el-tag>
                   <el-tag
                     v-for="eq in item.required_equipment"
@@ -427,9 +558,21 @@ onMounted(() => {
   gap: 8px;
 }
 
+/* DEF-14：开关文字按钮化——min-height 44px + padding 扩大命中热区，
+   点击文字即翻转开关（onSwitchLabelClick），视觉保持原有说明文字样式 */
 .switch-label {
+  min-height: 44px;
+  padding: 10px 8px;
+  border: none;
+  background: none;
   font-size: var(--font-sm);
   color: var(--color-info);
+  cursor: pointer;
+  user-select: none;
+}
+
+.switch-label:hover {
+  color: var(--el-color-primary);
 }
 
 .loading-block {
@@ -527,26 +670,35 @@ onMounted(() => {
   margin-top: 10px;
 }
 
+/* DEF-12：「等 N 样」折叠入口可点击展开（role=button + 手型光标提示可交互） */
+.missing-more {
+  cursor: pointer;
+}
+
 .filtered-item {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 8px 12px;
+  padding: 10px 12px;
   margin-bottom: 8px;
   border-radius: 8px;
   border: 1px dashed var(--color-danger-border);
   cursor: pointer;
 }
 
+.filtered-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.filtered-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
 .filtered-title {
   font-size: var(--font-md);
   color: var(--text-main);
-}
-
-.filtered-reason {
-  font-size: var(--font-sm);
-  color: var(--color-info);
 }
 
 .filtered-summary {

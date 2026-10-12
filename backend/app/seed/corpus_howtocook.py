@@ -13,6 +13,9 @@
     4. 食材映射：原料名 → ingredient 主名/别名精确匹配；未命中自动建 minimal
        ingredient（category 启发式：调味词表 → seasoning，否则 other，
        allergen_verified=false），并统计映射命中率；
+       DEF-04 脏名防护：清洗后为空/纯数字/纯符号的配料行（语料表格序号行
+       「| 1 | 2 人份 |」产物）在 parse_amount_text 即记 skipped 不入库，
+       入库前再兜底过滤并单独计数（dirty_name_skipped）；
     5. 导入：title 幂等去重（与手写 45 道及本批已导入重名即跳过），
        status='published'，source_label/source_license 全量标注，
        cover_image_url 留空（不引用语料图片）；
@@ -316,6 +319,32 @@ def _clean_name(raw: str) -> str:
     return name
 
 
+def _is_dirty_ingredient_name(name: str | None) -> bool:
+    """判定清洗后的配料名是否为脏名（DEF-04，函数）。
+
+    说明：
+        语料表格行存在「| 1 | 2 人份 |」类写法——序号列被当作名称、份数列被
+        量词型用量匹配吞掉，最终产出 name='1' 的脏 ingredient（前端表现为
+        「缺 1」脏标签）。判定口径：strip 后为空，或不含任何文字字符
+        （字母/汉字等 Unicode 字母，纯数字与纯符号均视为脏名）。
+
+    参数：
+        name：清洗/归一化后的配料名（可 None）。
+
+    返回值：
+        bool：True 表示脏名（应跳过并计数）；False 表示正常名称。
+
+    异常：
+        无。
+    """
+    if not name:
+        return True
+    text = str(name).strip()
+    if not text:
+        return True
+    return not any(ch.isalpha() for ch in text)
+
+
 def _normalize_name(name: str) -> str:
     """原料名归一化（函数）。
 
@@ -494,6 +523,10 @@ def parse_amount_text(text: str) -> tuple[str, dict | None, str]:
     # 水类行：可解析但语义上非食材，忽略并单独计数
     if norm in WATER_WORDS:
         return (name, None, "water")
+    # DEF-04 脏名行：清洗后名称为空/纯数字/纯符号（如表格序号行「| 1 | 2 人份 |」
+    # 被拆成 name='1' + 用量「2 人份」）→ 直接记 skipped，不再产出脏 ingredient
+    if _is_dirty_ingredient_name(name):
+        return (name, None, "skipped")
 
     # 冒号替换为空格便于「名称：用量」定位；括号注释剥离（等长无关，仅用于用量定位）
     search_src = RE_PAREN_COMMENT.sub(" ", text).replace("：", " ").replace(":", " ")
@@ -698,10 +731,11 @@ def parse_dish_file(md_path: Path) -> dict | None:
         name2, amount2, kind2 = parse_amount_text(item)
         base_name = name2 or _clean_name(item) or item
         norm = _normalize_name(base_name)
-        # 说明行 / 水类行 / 工具行不入清单；名称脏（含空白或过长）不量化兜底
+        # 说明行 / 水类行 / 工具行不入清单；名称脏（含空白或过长、为空/纯数字，DEF-04）
+        # 不量化兜底
         if (not norm or norm in seen_calc_names or norm in WATER_WORDS
                 or kind2 == "prose" or _is_tool(base_name) or len(base_name) > 10
-                or re.search(r"\s", base_name)):
+                or re.search(r"\s", base_name) or _is_dirty_ingredient_name(base_name)):
             continue
         seen_calc_names.add(norm)
         if amount2 is not None and kind2 not in ("skipped", "prose"):
@@ -812,6 +846,7 @@ def import_corpus(session: Session) -> dict:
         "amount_interval": 0, "amount_value": 0, "amount_count": 0,
         "amount_spoon": 0, "amount_quantize": 0, "amount_skipped": 0,
         "prose_ignored": 0, "tool_ignored": 0, "water_ignored": 0,
+        "dirty_name_skipped": 0,
         "skipped": [],
     }
     if not ensure_corpus():
@@ -851,6 +886,9 @@ def import_corpus(session: Session) -> dict:
             数据库操作异常向上抛出。
         """
         if not norm_name:
+            return (None, False)
+        # DEF-04：脏名（空/纯数字/纯符号）绝不建词条——防止「缺 1」类 ingredient 落库
+        if _is_dirty_ingredient_name(norm_name):
             return (None, False)
         if norm_name in by_name:
             return (by_name[norm_name], True)
@@ -899,8 +937,13 @@ def import_corpus(session: Session) -> dict:
             elif kind == "skipped":
                 stats["amount_skipped"] += 1
 
-        # 有效食材行：过滤 skipped/water/dup/prose/tool
-        rows = [r for r in dish["materials"] if r[2] not in ("skipped", "water", "dup", "prose", "tool")]
+        # 有效食材行：过滤 skipped/water/dup/prose/tool + DEF-04 脏名行
+        # （清洗后为空/纯数字/纯符号，单独计数便于排查语料质量）
+        all_rows = [
+            r for r in dish["materials"] if r[2] not in ("skipped", "water", "dup", "prose", "tool")
+        ]
+        rows = [r for r in all_rows if not _is_dirty_ingredient_name(r[0])]
+        stats["dirty_name_skipped"] += len(all_rows) - len(rows)
         if not rows:
             stats["skipped"].append((title, "无有效食材行"))
             continue
@@ -1008,4 +1051,53 @@ def import_corpus(session: Session) -> dict:
 
     # 跳过清单抽样（报告 ≤10 条示例）
     stats["skipped_samples"] = stats["skipped"][:10]
+    return stats
+
+
+def fix_dirty_ingredient_rows(session: Session) -> dict:
+    """清理库内历史脏配料词条（DEF-04 一次性修复，函数，幂等）。
+
+    说明：
+        历史语料导入在 ingredient 表留下了 name 为空/纯数字/纯符号的脏词条
+        （如「干煸仔鸡」缺料标签「缺 1」即源于 name='1' 的 ingredient 且
+        amount_type='main' 排在主料首位）。本函数：
+        1) 全量扫描 ingredient，按 _is_dirty_ingredient_name 判定脏行；
+        2) 删除脏词条的 recipe_ingredient 引用行（避免外键悬挂）；
+        3) 删除脏词条本身；
+        幂等：重复执行时脏行已清空，返回 removed_ingredients=0。
+        不修复派生字段：脏词条 allergen_codes 为空，删除后菜谱级
+        allergen_codes/ingredient_allergen_codes 并集不变，无需回填。
+
+    运行方式（手动执行，事务由调用方提交）：
+        cd backend && .venv\\Scripts\\python.exe -c ^
+          "from app.core.db import SessionLocal; \\
+           from app.seed.corpus_howtocook import fix_dirty_ingredient_rows; \\
+           s = SessionLocal(); print(fix_dirty_ingredient_rows(s)); s.commit(); s.close()"
+
+    参数：
+        session：SQLAlchemy 会话（由调用方管理事务与提交）。
+
+    返回值：
+        dict：{"removed_ingredients": int, "removed_refs": int,
+               "removed_names": list[str]}——清理的词条数 / 引用行数 /
+               脏名清单（≤50 条抽样）。
+
+    异常：
+        数据库操作异常向上抛出（由调用方回滚）。
+    """
+    stats: dict = {"removed_ingredients": 0, "removed_refs": 0, "removed_names": []}
+    ingredients = session.query(Ingredient).all()
+    for ing in ingredients:
+        if not _is_dirty_ingredient_name(ing.name):
+            continue
+        refs = session.query(RecipeIngredient).filter(
+            RecipeIngredient.ingredient_id == ing.id
+        ).all()
+        stats["removed_refs"] += len(refs)
+        for ref in refs:
+            session.delete(ref)
+        session.delete(ing)
+        stats["removed_ingredients"] += 1
+        if len(stats["removed_names"]) < 50:
+            stats["removed_names"].append(str(ing.name))
     return stats

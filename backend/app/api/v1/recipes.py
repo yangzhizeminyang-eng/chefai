@@ -1,18 +1,20 @@
 """菜谱路由模块。
 
 职责：
+    GET /v1/recipes?q=&page=&page_size=：菜谱列表搜索（q 模糊匹配菜名 + 食材名/别名，
+    仅 published，分页返回 {items, total}；查询类接口豁免幂等，错误走统一 api_error）；
     GET /v1/recipes/{id}：菜谱详情（servings 缩放重算用量）；
     GET /v1/recipes/{id}/nutrition：营养估算（缺失标注 excluded_items，不按 0 计）；
     POST /v1/recipes/{id}/feedback：菜谱反馈（like/dislike/cooked，写 recipe_feedback，
     E.9 反馈立即生效——排序侧由 ability.ranking.load_feedback_penalty 消费）。
-    响应结构对齐前端 types.ts RecipeDetail / NutritionResult。
+    响应结构对齐前端 types.ts RecipeDetail / NutritionResult / RecipeSearchResponse。
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.ability.nutrition import estimate_recipe_nutrition, resolve_per_serving_kcal
@@ -25,7 +27,7 @@ from app.api.v1.deps import (
     resolve_anonymous_id,
 )
 from app.core.db import get_db
-from app.models import Ingredient, Recipe, RecipeFeedback, RecipeIngredient, RecipeStep
+from app.models import Ingredient, IngredientAlias, Recipe, RecipeFeedback, RecipeIngredient, RecipeStep
 from app.schemas.recipes import NutritionOut, NutritionTotalOut, RecipeIngredientItem, RecipeStepItem
 
 router = APIRouter(prefix="/recipes", tags=["recipes"])
@@ -109,6 +111,79 @@ def _build_ingredient_items(
             )
         )
     return items
+
+
+@router.get("", summary="菜谱搜索（q 模糊匹配菜名与食材名/别名，仅 published，分页）")
+def search_recipes(
+    q: str | None = Query(default=None, max_length=50, description="搜索关键词（菜名/食材名/别名）"),
+    page: int = Query(default=1, ge=1, description="页码（从 1 起）"),
+    page_size: int = Query(default=10, ge=1, le=50, description="每页条数（1~50）"),
+    session: Session = Depends(get_db),
+) -> dict:
+    """菜谱列表搜索端点（函数，DEF-02 后端配套）。
+
+    说明：
+        q 非空时：菜名 ILIKE 模糊匹配，或菜谱引用了名称/别名命中 q 的食材
+        （「可含别名」口径）；菜名直接命中的条目排在食材命中的前面；
+        q 为空/空白时返回全部已发布菜谱（分页）。
+        查询类接口豁免幂等（无副作用，不做 request_id 缓存）；
+        分页参数非法由 FastAPI 校验出 422（统一错误体结构）。
+
+    参数：
+        q：搜索关键词（可缺省）。
+        page：页码（≥1，默认 1）。
+        page_size：每页条数（1~50，默认 10）。
+        session：请求级数据库会话。
+
+    返回值：
+        dict：{"items": [{id, title, difficulty, time_minutes, calories_kcal}],
+        "total": 总命中数, "page": 页码, "page_size": 每页条数}。
+        difficulty 为前端三档文案（easy/medium/hard）。
+
+    异常：
+        HTTPException 422：分页参数不合法（统一错误体）。
+    """
+    keyword = (q or "").strip()
+    stmt = select(Recipe).where(Recipe.status == "published")
+    count_stmt = select(func.count(Recipe.id)).where(Recipe.status == "published")
+    if keyword:
+        pattern = f"%{keyword}%"
+        # 食材名或别名命中 q 的菜谱集合（「可含别名」口径）
+        ing_match_subq = (
+            select(RecipeIngredient.recipe_id)
+            .join(Ingredient, Ingredient.id == RecipeIngredient.ingredient_id)
+            .where(
+                or_(
+                    Ingredient.name.ilike(pattern),
+                    Ingredient.id.in_(
+                        select(IngredientAlias.ingredient_id).where(IngredientAlias.alias.ilike(pattern))
+                    ),
+                )
+            )
+        )
+        condition = or_(Recipe.title.ilike(pattern), Recipe.id.in_(ing_match_subq))
+        stmt = stmt.where(condition)
+        count_stmt = count_stmt.where(condition)
+        # 菜名直接命中优先于仅食材命中（同组按 id 升序稳定输出）
+        stmt = stmt.order_by(case((Recipe.title.ilike(pattern), 0), else_=1), Recipe.id)
+    else:
+        stmt = stmt.order_by(Recipe.id)
+
+    total = int(session.execute(count_stmt).scalar_one() or 0)
+    rows = session.execute(
+        stmt.offset((page - 1) * page_size).limit(page_size)
+    ).scalars().all()
+    items = [
+        {
+            "id": int(recipe.id),
+            "title": recipe.title,
+            "difficulty": difficulty_label(recipe.difficulty),
+            "time_minutes": recipe.time_minutes,
+            "calories_kcal": recipe.calories_kcal,
+        }
+        for recipe in rows
+    ]
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 @router.get("/{recipe_id}", summary="菜谱详情（支持 servings 缩放重算）")

@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query, Request, Response
@@ -264,7 +265,8 @@ def list_history(
 
     说明：
         取本人已完成（completed）会话，按完成时间倒序；rating 来自该会话
-        finish 时写入的 recipe_feedback（未评分 None）。
+        finish 时写入的 recipe_feedback（未评分 None）；duration_minutes 为
+        completed_at - created_at 向上取整分钟数（无完成时间的旧数据为 None）。
 
     参数：
         request：FastAPI 请求对象。
@@ -307,6 +309,12 @@ def list_history(
                 recipe_name=recipe.title,
                 finished_at=cs.completed_at.isoformat() if cs.completed_at else None,
                 rating=rating_map.get(int(cs.id)),
+                # 耗时分钟数：完成时间 - 创建时间，向上取整；无完成时间（旧数据）为 None
+                duration_minutes=(
+                    math.ceil((cs.completed_at - cs.created_at).total_seconds() / 60)
+                    if cs.completed_at is not None and cs.created_at is not None
+                    else None
+                ),
             )
             for cs, recipe in rows
         ]

@@ -6,7 +6,7 @@
 
 关键约定：
     - 开关：remote_config switch.vision=false → 403（识别入口置灰）；
-    - 额度：免费 4 次/日、会员（存在 status='paid' 订单）10 次/日；用量持久化在
+    - 额度：免费 3 次/日、会员（存在 status='paid' 订单）10 次/日；用量持久化在
       user.preferences JSONB（vision_usage: {date, used}），与 T4 会员口径一致
       （⚠️ 为避免与并行代理 T4 阻塞，额度函数在本文件内私有实现（_get_quota /
       _consume_quota），未 import app.ability.member；T4 完成后可直接切换 import）；
@@ -50,8 +50,8 @@ logger = get_logger(__name__)
 # 远程开关键（与 app/api/v1/config.py 的 _SWITCH_KEYS 口径一致）
 _VISION_SWITCH_KEY = "switch.vision"
 
-# 识别额度（spec：免费 4 次/日、会员 10 次/日；会员判定与 T4 会员接口同口径）
-FREE_DAILY_LIMIT = 4
+# 识别额度（spec：免费 3 次/日、会员 10 次/日；会员判定与 T4 会员接口同口径）
+FREE_DAILY_LIMIT = 3
 MEMBER_DAILY_LIMIT = 10
 
 # 用量在 user.preferences 中的持久化键
@@ -73,7 +73,7 @@ def _is_member(session: Session, user_id: int) -> bool:
         user_id：用户 ID。
 
     返回值：
-        bool：True 会员（额度 10）/ False 免费档（额度 4）。
+        bool：True 会员（额度 10）/ False 免费档（额度 3）。
 
     异常：
         不抛出（查询异常按免费档降级）。
@@ -204,7 +204,7 @@ def _save_image(image_bytes: bytes) -> str | None:
 @router.post(
     "/recognize",
     response_model=VisionRecognizeResponse,
-    summary="拍照识别食材（阶段一 mock 视觉适配器，额度 4/日·会员 10/日）",
+    summary="拍照识别食材（阶段一 mock 视觉适配器，额度 3/日·会员 10/日）",
 )
 def post_vision_recognize(
     request: Request,
@@ -226,7 +226,9 @@ def post_vision_recognize(
 
     返回值：
         dict / JSONResponse：200 识别结果（recognized/degraded/message/quota）、
-        403 开关关闭、429 额度不足（含 quota）。
+        403 开关关闭、429 额度不足（含 quota）。quota 结构
+        {used, limit, remaining}：limit 免费档 3 次/日（FREE_DAILY_LIMIT）、
+        会员 10 次/日（MEMBER_DAILY_LIMIT，存在 status='paid' 订单即会员）。
 
     异常：
         HTTPException 422：上传文件为空；其余异常由全局处理器兜底。

@@ -5,7 +5,7 @@
     app/api/v1/member.py（GET /v1/member/me）与 Task 5 的 vision 识别模块
     （识别成功后 consume_quota）统一调用：
     - get_member_status(session, user_id)：按 paid 订单判定会员身份与到期时间；
-    - get_quota(session, user_id)：读当日识别额度（会员 10 / 免费 4）；
+    - get_quota(session, user_id)：读当日识别额度（会员 10 / 免费 3）；
     - consume_quota(session, user_id, n)：扣减额度并落库（内部 commit）；
     - refund_quota(session, user_id, n)：识别失败回补额度（内部 commit）。
 
@@ -34,8 +34,8 @@ from app.models import Order, User
 
 logger = get_logger(__name__)
 
-# 免费档每日 AI 识别额度（PRD 会员权益对照：免费 4 次/日）
-FREE_QUOTA_LIMIT = 4
+# 免费档每日 AI 识别额度（PRD 会员权益对照：免费 3 次/日）
+FREE_QUOTA_LIMIT = 3
 
 # 会员档每日 AI 识别额度（会员 10 次/日）
 MEMBER_QUOTA_LIMIT = 10
@@ -145,7 +145,7 @@ def get_quota(session: Session, user_id: int) -> dict:
     """读取用户当日 AI 识别额度（函数）。
 
     说明：
-        limit 按会员身份取 MEMBER_QUOTA_LIMIT(10) / FREE_QUOTA_LIMIT(4)；
+        limit 按会员身份取 MEMBER_QUOTA_LIMIT(10) / FREE_QUOTA_LIMIT(3)；
         used 为当日已用次数（跨日自动归零，惰性重置不回写）。仅查询，不写库。
 
     参数：

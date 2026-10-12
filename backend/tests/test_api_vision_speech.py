@@ -185,7 +185,7 @@ def test_vision_recognize_quota_deduction(client: TestClient, monkeypatch: pytes
     assert body["degraded"] is False
     assert "番茄" in [item["name"] for item in body["recognized"]]
     assert body["quota"]["used"] == 1
-    assert body["quota"]["limit"] in (4, 10)
+    assert body["quota"]["limit"] in (3, 10)
     assert body["quota"]["remaining"] == body["quota"]["limit"] - 1
 
     # 第二次调用：同一用户额度继续扣减
@@ -243,7 +243,7 @@ def test_vision_quota_exhausted_429(client: TestClient, monkeypatch: pytest.Monk
     """额度耗尽返回 429（含 quota 三元组）（函数）。
 
     说明：
-        预置用户当日用量=免费上限 4，识别请求应直接 429 且不触达 provider。
+        预置用户当日用量=免费上限 3，识别请求应直接 429 且不触达 provider。
 
     参数：
         client：TestClient fixture。
@@ -259,7 +259,7 @@ def test_vision_quota_exhausted_429(client: TestClient, monkeypatch: pytest.Monk
     anon = f"anon_t5_quota_{uuid.uuid4().hex[:10]}"
     today = date.today().isoformat()
     with SessionLocal() as session:
-        user = User(anonymous_id=anon, preferences={"vision_usage": {"date": today, "used": 4}})
+        user = User(anonymous_id=anon, preferences={"vision_usage": {"date": today, "used": 3}})
         session.add(user)
         session.commit()
         user_id = int(user.id)
@@ -270,7 +270,7 @@ def test_vision_quota_exhausted_429(client: TestClient, monkeypatch: pytest.Monk
         assert body["code"] == "QUOTA_EXCEEDED"
         assert body["message"] == "今日识别次数已用完"
         assert body["quota"]["remaining"] == 0
-        assert body["quota"]["limit"] == 4
+        assert body["quota"]["limit"] == 3
     finally:
         with SessionLocal() as session:
             row = session.get(User, user_id)
@@ -279,14 +279,14 @@ def test_vision_quota_exhausted_429(client: TestClient, monkeypatch: pytest.Monk
                 session.commit()
 
 
-def test_vision_quota_boundary_four_ok_then_reject(
+def test_vision_quota_boundary_three_ok_then_reject(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """额度真实边界：第 1~4 次识别成功，第 5 次拒绝 429（函数）。
+    """额度真实边界：第 1~3 次识别成功，第 4 次拒绝 429（函数）。
 
     说明：
-        区别于预置 used=4 的用例（test_vision_quota_exhausted_429），本用例
-        连续真实扣减 4 次验证逐次递减与第 4 次仍 200（remaining=0）的边界。
+        区别于预置 used=3 的用例（test_vision_quota_exhausted_429），本用例
+        连续真实扣减 3 次验证逐次递减与第 3 次仍 200（remaining=0）的边界。
 
     参数：
         client：TestClient fixture。
@@ -300,21 +300,21 @@ def test_vision_quota_boundary_four_ok_then_reject(
     """
     monkeypatch.setattr(vision_module, "get_vision_provider", lambda: _StubHighProvider())
     headers = _anon_headers()
-    for expected_used in range(1, 5):
+    for expected_used in range(1, 4):
         resp = client.post("/v1/vision/recognize", files=_UPLOAD_IMAGE, headers=headers)
         assert resp.status_code == 200, f"第 {expected_used} 次识别应成功"
         quota = resp.json()["quota"]
         assert quota["used"] == expected_used
-        assert quota["remaining"] == 4 - expected_used
-        if expected_used == 4:
-            assert quota["remaining"] == 0  # 第 4 次成功后额度恰好耗尽
+        assert quota["remaining"] == 3 - expected_used
+        if expected_used == 3:
+            assert quota["remaining"] == 0  # 第 3 次成功后额度恰好耗尽
 
-    resp5 = client.post("/v1/vision/recognize", files=_UPLOAD_IMAGE, headers=headers)
-    assert resp5.status_code == 429
-    body = resp5.json()
+    resp4 = client.post("/v1/vision/recognize", files=_UPLOAD_IMAGE, headers=headers)
+    assert resp4.status_code == 429
+    body = resp4.json()
     assert body["code"] == "QUOTA_EXCEEDED"
     assert body["quota"]["remaining"] == 0
-    assert body["quota"]["limit"] == 4
+    assert body["quota"]["limit"] == 3
 
 
 def test_vision_confirm_repeat_idempotent(client: TestClient) -> None:

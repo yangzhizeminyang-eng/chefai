@@ -3,7 +3,8 @@
  * 视图职责：首页（Task 9 / 路由 /）。
  * 区块：① 顶部搜索框（回车走统一 ask 消费链路 stores/ask.submitQuestion：
  *          空输入单条提示；blocked 跳 W-05；recipe_search 落推荐态跳 W-02；
- *          chat 就地展示结果卡 AskChatCard）；
+ *          chat 就地展示结果卡 AskChatCard；
+ *          DEF-02：短且无疑问词的菜名/食材名搜索不再丢词，携带 q=原始输入 跳 /select）；
  *       ② 未建档黄条（el-alert warning → 跳 /profile 建档引导）；
  *       ③ 「继续上次的菜」卡（未完成会话 → /cook/{sessionId} 断点续做）；
  *       ④ 临期提醒条（el-alert 可关闭，localStorage aicook_expiry_dismissed_{date} 当日不再显示；
@@ -18,6 +19,7 @@ import { useRouter } from 'vue-router'
 import { useHomeStore } from '@/stores/home'
 import { useConfigStore } from '@/stores/config'
 import { useAskStore } from '@/stores/ask'
+import { decideHomeSearchRoute } from '@/utils/searchRouting'
 import { toastInfo } from '@/utils/toast'
 import AskChatCard from '@/components/AskChatCard.vue'
 import DisclaimerBar from '@/components/DisclaimerBar.vue'
@@ -33,9 +35,6 @@ const askStore = useAskStore()
 
 /** 搜索关键词（回车提问语义，同 W-01 约定） */
 const keyword = ref('')
-
-/** 提问意图判定正则（与 SelectIngredientView 同源：疑问词/问号/长文本视为提问） */
-const QUESTION_PATTERN = /[?？]|吗|呢|怎么|怎样|如何|什么|哪些|多少|能不能|可不可以|行不行|可以|推荐/
 
 /** AI 创新入口是否可用（switches.innovation 未返回时默认放开） */
 const innovationEnabled = computed(() => configStore.switches.innovation !== false)
@@ -87,33 +86,29 @@ function dismissExpiry(): void {
 }
 
 /**
- * 搜索框回车：统一走 ask store 消费链路（stores/ask.submitQuestion）。
+ * 搜索框回车：按分流决策执行（纯函数 decideHomeSearchRoute 承载判定，便于单测）。
  * - 空输入 → 单条「请输入内容」提示（store 内守卫），不发请求（修复 A1 静默无响应）；
  * - qa 开关关闭（§5.8 问答模块）→ 降级为食材名精确搜索：跳食材选择页并回填关键词；
- * - 短且无疑问词 → 引导去食材选择页（保留既有产品分流，非 ask 范畴）；
+ * - 短且无疑问词（DEF-02 修复）→ 携带 q=原始输入 跳 /select：菜名搜索意图不丢词，
+ *   选择页先搜菜谱、再回退食材定位；
  * - 其余 → submitQuestion：blocked 跳 W-05 / recipe_search 落推荐态跳 W-02 /
  *   chat 就地展示（AskChatCard）/ 失败单一降级 toast（修复 H2 闭环断裂）。
  * @returns 无
  */
 function onSearchEnter(): void {
   const text = keyword.value.trim()
+  const decision = decideHomeSearchRoute(text, qaEnabled.value)
   // 空输入：交给 store 统一出单条提示（文案单点维护），不跳转不发请求
-  if (!text) {
+  if (decision === 'emptyHint' || decision === 'ask') {
     void askStore.submitQuestion(text)
     return
   }
   // 问答开关关闭（§5.8）：不走 ask，降级为食材名精确搜索（/select 页本地+远程搜索）
-  if (!qaEnabled.value) {
+  if (decision === 'selectDegraded') {
     toastInfo('问答功能维护中，已切换为食材名精确搜索')
-    void router.push({ path: '/select', query: { q: text } })
-    return
   }
-  // 短且无疑问词 → 引导去食材选择页搜索
-  if (!QUESTION_PATTERN.test(text) && text.length <= 4) {
-    void router.push('/select')
-    return
-  }
-  void askStore.submitQuestion(text)
+  // selectShort / selectDegraded 均携带 q 跳转（DEF-02：短菜名如「宫保鸡丁」不再丢词）
+  void router.push({ path: '/select', query: { q: text } })
 }
 
 /** 六大入口卡配置（enabled 动态判定，避免静态数据写死开关） */

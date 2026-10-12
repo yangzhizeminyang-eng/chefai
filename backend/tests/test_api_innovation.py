@@ -362,8 +362,8 @@ def test_generate_success_quantified_and_degraded(client: TestClient, anon_id: s
     """生成成功：结构/量化/标识红线全量断言（函数）。
 
     说明：
-        conftest 已将 LLM 指向不可达地址，本用例恰好覆盖「LLM 失败 → 本地模板
-        降级」路径（generated_by=local_template，basis 可验证）。
+        conftest 已将 LLM 指向不可达地址，本用例恰好覆盖「LLM 失败 → 规则模板
+        降级」路径（generated_by=template，basis 可验证）。
 
     参数：
         client：TestClient fixture。
@@ -415,8 +415,8 @@ def test_generate_success_quantified_and_degraded(client: TestClient, anon_id: s
     assert recipe["nutrition"]["estimate_note"]
     assert "excluded_items" in recipe["nutrition"]
 
-    # LLM 离线 → 本地模板降级（generated_by 可验证降级路径生效）
-    assert basis["generated_by"] == "local_template"
+    # LLM 离线 → 规则模板降级（generated_by 可验证降级路径生效）
+    assert basis["generated_by"] == "template"
 
     # DB 行核对
     with SessionLocal() as db:
@@ -701,8 +701,8 @@ def test_nfr92_quantified_spot_check_multiple_recipes(client: TestClient, anon_i
     """NFR-9.2 量化抽检：多组食材生成产出 0 模糊用量（降级模板路径同样满足）（函数）。
 
     说明：
-        conftest 将 LLM 指向不可达地址 → 生成走本地模板降级（generated_by=
-        local_template）；降级输出与 LLM 输出共用同一 _is_quantified 代码强制
+        conftest 将 LLM 指向不可达地址 → 生成走规则模板降级（generated_by=
+        template）；降级输出与 LLM 输出共用同一 _is_quantified 代码强制
         校验（违例重试一次、再违例本地模板替换），因此 Mock 输出路径与正式路径
         同受红线约束。抽检 3 组食材，逐个过 _assert_quantified_recipe。
 
@@ -733,7 +733,7 @@ def test_nfr92_quantified_spot_check_multiple_recipes(client: TestClient, anon_i
         assert recipe["visibility"] == "private"
         assert recipe["status"] == "generated"
         _assert_quantified_recipe(recipe)
-        assert recipe["basis"]["generated_by"] == "local_template"
+        assert recipe["basis"]["generated_by"] == "template"
 
 def test_nfr94_default_recommend_excludes_ai_private(client: TestClient, anon_id: str) -> None:
     """NFR-9.4 私有分区红线：默认推荐链路绝不检索他人 ai_private 创新菜（函数）。

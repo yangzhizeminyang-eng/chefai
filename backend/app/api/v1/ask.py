@@ -49,6 +49,10 @@ def post_ask(
         编排执行由 app.graph.runner.run_ask 完成（intake_guard 先于业务节点）；
         意图映射：否决体→blocked / safe_mode→free_qa（固定话术）/ qa_answer→free_qa /
         results→recipe_search / 其余→recommend。
+        recommend 意图时从问句中按最长匹配提取命中食材名（含别名归一，
+        ability.retrieval.extract_ingredient_names_from_text）并入推荐检索入参，
+        提升类如「土豆和牛肉能一起做什么」问法的召回覆盖；响应契约不变
+        （本端点只回 intent=recommend + trace_id，结果由前端再调 /v1/recommend）。
 
     参数：
         payload：提问请求体（text 与 question 至少其一非空白）。

@@ -30,14 +30,20 @@ from app.ability.embedding import ensure_embeddings
 from app.ability.ranking import hard_filter, weighted_rank
 from app.ability.retrieval import retrieve_candidates
 from app.core.db import SessionLocal
+from app.graph.subgraphs import innovation as innovation_subgraph
 from app.models import RecipeIngredient
 from app.safety.types import SafetyProfile
+from tests.test_innovation_degrade import _anon, _delete_user, _SlowLLMClient
 
 # ---- 性能阈值（秒；已含 20% CI 波动裕量，直接硬断言）----
 HARD_FILTER_MAX_SECONDS = 0.5    # spec 预算 500ms
 WEIGHTED_RANK_MAX_SECONDS = 1.0  # spec 预算 1s
 HEALTHZ_MAX_SECONDS = 0.5        # spec 预算 500ms
 RETRIEVAL_MAX_SECONDS = 2.0      # spec 预算 2s
+# P1 DEF-01：创新生成降级窗口——LLM 表达硬超时后模板降级必须在 30s 内返回
+# （前端本接口专用 60s 超时，后端 25s 硬超时 + 降级拼装须留足余量；测试内打桩
+# 将硬超时调小为 3s，替身阻塞 15s，故实际耗时 ≈3~4s，阈值取 30s 覆盖 CI 波动）
+INNOVATION_DEGRADE_MAX_SECONDS = 30.0
 
 # 候选规模下限（seed 后 ~390 published，取 300+ 留余量）
 MIN_CANDIDATES = 300
@@ -205,3 +211,51 @@ def test_retrieve_candidates_performance() -> None:
     assert elapsed < RETRIEVAL_MAX_SECONDS, f"retrieve_candidates took {elapsed:.3f}s"
     assert 0 < len(candidates) <= _RETRIEVAL_TOP_K
     assert all("recipe_id" in c and "allergen_codes" in c for c in candidates)
+
+
+def test_innovation_generate_degrade_budget(client: TestClient, monkeypatch) -> None:
+    """创新生成降级路径总耗时断言（测试函数）：LLM 慢调用触发硬超时降级 ≤30s 且 ≤60s。
+
+    说明：
+        P1 DEF-01 配套性能断言。测试内打桩：将 LLM 硬超时调小为 3s、LLM 替身
+        阻塞 15s（远超超时）→ 触发「硬超时 → 规则模板降级」路径；计时断言接口
+        总耗时 ≤ INNOVATION_DEGRADE_MAX_SECONDS(30s)（降级窗口）且 ≤ 60s（前端
+        专用超时预算），并取证降级来源 basis.generated_by == "template" 与响应
+        结构完整（ok=true、is_ai_innovated=true）。风格与 test_innovation_degrade
+        既有慢调用用例一致，替身与清理工具直接复用。
+
+    参数：
+        client：conftest 提供的 TestClient fixture。
+        monkeypatch：pytest monkeypatch fixture。
+
+    返回值：
+        None。
+
+    异常：
+        AssertionError：状态码非 201、降级来源非 template 或耗时超阈值。
+    """
+    monkeypatch.setattr(innovation_subgraph, "LLM_HARD_TIMEOUT_SECONDS", 3.0)
+    monkeypatch.setattr(innovation_subgraph, "get_llm_client", lambda: _SlowLLMClient(delay=15.0))
+
+    anon = _anon()
+    try:
+        start = time.perf_counter()
+        response = client.post(
+            "/v1/innovation/generate",
+            json={"ingredients": ["土豆", "青椒"]},
+            headers={"X-Anonymous-Id": anon},
+        )
+        elapsed = time.perf_counter() - start
+    finally:
+        _delete_user(anon)
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body.get("ok") is True
+    recipe = body.get("recipe") or {}
+    assert recipe.get("is_ai_innovated") is True
+    assert (recipe.get("basis") or {}).get("generated_by") == "template"
+    assert elapsed < INNOVATION_DEGRADE_MAX_SECONDS, (
+        f"innovation degrade path took {elapsed:.2f}s (budget {INNOVATION_DEGRADE_MAX_SECONDS}s)"
+    )
+    assert elapsed < 60.0, f"innovation degrade path took {elapsed:.2f}s (frontend budget 60s)"

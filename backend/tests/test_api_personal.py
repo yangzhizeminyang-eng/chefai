@@ -188,6 +188,8 @@ def test_history_and_signature_dishes(client: TestClient, anon_id: str) -> None:
             rating_by_recipe.setdefault(h["recipe_id"], []).append(h["rating"])
     assert sorted(rating_by_recipe[1]) == [4, 5]
     assert history[0]["recipe_name"] in ("番茄炒蛋", "青椒土豆丝")
+    # 耗时字段：正常完成的会话 duration_minutes 为正整数（create→finish 秒级间隔向上取整）
+    assert all(isinstance(h["duration_minutes"], int) and h["duration_minutes"] >= 1 for h in history)
 
     # 拿手菜：番茄炒蛋 2 次（均分 4.5）入选；青椒土豆丝 2 次但均分 3 落选
     signature = client.get("/v1/signature-dishes", headers=_headers(anon_id)).json()["items"]
@@ -329,13 +331,14 @@ def test_help_answers_block_and_limit(client: TestClient, anon_id: str) -> None:
     assert created.status_code == 200
     sid = int(created.json()["id"])
 
-    # 1) 正常回答：基于当前步骤（第 1 步），1~3 条
+    # 1) 正常回答：未命中关键词库 → 回退当前步骤要点（首条带前缀，DEF-06），1~3 条
     first = client.post(f"/v1/cooking/sessions/{sid}/help", json={"question": "这一步要翻炒多久"}, headers=_headers(anon_id))
     assert first.status_code == 200
     body = first.json()
     assert body["blocked"] is False
     assert 1 <= len(body["answers"]) <= 3
-    assert body["answers"][0].startswith("当前第 1 步：")
+    assert body["answers"][0].startswith("以下是本步要点：")
+    assert "当前第 1 步" in body["answers"][0]
 
     # 2) 风控拦截：医疗/高危句式 → blocked，不生成回答
     blocked = client.post(
