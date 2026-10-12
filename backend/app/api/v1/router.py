@@ -16,6 +16,7 @@ from app.api.v1 import (
     config,
     consent,
     cooking,
+    day_menu,
     feedback,
     home,
     ingredients,
@@ -27,6 +28,7 @@ from app.api.v1 import (
     profile,
     recipes,
     recommend,
+    seasonal,
     speech,
     trace,
     vision,
@@ -43,6 +45,8 @@ api_router.include_router(vision.router)           # 模块 D 识别
 api_router.include_router(speech.router)           # 模块 D 语音
 api_router.include_router(ask.router)
 api_router.include_router(recommend.router)
+api_router.include_router(day_menu.router)         # 零输入直出推荐（今天吃什么，add-home-entries-and-covers）
+api_router.include_router(seasonal.router)         # 时令页聚合（时令吃什么，add-home-entries-and-covers）
 api_router.include_router(recipes.router)
 api_router.include_router(cooking.router)
 api_router.include_router(nutrition.router)        # 模块 G 营养汇总/补录

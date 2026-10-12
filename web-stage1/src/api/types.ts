@@ -58,6 +58,8 @@ export interface RecommendResultItem {
   rank_reasons: string[]
   /** 菜谱来源标注 */
   source: string
+  /** 封面图 URL（/v1/media 相对路径，可直接作 img src；null 走前端程序化占位封面） */
+  cover_image_url?: string | null
 }
 
 /** 过滤计数（被布尔硬过滤剔除的菜谱统计） */
@@ -196,6 +198,10 @@ export interface RecipeDetail {
   tips: string[]
   /** 来源标注（如 HowToCook / 公开家常菜语料） */
   source_label: string
+  /** 成品图 URL（/v1/media 相对路径，可直接作 img src；null 走前端程序化占位封面） */
+  cover_image_url?: string | null
+  /** 成品图来源标注（如 HowToCook 语料配图；null 表示无真实图，不渲染来源行） */
+  cover_image_source?: string | null
 }
 
 /** 菜谱搜索结果条目（GET /v1/recipes?q= 列表项） */

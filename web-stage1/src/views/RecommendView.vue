@@ -4,7 +4,7 @@
  * 区块：① 食材摘要（手选：可编辑 → 返回 W-01；ask 直达：展示来源问句 + 改手选）
  *       +「显示被我过滤掉的菜」开关（ask 直达态隐藏）
  *       ② 三档分组（✅现在就能做 / 🛒差1–2样 / 💡需要多买几样）
- *       ③ 推荐卡片（菜名/耗时/难度/热量/覆盖率/缺失食材/设备标注）
+ *       ③ 推荐卡片（RecipeCard 组件：封面图 + 菜名/耗时/难度/热量/覆盖率/缺料折叠/设备标注，askMode 隐藏覆盖率）
  *       ④ 「为什么推荐给你」（rank_reasons 弹层）
  *       ⑤ 被过滤清单/计数（双模式）+ 保守模式条 + 部分失败说明条 + 不足 8 条如实说明 + 免责小字。
  *       ⑥ 调度取证线索：trace_id 与 request_id 并列小字展示，「查看调度详情」携带
@@ -15,21 +15,14 @@
  * 页面隐藏过滤开关与「不足 8 条」说明（语义不适配）。
  * 三态：加载 = 骨架屏 +「正在为你挑选…」；空 = 「放宽到差 1–2 样」/「补充食材」；异常 = el-alert + 重试。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import type { RecommendResultItem } from '@/api/types'
 import { filterReasonLabel, useRecommendStore } from '@/stores/recommend'
-import {
-  MISSING_TAGS_VISIBLE_LIMIT,
-  allergenLabel,
-  coveragePercent,
-  filterValidMissing,
-  foldMissingTags,
-  groupResults,
-} from '@/utils/recipe'
+import { allergenLabel, groupResults } from '@/utils/recipe'
 import AllergenAlertBar from '@/components/AllergenAlertBar.vue'
 import DisclaimerBar from '@/components/DisclaimerBar.vue'
+import RecipeCard from '@/components/RecipeCard.vue'
 
 /** 路由（卡片跳详情 / 编辑食材回 W-01 / 阻断跳 W-05） */
 const router = useRouter()
@@ -42,13 +35,6 @@ const GROUPS = [
   { level: 'missing_1_2', title: '🛒 差 1–2 样' },
   { level: 'need_more', title: '💡 需要多买几样' },
 ] as const
-
-/** 难度编码 → 中文标签（契约 difficulty: easy/medium/hard） */
-const DIFFICULTY_LABELS: Record<RecommendResultItem['difficulty'], string> = {
-  easy: '简单',
-  medium: '中等',
-  hard: '较难',
-}
 
 /** 三档分组结果（复用 utils/recipe.groupResults；未知 match_level 条目不落入任何档） */
 const grouped = computed(() => {
@@ -86,75 +72,6 @@ const insufficientNotice = computed(() => {
   if (n === 0 || n >= 8) return ''
   return `本次为你匹配到 ${n} 道菜谱（推荐上限 8 道）：现有食材组合有限，宁缺毋滥，不为凑数填充低质推荐。`
 })
-
-/**
- * 难度编码转中文标签。
- * @param d 难度编码
- * @returns 中文标签
- */
-function difficultyLabel(d: RecommendResultItem['difficulty']): string {
-  return DIFFICULTY_LABELS[d]
-}
-
-// ── DEF-04/DEF-12：缺料标签过滤 + 折叠（逻辑抽至 utils/recipe 纯函数，此处仅接线） ──
-
-/** 已展开缺料折叠的菜谱 ID 集合（点击「等 N 样」后展示该卡片全部缺料标签） */
-const expandedMissing = ref(new Set<number>())
-
-/**
- * 单卡片缺料展示态：先过滤脏项（DEF-04：无名/纯数字项剔除），再按阈值折叠
- * （DEF-12：超过 MISSING_TAGS_VISIBLE_LIMIT(5) 折叠为前 5 个 + 等 N 样）。
- * @param item 推荐结果条目
- * @returns valid：过滤后的完整缺料列表；visible：折叠态展示列表；overflow：折叠数量
- */
-function missingDisplay(item: RecommendResultItem): {
-  valid: string[]
-  visible: string[]
-  overflow: number
-} {
-  const valid = filterValidMissing(item.missing_ingredients)
-  const folded = foldMissingTags(valid, MISSING_TAGS_VISIBLE_LIMIT)
-  return { valid, visible: folded.visible, overflow: folded.overflow }
-}
-
-/**
- * 单卡片当前应展示的缺料标签列表：已展开（或未超阈值）展示全量，否则只展示前 5 个。
- * @param item 推荐结果条目
- * @returns 展示用缺料名列表
- */
-function visibleMissing(item: RecommendResultItem): string[] {
-  const display = missingDisplay(item)
-  return expandedMissing.value.has(item.recipe_id) || display.overflow === 0
-    ? display.valid
-    : display.visible
-}
-
-/**
- * 单卡片是否需要渲染「等 N 样」折叠入口。
- * @param item 推荐结果条目
- * @returns true 表示有被折叠项且尚未展开
- */
-function hasMissingOverflow(item: RecommendResultItem): boolean {
-  return missingDisplay(item).overflow > 0 && !expandedMissing.value.has(item.recipe_id)
-}
-
-/**
- * 单卡片被折叠的缺料数量（「等 N 样」文案用）。
- * @param item 推荐结果条目
- * @returns 折叠数量（≥0）
- */
-function missingOverflowCount(item: RecommendResultItem): number {
-  return missingDisplay(item).overflow
-}
-
-/**
- * 点击「等 N 样」展开该卡片全部缺料标签（点击后入口消失，不提供再收起，保持交互简单）。
- * @param recipeId 菜谱 ID
- * @returns 无
- */
-function expandMissing(recipeId: number): void {
-  expandedMissing.value.add(recipeId)
-}
 
 /**
  * 过滤原因类型码 → 原因标签颜色（type 中文映射在 stores/recommend.filterReasonLabel，
@@ -411,78 +328,15 @@ onMounted(() => {
               </span>
             </el-divider>
 
-            <!-- ③ 推荐卡片 -->
+            <!-- ③ 推荐卡片（RecipeCard 组件：封面图 + 菜名/耗时/难度/热量/覆盖率/缺料折叠/设备；
+                 ask 直达态隐藏覆盖率列，行为与原内联卡片一致） -->
             <div class="card-list">
-              <div
+              <RecipeCard
                 v-for="item in group.items"
                 :key="item.recipe_id"
-                class="recipe-card"
-                role="button"
-                @click="goDetail(item.recipe_id)"
-              >
-                <div class="card-head">
-                  <span class="card-title">{{ item.title }}</span>
-                  <!-- ④ 为什么推荐给你：rank_reasons 弹层（DEF-13：hover → click 触发，
-                       误悬浮不再弹出；按钮可聚焦，click 触发保留键盘可达性） -->
-                  <el-popover placement="top" :width="320" trigger="click">
-                    <template #reference>
-                      <el-button link type="primary" size="small" @click.stop>
-                        为什么推荐给你
-                      </el-button>
-                    </template>
-                    <ul class="reason-list">
-                      <li v-for="(reason, i) in item.rank_reasons" :key="i">{{ reason }}</li>
-                    </ul>
-                  </el-popover>
-                </div>
-                <div class="card-meta">
-                  <span>⏱ {{ item.time_minutes }} 分钟</span>
-                  <span>🍳 {{ difficultyLabel(item.difficulty) }}</span>
-                  <span>
-                    🔥 {{ item.calories_kcal != null ? `${item.calories_kcal} kcal/份` : '热量未纳入统计' }}
-                  </span>
-                  <!-- 覆盖率：ask 直达态无食材匹配数据（covered/missing 为空），不展示 -->
-                  <span v-if="!recommendStore.askMode">
-                    📦 覆盖率 {{ coveragePercent(item.covered_ingredients, item.missing_ingredients) }}%
-                  </span>
-                </div>
-                <!-- 缺料标签区（DEF-04：渲染前过滤无名/纯数字脏项；DEF-12：>5 个折叠为
-                     前 5 个 + 「等 N 样」，点击展开全部）。ask 直达态 covered/missing 为空，
-                     过滤后为空数组时区块随条件不渲染 -->
-                <div
-                  v-if="visibleMissing(item).length > 0 || item.required_equipment.length > 0"
-                  class="card-tags"
-                >
-                  <el-tag
-                    v-for="m in visibleMissing(item)"
-                    :key="`miss-${m}`"
-                    type="warning"
-                    size="small"
-                  >
-                    缺 {{ m }}
-                  </el-tag>
-                  <!-- 折叠入口：点击展开该卡片全部缺料标签（.stop 防止冒泡触发卡片跳详情） -->
-                  <el-tag
-                    v-if="hasMissingOverflow(item)"
-                    class="missing-more"
-                    type="warning"
-                    size="small"
-                    effect="plain"
-                    role="button"
-                    @click.stop="expandMissing(item.recipe_id)"
-                  >
-                    等 {{ missingOverflowCount(item) }} 样
-                  </el-tag>
-                  <el-tag
-                    v-for="eq in item.required_equipment"
-                    :key="`eq-${eq}`"
-                    type="info"
-                    size="small"
-                  >
-                    需要 {{ eq }} 设备
-                  </el-tag>
-                </div>
-              </div>
+                :item="item"
+                :show-coverage="!recommendStore.askMode"
+              />
             </div>
           </template>
         </div>
@@ -616,63 +470,6 @@ onMounted(() => {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 14px;
-}
-
-.recipe-card {
-  padding: 14px 16px;
-  border: 1px solid var(--color-info-border);
-  border-radius: 10px;
-  background: var(--card-bg);
-  cursor: pointer;
-  transition:
-    border-color 0.2s ease,
-    box-shadow 0.2s ease;
-}
-
-.recipe-card:hover {
-  border-color: var(--el-color-primary);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
-}
-
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.card-title {
-  font-size: var(--font-lg);
-  font-weight: 600;
-  color: var(--text-main);
-}
-
-.reason-list {
-  margin: 0;
-  padding-left: 18px;
-  font-size: var(--font-sm);
-  line-height: 1.8;
-}
-
-.card-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 10px;
-  font-size: var(--font-sm);
-  color: var(--text-main);
-}
-
-.card-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 10px;
-}
-
-/* DEF-12：「等 N 样」折叠入口可点击展开（role=button + 手型光标提示可交互） */
-.missing-more {
-  cursor: pointer;
 }
 
 .filtered-item {

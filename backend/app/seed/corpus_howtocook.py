@@ -3,7 +3,8 @@
 职责：
     对齐 05-V1.1 §5.1④「导入菜谱语料（362 篇结构化）」与 §5.6 流水线：
     1. ensure_corpus()：语料缓存目录不存在时按「GitHub 直连 → 镜像加速」顺序
-       git clone --depth 1 拉取 HowToCook 仓库（Unlicense 许可，禁止复用其图片）；
+       git clone --depth 1 拉取 HowToCook 仓库（Unlicense 公有领域，
+       甲方已确认允许复用其配图——spec add-home-entries-and-covers Q-55 破例）；
     2. 解析 dishes/**/*.md：菜名 / 分类 / 难度 / 卡路里 / 必备原料与工具 /
        计算用量 / 操作步骤（跳过模板、README、tips 等非菜谱文件）；
     3. 用量清洗（PRD CT-6：调味料不得「适量/少许」）：
@@ -18,13 +19,17 @@
        入库前再兜底过滤并单独计数（dirty_name_skipped）；
     5. 导入：title 幂等去重（与手写 45 道及本批已导入重名即跳过），
        status='published'，source_label/source_license 全量标注，
-       cover_image_url 留空（不引用语料图片）；
+       cover_image_url 复用语料配图（甲方已拍板破例：允许复用 HowToCook
+       语料图片，该仓库 LICENSE 为 Unlicense 公有领域；文件按
+       md5(title)[:12] 落盘 backend/assets/recipe_covers/，绝入 uploads/）；
        allergen_codes / ingredient_allergen_codes 由所引食材并集聚合；
        amount_type 启发式：前 N_MAIN 个非调味项 → main，调味词表 → seasoning，
        其余 → minor。
 
 幂等：
-    recipe 按 title 存在则跳过（连带食材行与步骤行）；重复执行零新增。
+    recipe 按 title 存在则跳过（连带食材行与步骤行）；存量菜谱
+    cover_image_url 为空且语料可定位到图片时补复制并 UPDATE（已填的不动，
+    重复执行零新增、零重复复制）。
 
 被引用方：
     app/seed/__main__.py（seed 总流程在 seed_recipes 之后调用 import_corpus）。
@@ -32,6 +37,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 import subprocess
@@ -60,6 +66,15 @@ MIRROR_URLS = [
 
 SOURCE_LABEL = "HowToCook / 公开家常菜语料"
 SOURCE_LICENSE = "Unlicense"
+
+# 封面图资产目录：backend/assets/recipe_covers/（🔴 绝不放 uploads/——该目录有 24h
+# 自动清理，spec 文档13 E10）。文件名 = md5(title)[:12]{原扩展名}，ASCII 安全，
+# 规避中文/括号在 URL 中的编码问题。
+COVERS_DIR = Path(__file__).resolve().parents[2] / "assets" / "recipe_covers"
+COVER_URL_PREFIX = "/v1/media/recipe-covers"
+
+# 语料配图识别的合法扩展名（小写；md 不在列）
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 
 # 导入规模下限（05-V1.1 §5.1④ 目标 ≥300 篇，362 篇为上限目标）
 CORPUS_TARGET_MIN = 300
@@ -817,6 +832,79 @@ def ensure_corpus() -> bool:
     return False
 
 
+def find_dish_image(dish_dir: Path, title: str) -> Path | None:
+    """在菜谱 md 所在目录按优先级定位配图（函数）。
+
+    说明：
+        优先级：① {title}.{jpg/jpeg/png/webp}（与菜名精确同名）→
+        ② 成品.{jpg/jpeg/png/webp} → ③ 目录内按文件名排序的第一张图片
+        （仅 jpg/jpeg/png/webp，.md 不在识别范围）。扩展名大小写不敏感。
+
+    参数：
+        dish_dir：菜谱 md 所在目录（语料 dishes/{分类}/{菜名}/）。
+        title：菜名（来自 md 一级标题，可能与目录名不一致）。
+
+    返回值：
+        Path | None：命中图片的路径；目录不存在或无图返回 None。
+
+    异常：
+        目录遍历异常向上抛出（由调用方按单篇失败记录并继续）。
+    """
+    if not dish_dir.is_dir():
+        return None
+    files = [p for p in dish_dir.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTS]
+    by_lower: dict[str, Path] = {p.name.lower(): p for p in files}
+    # ① 精确同名：{title}.{ext}
+    for ext in IMAGE_EXTS:
+        hit = by_lower.get(f"{title}{ext}")
+        if hit:
+            return hit
+    # ② 成品图：成品.{ext}
+    for ext in IMAGE_EXTS:
+        hit = by_lower.get(f"成品{ext}")
+        if hit:
+            return hit
+    # ③ 兜底：文件名排序的第一张图片
+    if files:
+        return sorted(files, key=lambda p: p.name)[0]
+    return None
+
+
+def copy_cover(dish_dir: Path, title: str) -> str | None:
+    """复制菜谱语料配图到封面资产目录并返回媒体 URL（函数，幂等）。
+
+    说明：
+        定位配图（find_dish_image）后复制到
+        backend/assets/recipe_covers/{md5(title)[:12]}{原扩展名小写}；
+        目标文件已存在时跳过复制（幂等）；复制失败仅告警并返回 None
+        （单篇失败不阻断整批导入）。🔴 绝不写入 uploads/（24h 自动清理）。
+
+    参数：
+        dish_dir：菜谱 md 所在目录。
+        title：菜名（md5 文件名以其为源，与图片定位口径一致）。
+
+    返回值：
+        str | None：封面 URL（{COVER_URL_PREFIX}/{hash}{ext}）；无图或复制失败返回 None。
+
+    异常：
+        不向上抛出（OSError 捕获降级为 None）。
+    """
+    src = find_dish_image(dish_dir, title)
+    if src is None:
+        return None
+    digest = hashlib.md5(title.encode("utf-8")).hexdigest()[:12]
+    ext = src.suffix.lower()
+    target = COVERS_DIR / f"{digest}{ext}"
+    if not target.exists():
+        COVERS_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(src, target)
+        except OSError as exc:
+            logger.warning("copy_cover_failed title=%s err=%s", title, exc)
+            return None
+    return f"{COVER_URL_PREFIX}/{digest}{ext}"
+
+
 def import_corpus(session: Session) -> dict:
     """解析并导入 HowToCook 语料菜谱（函数，幂等）。
 
@@ -825,15 +913,18 @@ def import_corpus(session: Session) -> dict:
         parse_dish_file → title 去重（与库内全部菜谱 + 本批已导入比对）→
         食材映射（主名/别名精确匹配，未命中自动建 minimal ingredient）→
         构造 Recipe/RecipeIngredient/RecipeStep（status=published、来源标注、
-        封面留空）→ 致敏原聚合 → 落库。统计随返回值输出（映射命中率 /
-        用量清洗分类计数 / 跳过清单）。
+        封面复用语料配图，md5(title)[:12] 落盘 backend/assets/recipe_covers/）→
+        致敏原聚合 → 落库。title 已存在的存量菜谱：cover_image_url 为空且
+        语料可定位到图片时补复制并 UPDATE（已填的不动，幂等）。统计随返回值
+        输出（映射命中率 / 用量清洗分类计数 / 跳过清单 / 封面回填计数）。
 
     参数：
         session：SQLAlchemy 会话（由调用方管理事务）。
 
     返回值：
         dict：导入统计（键含 md_total/parsed/imported/skipped/ing_refs/
-        ing_hits/ing_new/amount_* / water_ignored / skipped_samples）。
+        ing_hits/ing_new/amount_* / water_ignored / skipped_samples /
+        cover_backfilled）。
 
     异常：
         数据库操作异常向上抛出（由调用方回滚）。
@@ -847,6 +938,7 @@ def import_corpus(session: Session) -> dict:
         "amount_spoon": 0, "amount_quantize": 0, "amount_skipped": 0,
         "prose_ignored": 0, "tool_ignored": 0, "water_ignored": 0,
         "dirty_name_skipped": 0,
+        "cover_backfilled": 0,
         "skipped": [],
     }
     if not ensure_corpus():
@@ -869,8 +961,12 @@ def import_corpus(session: Session) -> dict:
         if ing is not None:
             by_alias[alias.alias] = ing
 
-    # 幂等：与库内全部菜谱标题比对（含手写 45 道 + 历史语料）
-    existing_titles: set[str] = {row[0] for row in session.query(Recipe.title).all()}
+    # 幂等：与库内全部菜谱标题比对（含手写 45 道 + 历史语料）；同时取存量封面
+    # 供「语料可定位到图片但 cover_image_url 为空」时的回填判定（见重名分支）
+    existing_covers: dict[str, str | None] = {
+        row[0]: row[1] for row in session.query(Recipe.title, Recipe.cover_image_url).all()
+    }
+    existing_titles: set[str] = set(existing_covers.keys())
 
     def _resolve_or_create(norm_name: str) -> tuple[Ingredient | None, bool]:
         """按归一化名解析食材，未命中自动建 minimal ingredient（内部函数）。
@@ -923,6 +1019,17 @@ def import_corpus(session: Session) -> dict:
         title = dish["title"]
         # title 幂等去重：库内已存在或本批已导入 → 跳过并记录
         if title in existing_titles:
+            # 存量封面回填（甲方已确认复用语料图片）：历史导入封面为空且语料可
+            # 定位到图片 → 复制文件并 UPDATE cover_image_url；已填过的不动
+            # （幂等：重复执行零复制、零重复 UPDATE）。
+            if not existing_covers.get(title):
+                cover_url = copy_cover(md_path.parent, title)
+                if cover_url:
+                    session.query(Recipe).filter(Recipe.title == title).update(
+                        {Recipe.cover_image_url: cover_url}, synchronize_session=False
+                    )
+                    existing_covers[title] = cover_url
+                    stats["cover_backfilled"] += 1
             stats["skipped"].append((title, "重名跳过（库内已存在）"))
             continue
 
@@ -961,7 +1068,9 @@ def import_corpus(session: Session) -> dict:
             ingredient_allergen_codes=[],
             dietary_flags=[],
             equipment=dish["equipment"] or ["炒锅"],
-            cover_image_url=None,  # 🔴 语料图片禁止复用（05-V1.1 §5.6），封面留空
+            # 封面：复用语料配图（甲方已确认破例，HowToCook LICENSE 为 Unlicense
+            # 公有领域）；无图留 None 由前端占位封面兜底
+            cover_image_url=copy_cover(md_path.parent, title),
             source_label=SOURCE_LABEL,
             source_license=SOURCE_LICENSE,
             status="published",
@@ -1051,6 +1160,7 @@ def import_corpus(session: Session) -> dict:
 
     # 跳过清单抽样（报告 ≤10 条示例）
     stats["skipped_samples"] = stats["skipped"][:10]
+    print(f"[seed][corpus] 封面回填 {stats['cover_backfilled']} 篇（存量 cover_image_url 为空且语料可定位到图片）")
     return stats
 
 

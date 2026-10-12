@@ -1,7 +1,9 @@
 <script setup lang="ts">
 /**
  * 视图职责：W-03 菜谱详情页（对齐 UI 清单 W-03 行）。
- * 区块：① 过敏原警示条（G-03，allergen_codes 非空时置顶）② 头部（菜名/菜系/难度/耗时/份数）
+ * 区块：① 过敏原警示条（G-03，allergen_codes 非空时置顶）①.5 成品图区（RecipeCover：有图加载
+ *       真实图，无图/失败回落程序化占位封面；真实图下方展示来源标注行）
+ *       ② 头部（菜名/菜系/难度/耗时/份数）
  *       ③ 份数缩放（1~8，变更后重拉详情与营养，用量与营养同步重算）
  *       ④ 食材清单三段（主料/辅料/调味，量化值 + 勺参照）⑤ 过敏原标注 ⑥ 设备要求
  *       ⑦ 步骤列表（el-timeline：描述+时长+要点+失败补救折叠）⑧ 替代食材 ⑨ 小贴士
@@ -26,6 +28,7 @@ import { formatAmountText } from '@/utils/unit'
 import { parseNutritionQuery } from '@/utils/nutritionQuery'
 import AllergenAlertBar from '@/components/AllergenAlertBar.vue'
 import DisclaimerBar from '@/components/DisclaimerBar.vue'
+import RecipeCover from '@/components/RecipeCover.vue'
 
 /** 路由（取 :id 与跳转烹饪页） */
 const route = useRoute()
@@ -366,6 +369,19 @@ watch(
       <!-- ① 过敏原警示条（G-03，置顶） -->
       <AllergenAlertBar :allergens="allergenNames" :conflict="false" />
 
+      <!-- ①.5 成品图区：有 cover_image_url 加载真实语料图（懒加载 + 骨架），无图/失败回落
+           程序化占位封面（含「示意图」角标），绝不裂图；纯展示，无 script 逻辑 -->
+      <RecipeCover
+        :src="detail?.cover_image_url"
+        :title="detail?.title ?? ''"
+        :recipe-id="detail?.id ?? 0"
+        class="detail-cover"
+      />
+      <!-- 成品图来源标注行（RL-19：仅后端提供 cover_image_source 时渲染） -->
+      <p v-if="detail?.cover_image_source" class="cover-source">
+        图片来源：{{ detail.cover_image_source }}
+      </p>
+
       <!-- ② 头部：菜名 + 难度 + 耗时 + 份数缩放 -->
       <div class="detail-head">
         <div class="head-info">
@@ -572,6 +588,18 @@ watch(
 <style scoped>
 .detail-page {
   padding-bottom: 24px;
+}
+
+/* 成品图区：宽度撑满内容区，与上方警示条、下方头部信息留出间距 */
+.detail-cover {
+  margin-top: 12px;
+}
+
+/* 成品图来源标注行（RL-19）：小字 info 色 */
+.cover-source {
+  margin: 6px 0 0;
+  font-size: var(--font-sm);
+  color: var(--color-info);
 }
 
 .detail-head {

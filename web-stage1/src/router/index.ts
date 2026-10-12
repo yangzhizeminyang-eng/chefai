@@ -25,6 +25,10 @@ const router = createRouter({
     { path: '/select', name: 'select', component: () => import('@/views/SelectIngredientView.vue') },
     /** W-02 推荐结果 */
     { path: '/recommend', name: 'recommend', component: () => import('@/views/RecommendView.vue') },
+    /** /today 今日推荐决策页（今天吃什么入口，零输入直出，add-home-entries-and-covers） */
+    { path: '/today', name: 'today', component: () => import('@/views/TodayView.vue') },
+    /** /seasonal 时令页（时令吃什么入口，当季食材 + 当季菜谱，add-home-entries-and-covers） */
+    { path: '/seasonal', name: 'seasonal', component: () => import('@/views/SeasonalView.vue') },
     /** W-03 菜谱详情（:id 菜谱 ID） */
     { path: '/recipe/:id', name: 'recipe-detail', component: () => import('@/views/RecipeDetailView.vue') },
     /** W-04 分步引导（:sessionId 烹饪会话 ID） */

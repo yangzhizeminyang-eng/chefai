@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 厨娘 · 智能体 LangGraph 编排图</title>
+<style>
+  :root {
+    --bg: #14161a;
+    --panel: #1c1f24;
+    --panel-2: #23272e;
+    --line: #2e333c;
+    --text: #e6e8ec;
+    --text-2: #a8b0bd;
+    --text-3: #7d8797;
+    --guard: #e24b4a;
+    --llm: #7f77dd;
+    --biz: #378add;
+    --fin: #1d9e75;
+    --term: #ba7517;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    font-size: 14px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 32px 24px 64px; }
+
+  header { border-bottom: 1px solid var(--line); padding-bottom: 20px; margin-bottom: 24px; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 8px; letter-spacing: .2px; }
+  .sub { margin: 0; color: var(--text-3); font-size: 12.5px; }
+  .sub code {
+    font-family: var(--mono); font-size: 12px; color: var(--text-2);
+    background: var(--panel-2); padding: 2px 6px; border-radius: 5px;
+    border: 1px solid var(--line);
+  }
+
+  .stats { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0 0; }
+  .stat {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 14px; min-width: 132px;
+  }
+  .stat b { display: block; font-size: 19px; font-weight: 600; letter-spacing: .3px; }
+  .stat span { font-size: 11.5px; color: var(--text-3); }
+
+  nav.tabs { display: flex; gap: 8px; margin: 26px 0 16px; flex-wrap: wrap; }
+  .tab {
+    appearance: none; cursor: pointer; font: inherit; font-size: 13px;
+    color: var(--text-2); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 999px; padding: 8px 16px;
+    transition: .18s;
+  }
+  .tab:hover { color: var(--text); border-color: #3d434d; }
+  .tab.active { color: #fff; background: #2b3f63; border-color: #3f5c8f; }
+
+  .panel { display: none; }
+  .panel.active { display: block; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 14px; padding: 8px 8px 16px; overflow-x: auto;
+  }
+  .card .diagram { min-height: 120px; display: flex; justify-content: center; }
+  .card .diagram svg { max-width: 100%; height: auto; }
+  .loading { color: var(--text-3); font-size: 13px; padding: 40px 0; text-align: center; }
+  .err { color: #f09595; font-size: 13px; padding: 24px; font-family: var(--mono); white-space: pre-wrap; }
+
+  .note {
+    margin: 16px 0 0; padding: 14px 16px; background: var(--panel-2);
+    border: 1px solid var(--line); border-left: 3px solid var(--biz);
+    border-radius: 10px; color: var(--text-2); font-size: 12.8px;
+  }
+  .note b { color: var(--text); font-weight: 600; }
+  .note ul { margin: 8px 0 0; padding-left: 20px; }
+  .note li { margin: 4px 0; }
+
+  h2 { font-size: 16px; font-weight: 600; margin: 36px 0 12px; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 0 0 18px; }
+  .lg { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-2); }
+  .dot { width: 11px; height: 11px; border-radius: 3px; border: 1px solid; flex: none; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12.8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--text-3); font-weight: 500; font-size: 11.5px; letter-spacing: .3px; }
+  td { color: var(--text-2); }
+  td:first-child { color: var(--text); font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+  tbody tr:hover { background: rgba(255,255,255,.022); }
+  .pill {
+    display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px;
+    border: 1px solid; font-family: var(--mono);
+  }
+  .p-guard { color: #f7c1c1; border-color: #7a2b2b; background: #3b1414; }
+  .p-llm   { color: #cecbf6; border-color: #4a4488; background: #221e4a; }
+  .p-biz   { color: #b5d4f4; border-color: #2a5a86; background: #0d2c46; }
+  .p-ter   { color: #fac775; border-color: #7a5518; background: #35260f; }
+  .p-fin   { color: #9fe1cb; border-color: #1d6b50; background: #0b2f26; }
+
+  footer {
+    margin-top: 44px; padding-top: 18px; border-top: 1px solid var(--line);
+    color: var(--text-3); font-size: 12px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>AI 厨娘 · 智能体 LangGraph 编排图</h1>
+    <p class="sub">
+      结构来源：<code>build_main_graph().get_graph().draw_mermaid()</code> 实时导出，非手工绘制 ·
+      3 张图 / 22 节点 · 2026-10-12
+    </p>
+
+    <div class="stats">
+      <div class="stat"><b>13</b><span>主图节点</span></div>
+      <div class="stat"><b>9</b><span>子图内部节点</span></div>
+      <div class="stat"><b>3</b><span>调用大模型的图节点</span></div>
+      <div class="stat"><b>3</b><span>终止出口</span></div>
+      <div class="stat"><b>24</b><span>风控规则（+1 注入拦截）</span></div>
+      <div class="stat"><b>1000ms</b><span>推荐路径实测总耗时</span></div>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-t="g1">① 主图（13 节点）</button>
+    <button class="tab" data-t="g2">② 推荐子图（5 节点）</button>
+    <button class="tab" data-t="g3">③ 创新子图（4 节点）</button>
+  </nav>
+
+  <section class="panel active" id="g1">
+    <div class="card"><div class="diagram" id="d-g1"><div class="loading">正在渲染主图…</div></div></div>
+    <div class="note">
+      <b>读图要点</b>
+      <ul>
+        <li><b>虚线 = 条件边</b>（目标白名单在代码里显式枚举）；实线 = 无条件边。</li>
+        <li><b>一票否决是控制流短路</b>：<code>intake_guard</code> 命中后直接连到
+          <code>emit_safety_response</code> 再到 END，<code>supervisor</code> 与全部业务节点
+          <b>根本不执行</b>。</li>
+        <li><b>双闸门不可绕过</b>：所有业务节点的出边都汇入 <code>compose</code>，
+          再经 <code>output_guard</code> 复核；不存在业务节点直连 END 的路径。</li>
+        <li><b>LLM 只识别意图</b>：<code>supervisor</code> 用大模型分类意图，
+          但「意图 → 走哪个节点」由代码字典 <code>INTENT_ROUTES</code> 决定，模型无法改变路由。</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="panel" id="g2">
+    <div class="card"><div class="diagram" id="d-g2"><div class="loading">正在渲染推荐子图…</div></div></div>
+    <div class="note">
+      <b>读图要点</b>
+      <ul>
+        <li><code>hard_filter</code> 之后 <b>fan-out 两条边</b>分别连 <code>recipe_rank</code> 与
+          <code>node_nutrition</code>，两者在<b>同一 superstep 内并行执行</b>，全部结束后才返回主图。</li>
+        <li><code>hard_filter</code> 是<b>布尔硬过滤</b>（DB 层 SQL WHERE），不是打分降权；
+          它的 <code>filtered_by</code> 计数就是「过滤而非降权」的验收证据。</li>
+        <li>并行节点的 trace 依赖主图 <code>CookingState.trace</code> 上的
+          <code>operator.add</code> reducer 合并；子图使用独立的 <code>sub_trace</code> 通道，
+          避免 span 经父图 reducer 重复累加。</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="panel" id="g3">
+    <div class="card"><div class="diagram" id="d-g3"><div class="loading">正在渲染创新子图…</div></div></div>
+    <div class="note">
+      <b>读图要点</b>
+      <ul>
+        <li>安全前置 <code>innovation_precheck</code> 命中即置 <code>blocked</code>，
+          <b>后续节点短路</b>（主图入口节点会把结果模板化输出）。</li>
+        <li><code>innovation_pairing_check</code> 的结论<b>必须查表</b>得出：
+          taboo 直接拒绝、conflict 记入依据要求生成时避开、recommend 作为正向依据。</li>
+        <li>只有 <code>innovation_generate</code> 调用大模型，且<b>只负责表达</b>——
+          配料用量由配比模板量化，不出现「适量 / 少许」。</li>
+      </ul>
+    </div>
+  </section>
+
+  <h2>图例</h2>
+  <div class="legend">
+    <div class="lg"><span class="dot" style="background:#501313;border-color:#e24b4a"></span>风控规则节点（零 LLM）</div>
+    <div class="lg"><span class="dot" style="background:#26215c;border-color:#7f77dd"></span>LLM 节点</div>
+    <div class="lg"><span class="dot" style="background:#042c53;border-color:#378add"></span>业务节点（规则/计算/查表）</div>
+    <div class="lg"><span class="dot" style="background:#04342c;border-color:#1d9e75"></span>收口与起止</div>
+    <div class="lg"><span class="dot" style="background:#3a2a12;border-color:#ba7517"></span>终止出口</div>
+    <div class="lg"><span class="dot" style="background:#14161a;border-color:#5f5e5a"></span>START / END</div>
+  </div>
+
+  <h2>节点清单（22）</h2>
+  <table>
+    <thead>
+      <tr><th>节点</th><th>形态</th><th>超时</th><th>做了什么</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>intake_guard</td><td><span class="pill p-guard">rule</span></td><td>500ms</td><td>入口闸门：扫描「输入文本 + 食材名」，命中即一票否决；异常/超时 → 保守模式</td></tr>
+      <tr><td>output_guard</td><td><span class="pill p-guard">rule</span></td><td>500ms</td><td>出口闸门：扫描「菜名 + 推荐理由 + 问答文本」，命中即阻断 + 敏感词二级替换</td></tr>
+      <tr><td>emit_safety_response</td><td><span class="pill p-ter">rule</span></td><td>500ms</td><td>一票否决出口：组装 blocked 响应，为未执行节点补 not_executed 取证，落 risk_log</td></tr>
+      <tr><td>safe_mode_handler</td><td><span class="pill p-ter">rule</span></td><td>500ms</td><td>保守模式出口：固定话术，风控不可用时绝不直连模型</td></tr>
+      <tr><td>supervisor</td><td><span class="pill p-llm">llm</span></td><td>3000ms</td><td>意图路由：LLM 分类 10 类意图，路由查代码字典；失败走关键词兜底</td></tr>
+      <tr><td>subgraph_recommend</td><td><span class="pill p-biz">subgraph</span></td><td>5000ms</td><td>推荐子图包装节点：父子图状态转换 + 问句食材并入检索入参</td></tr>
+      <tr><td>node_free_qa</td><td><span class="pill p-llm">llm</span></td><td>5000ms</td><td>受限问答：≤5 句 + 合规约束 + 失败兜底固定话术</td></tr>
+      <tr><td>node_inventory_op</td><td><span class="pill p-biz">rule</span></td><td>1000ms</td><td>库存查询：在库 5 条 + 临期 3 条模板应答</td></tr>
+      <tr><td>node_nutrition_query</td><td><span class="pill p-biz">rule</span></td><td>1000ms</td><td>营养查询：饮食记录今日汇总模板应答</td></tr>
+      <tr><td>node_cooking_help</td><td><span class="pill p-biz">rule</span></td><td>1000ms</td><td>烹饪求助：进行中会话进度模板应答</td></tr>
+      <tr><td>node_innovation_entry</td><td><span class="pill p-biz">subgraph</span></td><td>8000ms</td><td>创新入口：透传创新子图，拦截/降级均模板化</td></tr>
+      <tr><td>compose</td><td><span class="pill p-biz">rule</span></td><td>1000ms</td><td>三档结果组装 + 免责声明附着 + 降级标注</td></tr>
+      <tr><td>finalize</td><td><span class="pill p-fin">rule</span></td><td>1000ms</td><td>trace 落库 + 最终响应组装</td></tr>
+      <tr><td>assemble_context</td><td><span class="pill p-biz">compute</span></td><td>—</td><td>食材名/别名/ID 解析为 ingredient_id</td></tr>
+      <tr><td>recipe_retrieve</td><td><span class="pill p-biz">compute</span></td><td>—</td><td>混合召回：食材覆盖数降序 + 菜名 ILIKE/别名</td></tr>
+      <tr><td>hard_filter</td><td><span class="pill p-guard">rule</span></td><td>—</td><td>布尔硬过滤：过敏原 / 忌口 / 难度 / 设备差集，命中即排除</td></tr>
+      <tr><td>recipe_rank</td><td><span class="pill p-biz">compute</span></td><td>—</td><td>7 因子加权 + 推荐理由 + 三档 match_level，Top 8</td></tr>
+      <tr><td>node_nutrition</td><td><span class="pill p-llm">llm</span></td><td>—</td><td>营养估算，与排序并行执行</td></tr>
+      <tr><td>innovation_precheck</td><td><span class="pill p-guard">rule</span></td><td>—</td><td>安全前置：高危 / 过敏原 / 特殊人群 / taboo 查表，命中即短路</td></tr>
+      <tr><td>innovation_property_match</td><td><span class="pill p-biz">compute</span></td><td>—</td><td>食材五属性匹配（质地/水分/风味/耐热/吸油）</td></tr>
+      <tr><td>innovation_pairing_check</td><td><span class="pill p-guard">rule</span></td><td>—</td><td>搭配规则查表：taboo 拒绝 / conflict 避开 / recommend 依据</td></tr>
+      <tr><td>innovation_generate</td><td><span class="pill p-llm">llm</span></td><td>—</td><td>受约束生成：配比模板量化用量，LLM 仅负责表达</td></tr>
+    </tbody>
+  </table>
+
+  <footer>
+    结构由后端代码实时导出（LangGraph <code>draw_mermaid()</code>），节点耗时与语义以
+    <code>app/graph/</code> 实现为准 · 配套文档：09-智能体角色与职责说明-V0.1
+  </footer>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+const SRC = {
+  g1: `graph TD
+    START([START]):::first
+    intake_guard["intake_guard<br/>入口闸门 · rule · 500ms<br/>文本加食材名 纯规则扫描"]:::guard
+    supervisor["supervisor<br/>意图路由 · llm · 3000ms<br/>LLM 分类 10 类意图"]:::llm
+    subgraph_recommend["subgraph_recommend<br/>推荐子图 · subgraph · 5000ms"]:::biz
+    node_free_qa["node_free_qa<br/>受限问答 · llm · 5000ms"]:::llm
+    node_innovation_entry["node_innovation_entry<br/>创新入口 · subgraph · 8000ms"]:::biz
+    node_inventory_op["node_inventory_op<br/>库存查询 · rule · 1000ms"]:::biz
+    node_nutrition_query["node_nutrition_query<br/>营养查询 · rule · 1000ms"]:::biz
+    node_cooking_help["node_cooking_help<br/>烹饪求助 · rule · 1000ms"]:::biz
+    compose["compose<br/>组装加免责 · rule · 1000ms"]:::biz
+    output_guard["output_guard<br/>出口闸门 · rule · 500ms<br/>输出扫描加敏感词替换"]:::guard
+    finalize["finalize<br/>落库加响应 · rule · 1000ms"]:::fin
+    emit_safety_response["emit_safety_response<br/>一票否决出口 · rule<br/>业务节点全部不执行"]:::term
+    safe_mode_handler["safe_mode_handler<br/>保守模式出口 · rule<br/>绝不直连模型"]:::term
+    END([END]):::last
+
+    START --> intake_guard
+    intake_guard -.->|"命中"| emit_safety_response
+    intake_guard -.->|"UNKNOWN"| safe_mode_handler
+    intake_guard -.->|"放行"| supervisor
+    supervisor -.->|"recommend / search / composite"| subgraph_recommend
+    supervisor -.->|"free_qa / photo / smalltalk"| node_free_qa
+    supervisor -.->|"inventory_op"| node_inventory_op
+    supervisor -.->|"nutrition_query"| node_nutrition_query
+    supervisor -.->|"cooking_help"| node_cooking_help
+    supervisor -.->|"innovation"| node_innovation_entry
+    supervisor -.->|"__veto__"| emit_safety_response
+    subgraph_recommend --> compose
+    node_free_qa --> compose
+    node_inventory_op --> compose
+    node_nutrition_query --> compose
+    node_cooking_help --> compose
+    node_innovation_entry --> compose
+    compose --> output_guard
+    output_guard -.->|"pass"| finalize
+    output_guard -.->|"hit 且 block"| emit_safety_response
+    output_guard -.->|"UNKNOWN"| safe_mode_handler
+    finalize --> END
+    emit_safety_response --> END
+    safe_mode_handler --> END
+
+    classDef first fill:#14161a,stroke:#5f5e5a,color:#b4b2a9
+    classDef last fill:#04342c,stroke:#1d9e75,color:#9fe1cb
+    classDef guard fill:#501313,stroke:#e24b4a,color:#f7c1c1
+    classDef llm fill:#26215c,stroke:#7f77dd,color:#cecbf6
+    classDef biz fill:#042c53,stroke:#378add,color:#b5d4f4
+    classDef fin fill:#04342c,stroke:#1d9e75,color:#9fe1cb
+    classDef term fill:#3a2a12,stroke:#ba7517,color:#fac775`,
+
+  g2: `graph TD
+    START([START]):::first
+    assemble_context["assemble_context<br/>compute<br/>食材名 / 别名 / ID 解析为 ingredient_id"]:::biz
+    recipe_retrieve["recipe_retrieve<br/>compute<br/>混合召回：食材覆盖数降序 加 菜名 ILIKE 与别名"]:::biz
+    hard_filter["hard_filter<br/>rule · SQL WHERE<br/>过敏原 / 忌口 / 难度 / 设备 布尔硬过滤"]:::guard
+    recipe_rank["recipe_rank<br/>compute<br/>7 因子加权 加 三档 match_level，Top 8"]:::biz
+    node_nutrition["node_nutrition<br/>llm<br/>营养估算"]:::llm
+    END([END]):::last
+
+    START --> assemble_context
+    assemble_context --> recipe_retrieve
+    recipe_retrieve --> hard_filter
+    hard_filter --> recipe_rank
+    hard_filter --> node_nutrition
+    recipe_rank --> END
+    node_nutrition --> END
+
+    classDef first fill:#14161a,stroke:#5f5e5a,color:#b4b2a9
+    classDef last fill:#04342c,stroke:#1d9e75,color:#9fe1cb
+    classDef guard fill:#501313,stroke:#e24b4a,color:#f7c1c1
+    classDef llm fill:#26215c,stroke:#7f77dd,color:#cecbf6
+    classDef biz fill:#042c53,stroke:#378add,color:#b5d4f4`,
+
+  g3: `graph TD
+    START([START]):::first
+    innovation_precheck["innovation_precheck<br/>rule · 安全前置<br/>高危 / 过敏原 / 特殊人群 / taboo 查表"]:::guard
+    innovation_property_match["innovation_property_match<br/>compute<br/>食材五属性匹配：质地 / 水分 / 风味 / 耐热 / 吸油"]:::biz
+    innovation_pairing_check["innovation_pairing_check<br/>rule · 结论必须查表<br/>taboo 拒绝 / conflict 避开 / recommend 依据"]:::guard
+    innovation_generate["innovation_generate<br/>llm · 受约束生成<br/>配比模板量化用量，仅负责表达"]:::llm
+    END([END]):::last
+
+    START --> innovation_precheck
+    innovation_precheck --> innovation_property_match
+    innovation_property_match --> innovation_pairing_check
+    innovation_pairing_check --> innovation_generate
+    innovation_generate --> END
+
+    classDef first fill:#14161a,stroke:#5f5e5a,color:#b4b2a9
+    classDef last fill:#04342c,stroke:#1d9e75,color:#9fe1cb
+    classDef guard fill:#501313,stroke:#e24b4a,color:#f7c1c1
+    classDef llm fill:#26215c,stroke:#7f77dd,color:#cecbf6
+    classDef biz fill:#042c53,stroke:#378add,color:#b5d4f4`
+};
+
+mermaid.initialize({
+  startOnLoad: false,
+  securityLevel: 'loose',
+  theme: 'base',
+  themeVariables: {
+    background: '#1c1f24',
+    primaryColor: '#042c53',
+    primaryTextColor: '#e6e8ec',
+    primaryBorderColor: '#378add',
+    lineColor: '#6e7681',
+    secondaryColor: '#23272e',
+    tertiaryColor: '#23272e',
+    fontSize: '13px',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif'
+  },
+  flowchart: { curve: 'linear', htmlLabels: true, nodeSpacing: 42, rankSpacing: 52, padding: 12 }
+});
+
+const done = {};
+
+async function render(key) {
+  const host = document.getElementById('d-' + key);
+  if (!host || done[key]) return;
+  host.innerHTML = '<div class="loading">正在渲染…</div>';
+  try {
+    const { svg } = await mermaid.render('svg-' + key, SRC[key]);
+    host.innerHTML = svg;
+    done[key] = true;
+  } catch (e) {
+    host.innerHTML = '<div class="err">渲染失败：' + (e && e.message ? e.message : e) + '</div>';
+  }
+}
+
+document.querySelectorAll('.tab').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    const t = btn.dataset.t;
+    document.querySelectorAll('.tab').forEach(function (b) { b.classList.toggle('active', b === btn); });
+    document.querySelectorAll('.panel').forEach(function (p) { p.classList.toggle('active', p.id === t); });
+    render(t);
+  });
+});
+
+render('g1');
+</script>
+</body>
+</html>

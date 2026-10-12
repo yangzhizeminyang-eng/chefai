@@ -7,7 +7,8 @@
     - 一票否决短路响应原样透传（仅 blocked/overrides_all/risk/disclaimer_id/trace_id），
       🔴 绝不出现 results/candidates/nutrition 键（D9 红线）；
     - 正常响应做展示适配：allergens（菜谱∪食材致敏原）、required_equipment、source、
-      difficulty 三档文案、Top 结果营养（nutrition，每份口径）；
+      difficulty 三档文案、cover_image_url 封面成品图（批量补齐，无图 None 回落
+      前端占位封面）、Top 结果营养（nutrition，每份口径）；
     - E.11 空结果建议：results 为空时附加 suggestions（message/relax_options/
       followup_question），不影响幂等与否决路径。
 
@@ -74,6 +75,35 @@ def _load_source_labels(session: Session, recipe_ids: list[int]) -> dict[int, st
         return {int(rid): (label or "") for rid, label, _servings in rows}
     except Exception as exc:  # noqa: BLE001 —— 来源标注缺失不影响主结果
         logger.warning("load source labels failed: %s", exc)
+        return {}
+
+
+def _load_cover_images(session: Session, recipe_ids: list[int]) -> dict[int, str | None]:
+    """批量查询菜谱封面图 URL（函数）。
+
+    说明：
+        召回候选不携带 cover_image_url，此处按结果 recipe_id 批量补齐（单次 IN
+        查询），供推荐卡片顶部成品图展示；无图条目值为 None，前端回落占位封面。
+
+    参数：
+        session：数据库会话。
+        recipe_ids：结果菜谱 ID 列表。
+
+    返回值：
+        dict[int, str | None]：{recipe_id: cover_image_url}（None 表示该菜无封面）。
+
+    异常：
+        查询异常返回空映射（cover_image_url 字段置 None，不阻断响应）。
+    """
+    if not recipe_ids:
+        return {}
+    try:
+        rows = session.execute(
+            select(Recipe.id, Recipe.cover_image_url).where(Recipe.id.in_(recipe_ids))
+        ).all()
+        return {int(rid): (url or None) for rid, url in rows}
+    except Exception as exc:  # noqa: BLE001 —— 封面缺失不影响主结果
+        logger.warning("load cover images failed: %s", exc)
         return {}
 
 
@@ -219,6 +249,7 @@ def post_recommend(
     # 正常响应：展示适配
     results = list(response.get("results") or [])
     source_map = _load_source_labels(session, [int(r.get("recipe_id")) for r in results if r.get("recipe_id")])
+    cover_map = _load_cover_images(session, [int(r.get("recipe_id")) for r in results if r.get("recipe_id")])
     adapted_results: list[dict] = []
     for item in results:
         allergens = sorted(
@@ -239,6 +270,8 @@ def post_recommend(
                 "rank_score": item.get("rank_score", 0.0),
                 "rank_reasons": list(item.get("rank_reasons") or []),
                 "source": source_map.get(int(item.get("recipe_id"))) if item.get("recipe_id") else None,
+                # 封面成品图 URL（None 表示无图，前端回落程序化占位封面）
+                "cover_image_url": cover_map.get(int(item.get("recipe_id"))) if item.get("recipe_id") else None,
             }
         )
 

@@ -196,7 +196,10 @@ def get_recipe_detail(
 
     说明：
         servings 缺省用菜谱基准份数；用量按 servings/base 比例线性缩放（营养另行估算）；
-        tips 文本按行/分号拆分为列表（前端 tips: string[]）。
+        tips 文本按行/分号拆分为列表（前端 tips: string[]）；响应附带
+        cover_image_url 封面成品图与 cover_image_source 图片来源标注（阶段一
+        所有封面均来自 HowToCook 语料配图，Unlicense 公有领域；无图两者为 None，
+        前端不展示图片区与来源行）。
 
     参数：
         recipe_id：菜谱 ID。
@@ -278,6 +281,9 @@ def get_recipe_detail(
         "substitutes": [str(x) for x in (recipe.substitutes or [])],
         "tips": tips_list,
         "source_label": recipe.source_label,
+        # 封面成品图与来源标注（RL-19：详情页来源行；无图两者为 None）
+        "cover_image_url": recipe.cover_image_url,
+        "cover_image_source": "HowToCook 语料配图（Unlicense 公有领域）" if recipe.cover_image_url else None,
         "ingredients": [i.model_dump() for i in all_items],
     }
 

@@ -8,13 +8,19 @@
     - 健康检查三路由共用同一 handler：GET /api/health（既有兼容）/ GET /healthz
       （docker healthcheck 根级口径，04-V1.1 §7）/ GET /v1/healthz（05-V1.1 §9.5/§12.3）；
       SELECT 1 检查数据库连通性（异常 503）；
-    - 挂载 /v1 业务路由（app/api/v1/router.py，由后续任务填充）。
+    - 挂载 /v1 业务路由（app/api/v1/router.py，由后续任务填充）；
+    - 挂载 /v1/media/recipe-covers 静态媒体服务（backend/assets/recipe_covers/，
+      菜谱封面图，与 24h 自动清理的 uploads/ 目录硬性隔离；
+      spec add-home-entries-and-covers）。
 """
+
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -188,6 +194,19 @@ app.include_router(api_router)
 
 # 挂载 /admin/v1 后台管理路由（模块 K，JWT 鉴权 + 三级角色）
 app.include_router(admin_router)
+
+# 菜谱封面媒体目录：backend/assets/recipe_covers/（🔴 与 24h 自动清理的 uploads/
+# 目录硬性隔离）。导入期即建目录，避免 StaticFiles 因目录缺失抛错。
+_RECIPE_COVERS_DIR = Path(__file__).resolve().parent.parent / "assets" / "recipe_covers"
+_RECIPE_COVERS_DIR.mkdir(parents=True, exist_ok=True)
+
+# 静态媒体服务挂载在 /v1 前缀下（复用前端 vite 既有 /v1 代理，前端零代理改动）：
+# GET /v1/media/recipe-covers/{md5(title)[:12]}{ext}
+app.mount(
+    "/v1/media/recipe-covers",
+    StaticFiles(directory=_RECIPE_COVERS_DIR),
+    name="recipe_covers",
+)
 
 
 @app.on_event("startup")

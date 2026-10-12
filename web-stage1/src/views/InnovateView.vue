@@ -315,14 +315,14 @@ onMounted(() => {
           <!-- 创新依据 -->
           <div class="result-section">
             <h3 class="result-sub">创新依据</h3>
-            <ul v-if="innovationStore.current.basis.pairings.length > 0" class="basis-list">
-              <li v-for="(p, i) in innovationStore.current.basis.pairings" :key="i" class="basis-row">
+            <ul v-if="(innovationStore.current.basis?.pairings?.length ?? 0) > 0" class="basis-list">
+              <li v-for="(p, i) in innovationStore.current.basis?.pairings ?? []" :key="i" class="basis-row">
                 <el-tag size="small" class="basis-tag">{{ p.relation }}</el-tag>
                 <span class="basis-text"><strong>{{ p.a }} × {{ p.b }}</strong>：{{ p.rationale }}</span>
               </li>
             </ul>
-            <ul v-if="innovationStore.current.basis.properties.length > 0" class="basis-list">
-              <li v-for="(pr, i) in innovationStore.current.basis.properties" :key="`p${i}`" class="basis-row">
+            <ul v-if="(innovationStore.current.basis?.properties?.length ?? 0) > 0" class="basis-list">
+              <li v-for="(pr, i) in innovationStore.current.basis?.properties ?? []" :key="`p${i}`" class="basis-row">
                 <el-tag size="small" type="warning" class="basis-tag">{{ pr.name }}</el-tag>
                 <span class="basis-text">{{ pr.note }}</span>
               </li>
@@ -346,8 +346,8 @@ onMounted(() => {
                 {{ nutritionText('碳水', innovationStore.current.nutrition.carb, 'g') }}
               </span>
             </div>
-            <p v-if="innovationStore.current.nutrition.excluded.length > 0" class="excluded-note">
-              未纳入统计：{{ innovationStore.current.nutrition.excluded.join('、') }}
+            <p v-if="(innovationStore.current.nutrition?.excluded?.length ?? 0) > 0" class="excluded-note">
+              未纳入统计：{{ innovationStore.current.nutrition?.excluded?.join('、') ?? '' }}
             </p>
           </div>
 

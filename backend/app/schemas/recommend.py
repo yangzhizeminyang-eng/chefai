@@ -86,6 +86,8 @@ class RecommendResultItem(BaseModel):
         rank_score：7 因子加权排序得分。
         rank_reasons：排序理由（至少 1 条）。
         source：菜谱来源标注。
+        cover_image_url：封面成品图 URL（/v1/media/recipe-covers/ 下；None 表示
+            无图，前端回落程序化占位封面）。
     """
 
     recipe_id: int
@@ -101,6 +103,7 @@ class RecommendResultItem(BaseModel):
     rank_score: float = 0.0
     rank_reasons: list[str] = Field(default_factory=list)
     source: str | None = None
+    cover_image_url: str | None = None
 
 
 class RecommendResponse(BaseModel):
