@@ -1,32 +1,46 @@
-"""菜谱向量嵌入模块（Task 8：pgvector 混合检索 R-1 收敛）。
+"""菜谱向量嵌入模块（Task 8：pgvector 混合检索 R-1 收敛；向量模型升级扩展）。
 
 职责：
     - EmbeddingProvider 抽象：统一 embed(texts) 接口（1024 维、L2 归一化，点积即余弦）；
     - HashEmbeddingProvider：确定性哈希嵌入（阶段一默认，纯标准库，无模型下载）；
     - BGEM3Provider：bge-m3 本地部署占位（阶段二启用，实例化即抛 NotImplementedError）；
-    - get_embedding_provider 工厂：按环境变量 EMBEDDING_PROVIDER（'hash' 缺省 | 'bgem3'）选择实现；
+    - BailianEmbeddingProvider：阿里云百炼 qwen3.7-text-embedding 远程嵌入提供方
+      （OpenAI 兼容协议，EMBEDDING_PROVIDER='bailian' 时启用，失败回落 hash）；
+    - EmbeddingUnavailableError：百炼嵌入调用失败的统一包装异常（检索层捕获降级）；
+    - get_embedding_provider 工厂：按 EMBEDDING_PROVIDER（'hash' 缺省 | 'bailian' | 'bgem3'）
+      选择实现（进程内单例）；
+    - 查询嵌入 LRU 缓存（模块级，_cache_get/_cache_put，容量 512，启动预热与工厂
+      单例共享同一缓存）；
     - probe_pgvector：pgvector 扩展 + recipe_embedding.embedding 向量列双重探测（模块级缓存）；
     - ensure_embeddings：published 官方菜谱向量回填（幂等，embedding_json 便携列存储，
-      pgvector 可用时同步双写向量列）；
+      pgvector 可用时同步双写向量列；按嵌入空间 embedding_model 列过滤，GAP-4）；
     - upsert_embedding：单条向量 upsert（供 Task 7 创新链路写入 source='ai_private' 行）。
+
+嵌入空间标识说明（GAP-4）：
+    EmbeddingProvider.space_name 是嵌入空间标识（如 'hash-v1'、'qwen3.7-text-embedding'），
+    写入 recipe_embedding.embedding_model 列；检索与回填都按当前 provider.space_name
+    过滤——不同空间的向量绝不允许混用余弦相似度（维度/语义均不可比），模型升级后
+    旧空间行自然失效，回填按新空间幂等重建。
 
 确定性说明：
     HashEmbeddingProvider 基于字符 bigram + 单字 TF 哈希（md5 → 桶索引），同文本
     永远产出同一向量、纯 Python 计算（390 菜谱 × ~30 特征毫秒级完成），满足演示
-    与回归测试的稳定性要求；语义质量由阶段二 bge-m3 替换（接口不变，调用方无感）。
+    与回归测试的稳定性要求；语义质量由百炼/ bge-m3 替换（接口不变，调用方无感）。
 """
 
 from __future__ import annotations
 
 import hashlib
 import math
-import os
 import threading
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 
+import openai
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.db import engine
 from app.core.logging import get_logger
 from app.models import Ingredient, Recipe, RecipeEmbedding, RecipeIngredient
@@ -46,6 +60,73 @@ _BACKFILL_LOCK = threading.Lock()
 # 嵌入提供方进程级单例（回填与查询必须使用同一嵌入空间）
 _PROVIDER_SINGLETON: EmbeddingProvider | None = None
 _PROVIDER_LOCK = threading.Lock()
+
+# 查询嵌入 LRU 缓存容量（普通查询文本条数远小于此；防极端输入撑爆内存）
+_EMBED_CACHE_CAPACITY = 512
+# 模块级缓存（而非实例级）：启动预热的临时实例与 get_embedding_provider() 单例共享，
+# 避免同一查询文本被重复调用远程嵌入 API
+_embed_cache: OrderedDict[str, list[float]] = OrderedDict()
+_embed_cache_lock = threading.Lock()
+
+
+class EmbeddingUnavailableError(RuntimeError):
+    """嵌入提供方不可用异常（模型类）。
+
+    说明：
+        统一包装百炼嵌入 API 的网络/超时/鉴权/维度不符等失败，
+        检索层捕获后降级关键词路径（接口恒 200），CLI 显式失败退出。
+
+    异常：
+        无。
+    """
+
+
+def _cache_get(key: str) -> list[float] | None:
+    """从模块级 LRU 缓存读取查询向量（函数）。
+
+    说明：
+        命中时把键移动到有序字典末尾（标记为最近使用），配合 _cache_put
+        的容量淘汰实现 LRU 语义；全程持模块级锁，保证多线程安全。
+
+    参数：
+        key：缓存键（空间名 + 归一化文本拼接）。
+
+    返回值：
+        list[float] | None：命中返回归一化向量的拷贝；未命中返回 None。
+
+    异常：
+        无。
+    """
+    with _embed_cache_lock:
+        vec = _embed_cache.get(key)
+        if vec is None:
+            return None
+        _embed_cache.move_to_end(key)  # 命中即提升为最近使用
+        return list(vec)
+
+
+def _cache_put(key: str, vec: list[float]) -> None:
+    """向模块级 LRU 缓存写入查询向量（函数）。
+
+    说明：
+        超容量时淘汰最旧（有序字典头部）键；全程持模块级锁。
+        缓存仅用于查询侧加速，回填批量向量不进缓存（一次性、量大且不再复用）。
+
+    参数：
+        key：缓存键（空间名 + 归一化文本拼接）。
+        vec：已 L2 归一化的嵌入向量（1024 维）。
+
+    返回值：
+        None。
+
+    异常：
+        无。
+    """
+    with _embed_cache_lock:
+        _embed_cache[key] = list(vec)
+        _embed_cache.move_to_end(key)
+        while len(_embed_cache) > _EMBED_CACHE_CAPACITY:
+            _embed_cache.popitem(last=False)  # 淘汰最旧的缓存项
 
 
 def _tokenize(text_value: str) -> list[str]:
@@ -104,12 +185,16 @@ class EmbeddingProvider(ABC):
 
     属性：
         dimension：向量维度（默认 1024）。
+        space_name：嵌入空间标识（如 'hash-v1'）——写入 recipe_embedding.embedding_model
+          列，检索/回填按其过滤（GAP-4）：不同嵌入空间的向量不混用余弦相似度。
 
     异常：
         无。
     """
 
     dimension: int = EMBEDDING_DIMENSION
+    # 嵌入空间标识：写入 embedding_model 列；检索/回填按其过滤（GAP-4，模型升级防混用）
+    space_name: str = "hash-v1"
 
     @abstractmethod
     def embed(self, texts: list[str]) -> list[list[float]]:
@@ -201,11 +286,135 @@ class BGEM3Provider(EmbeddingProvider):
         raise NotImplementedError("BGEM3Provider.embed 阶段二实现（见类 docstring 启用步骤）。")
 
 
+class BailianEmbeddingProvider(EmbeddingProvider):
+    """阿里云百炼 qwen3.7-text-embedding 嵌入提供方（模型类，OpenAI 兼容协议远程调用）。
+
+    说明：
+        - API BASE/KEY 缺省回落 VISION_BASE_URL/VISION_API_KEY（百炼同一凭证）；
+        - space_name 取 EMBEDDING_MODEL_NAME（缺省 'qwen3.7-text-embedding'），
+          写入 recipe_embedding.embedding_model 列，检索/回填按其过滤（GAP-4）；
+        - embed 逐条 L2 归一化，保证「点积即余弦」；
+        - 请求携带 dimensions=1024，与 vector(1024) 列严格对齐（维度不符立即抛错）；
+        - 查询文本经模块级 LRU 缓存（_cache_get/_cache_put），预热实例与工厂单例共享。
+    """
+
+    def __init__(self) -> None:
+        """构造函数：装配 OpenAI 兼容客户端（函数）。
+
+        说明：
+            EMBEDDING_API_BASE/EMBEDDING_API_KEY 缺省回落 VISION_BASE_URL/VISION_API_KEY；
+            两者拼接后仍为空则视为配置缺失，直接抛 EmbeddingUnavailableError
+            （工厂捕获后回落 hash 提供方）。
+
+        参数：
+            无。
+
+        返回值：
+            None。
+
+        异常：
+            EmbeddingUnavailableError：API BASE 与 API KEY 均为空（配置缺失）。
+        """
+        base_url = settings.EMBEDDING_API_BASE.strip() or settings.VISION_BASE_URL.strip()
+        api_key = settings.EMBEDDING_API_KEY.strip() or settings.VISION_API_KEY.strip()
+        if not base_url or not api_key:
+            raise EmbeddingUnavailableError(
+                "百炼嵌入配置缺失：EMBEDDING_API_BASE/KEY 与 VISION_BASE_URL/KEY 均为空"
+            )
+        self._client = openai.OpenAI(
+            base_url=base_url, api_key=api_key, timeout=settings.EMBEDDING_TIMEOUT_SECONDS
+        )
+        # 单批请求文本条数上限（max(1,..) 防止错误配置出 0 导致 range 异常）
+        self._batch = max(1, int(settings.EMBEDDING_BATCH_SIZE))
+        # 嵌入空间标识：同值写入 embedding_model 列并作为嵌入请求的 model 参数
+        self.space_name = settings.EMBEDDING_MODEL_NAME.strip() or "qwen3.7-text-embedding"
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        """批量远程嵌入（函数，LRU 缓存 + 分批请求 + L2 归一化）。
+
+        说明：
+            缓存键 = 空间名 + 归一化空白后的文本（' '.join(t.split())），
+            命中的条目不重复请求；未命中者去重后按 EMBEDDING_BATCH_SIZE 分批
+            调用 OpenAI 兼容 embeddings 接口（dimensions=1024），响应按 index
+            对齐回原输入顺序；任何网络/超时/鉴权异常统一包装为
+            EmbeddingUnavailableError（缓存命中部分不受影响）。
+
+        参数：
+            texts：待嵌入文本列表（可为空列表）。
+
+        返回值：
+            list[list[float]]：与 texts 等长、顺序一致的 1024 维 L2 归一化向量列表。
+
+        异常：
+            EmbeddingUnavailableError：百炼调用失败（网络/超时/鉴权）或返回维度 != 1024。
+        """
+        if not texts:
+            return []
+        # 逐条查缓存：命中直接取用；未命中的按「空间名\x00归一化文本」去重收集
+        results: list[list[float] | None] = [None] * len(texts)
+        miss_keys: list[str] = []   # 未命中条目的缓存键（保序、去重）
+        for idx, item in enumerate(texts):
+            key = f"{self.space_name}\x00{' '.join(item.split())}"
+            cached = _cache_get(key)
+            if cached is not None:
+                results[idx] = cached
+            elif key not in miss_keys:
+                miss_keys.append(key)
+        if miss_keys:
+            try:
+                fetched: dict[str, list[float]] = {}  # 缓存键 → 归一化向量
+                # 分批请求：每批 ≤ EMBEDDING_BATCH_SIZE 条（防单请求超限）
+                for start in range(0, len(miss_keys), self._batch):
+                    batch_keys = miss_keys[start : start + self._batch]
+                    # 缓存键含 '\x00' 分隔符，取其后的归一化文本作为请求 input
+                    batch_texts = [key.split("\x00", 1)[1] for key in batch_keys]
+                    resp = self._client.embeddings.create(
+                        model=self.space_name,
+                        input=batch_texts,
+                        dimensions=1024,
+                        encoding_format="float",
+                    )
+                    # 响应 data 顺序不保证与输入一致，按 index 对齐回本批文本
+                    for item in sorted(resp.data, key=lambda d: d.index):
+                        vec = [float(x) for x in item.embedding]
+                        if len(vec) != 1024:
+                            # 防错维度向量写库（与 vector(1024) 列不对齐即失败）
+                            raise EmbeddingUnavailableError(
+                                f"百炼嵌入返回维度 {len(vec)} != 1024，拒绝写库"
+                            )
+                        # L2 归一化：保证「点积即余弦」
+                        norm = math.sqrt(sum(x * x for x in vec))
+                        if norm > 0:
+                            vec = [x / norm for x in vec]
+                        fetched[batch_keys[item.index]] = vec
+                for key in miss_keys:
+                    vec = fetched.get(key)
+                    if vec is None:
+                        # 服务端必须回满输入条数，缺失视为不可用（防御性兜底）
+                        raise EmbeddingUnavailableError(
+                            f"百炼嵌入响应缺失条目: {key.split(chr(0), 1)[-1][:50]}"
+                        )
+                    _cache_put(key, vec)
+                # 按原输入顺序组装返回（缓存命中与本次请求合并）
+                for idx, item in enumerate(texts):
+                    if results[idx] is None:
+                        key = f"{self.space_name}\x00{' '.join(item.split())}"
+                        results[idx] = fetched[key]
+            except EmbeddingUnavailableError:
+                raise
+            except Exception as exc:  # noqa: BLE001 —— 网络等异常统一包装为不可用
+                raise EmbeddingUnavailableError(f"百炼嵌入调用失败: {exc}") from exc
+        return [vec for vec in results if vec is not None]
+
+
 def get_embedding_provider() -> EmbeddingProvider:
     """嵌入提供方工厂（函数，进程内单例）。
 
     说明：
-        环境变量 EMBEDDING_PROVIDER：'hash'（缺省）| 'bgem3'；
+        读取 settings.EMBEDDING_PROVIDER（取值 'hash'（缺省）| 'bailian' | 'bgem3'）：
+        - 'bailian'：构造 BailianEmbeddingProvider，失败（配置缺失等）记 WARNING
+          回落 HashEmbeddingProvider，保证检索主链路不因远程配置问题中断；
+        - 'bgem3'：BGEM3Provider 阶段二占位，实例化即抛 NotImplementedError 原样向上；
         回填与查询必须共享同一嵌入空间，故进程内缓存单例。
 
     返回值：
@@ -221,8 +430,18 @@ def get_embedding_provider() -> EmbeddingProvider:
     with _PROVIDER_LOCK:
         if _PROVIDER_SINGLETON is not None:
             return _PROVIDER_SINGLETON
-        name = os.environ.get("EMBEDDING_PROVIDER", "hash").strip().lower()
-        provider: EmbeddingProvider = BGEM3Provider() if name == "bgem3" else HashEmbeddingProvider()
+        name = settings.EMBEDDING_PROVIDER.strip().lower()
+        provider: EmbeddingProvider
+        if name == "bgem3":
+            provider = BGEM3Provider()  # 阶段二占位：NotImplementedError 原样向上抛
+        elif name == "bailian":
+            try:
+                provider = BailianEmbeddingProvider()
+            except Exception as exc:  # noqa: BLE001 —— 百炼配置缺失/异常回落 hash
+                logger.warning("bailian provider init failed, fallback to hash: %s", exc)
+                provider = HashEmbeddingProvider()
+        else:
+            provider = HashEmbeddingProvider()  # 缺省（含 'hash'）
         _PROVIDER_SINGLETON = provider
         return provider
 
@@ -295,18 +514,23 @@ def _recipe_embed_text(session: Session, recipe_id: int, title: str) -> str:
     return f"{title} {' '.join(rows)}".strip()
 
 
-def ensure_embeddings(session: Session, provider: EmbeddingProvider | None = None) -> int:
+def ensure_embeddings(
+    session: Session, provider: EmbeddingProvider | None = None, *, space_name: str | None = None
+) -> int:
     """为全部已发布官方菜谱回填向量（幂等，函数）。
 
     说明：
-        目标集 = recipe.status='published' 的菜谱；为每个尚无 verified 向量行的
-        菜谱生成 1024 维向量，写入 recipe_embedding（source='verified'，
-        embedding_json 便携列；pgvector 可用时经 raw SQL 同步双写向量列）。
-        幂等：已存在 verified 行（按 recipe_id 判定）的菜谱跳过，重复调用不增行。
+        目标集 = recipe.status='published' 的菜谱；为每个尚无「目标嵌入空间」
+        verified 向量行的菜谱生成 1024 维向量，写入 recipe_embedding（source='verified'，
+        embedding_json 便携列，embedding_model=目标空间；pgvector 可用时经 raw SQL
+        同步双写向量列）。幂等：已存在目标空间 verified 行（按 recipe_id 判定）
+        的菜谱跳过，重复调用不增行；模型升级后旧空间行不被复用、不冲突（GAP-4）。
 
     参数：
         session：数据库会话（写入并 commit）。
         provider：嵌入提供方；None 时用 get_embedding_provider() 单例。
+        space_name：目标嵌入空间标识；None 时取 provider.space_name
+          （供 CLI --model 显式覆盖，如指定旧空间补数）。
 
     返回值：
         int：本次新回填的向量行数（0 表示无可回填项）。
@@ -318,6 +542,7 @@ def ensure_embeddings(session: Session, provider: EmbeddingProvider | None = Non
     try:
         if provider is None:
             provider = get_embedding_provider()
+        space = space_name or provider.space_name  # 目标嵌入空间（GAP-4：按空间过滤与写入）
         published = session.execute(
             select(Recipe.id, Recipe.title).where(Recipe.status == "published")
         ).all()
@@ -326,6 +551,7 @@ def ensure_embeddings(session: Session, provider: EmbeddingProvider | None = Non
             for (rid,) in session.execute(
                 select(RecipeEmbedding.recipe_id)
                 .where(RecipeEmbedding.source == "verified")
+                .where(RecipeEmbedding.embedding_model == space)
                 .where(RecipeEmbedding.recipe_id.is_not(None))
             ).all()
         }
@@ -339,7 +565,9 @@ def ensure_embeddings(session: Session, provider: EmbeddingProvider | None = Non
 
         new_rows: list[tuple[RecipeEmbedding, list[float]]] = []
         for (rid, _title), vec in zip(targets, vectors, strict=True):
-            row = RecipeEmbedding(recipe_id=rid, source="verified", embedding_json=vec)
+            row = RecipeEmbedding(
+                recipe_id=rid, source="verified", embedding_json=vec, embedding_model=space
+            )
             session.add(row)
             new_rows.append((row, vec))
         session.flush()
@@ -367,8 +595,10 @@ def lazy_backfill(session: Session) -> None:
     """verified 向量缺失时的惰性回填入口（函数，进程锁防并发重复）。
 
     说明：
-        触发条件：use_vector 检索发现 verified 向量计数为 0 且存在 published
-        菜谱；持锁后双重检查计数，避免并发重复回填。
+        触发条件：use_vector 检索发现「当前嵌入空间（provider.space_name）」的
+        verified 向量计数为 0 且存在 published 菜谱；持锁后双重检查计数，
+        避免并发重复回填。计数按 embedding_model 过滤——旧空间残留行不阻断
+        新空间回填（GAP-4）。
 
     参数：
         session：数据库会话（复用检索会话写入）。
@@ -380,8 +610,11 @@ def lazy_backfill(session: Session) -> None:
         不抛出（失败记 WARNING，检索继续走既有关键词路径）。
     """
     try:
+        provider = get_embedding_provider()  # 当前嵌入空间唯一来源（进程单例）
         verified_count = session.execute(
-            select(func.count()).select_from(RecipeEmbedding).where(RecipeEmbedding.source == "verified")
+            select(func.count()).select_from(RecipeEmbedding)
+            .where(RecipeEmbedding.source == "verified")
+            .where(RecipeEmbedding.embedding_model == provider.space_name)
         ).scalar()
         if verified_count:
             return
@@ -394,11 +627,13 @@ def lazy_backfill(session: Session) -> None:
             return  # 其他线程正在回填，本次跳过（不阻塞检索）
         with _BACKFILL_LOCK:
             verified_count = session.execute(
-                select(func.count()).select_from(RecipeEmbedding).where(RecipeEmbedding.source == "verified")
+                select(func.count()).select_from(RecipeEmbedding)
+                .where(RecipeEmbedding.source == "verified")
+                .where(RecipeEmbedding.embedding_model == provider.space_name)
             ).scalar()
             if verified_count:
                 return
-            ensure_embeddings(session, get_embedding_provider())
+            ensure_embeddings(session, provider)
     except Exception as exc:  # noqa: BLE001 —— 回填失败降级，检索主链路不受影响
         logger.warning("lazy embedding backfill failed: %s", exc)
 
@@ -481,11 +716,14 @@ def upsert_embedding(
             innovation_recipe_id=innovation_recipe_id,
             source=source,
             embedding_json=vec,
+            embedding_model=provider.space_name,  # 写入当前嵌入空间标识（GAP-4）
         )
         session.add(row)
         session.flush()
     else:
         row.embedding_json = vec
+        # 向量重算即随当前嵌入空间（模型升级后旧行重算归属新空间，GAP-4）
+        row.embedding_model = provider.space_name
         session.flush()
 
     # pgvector 可用时双写向量列（ORM 不映射该列，仅 raw SQL 访问）

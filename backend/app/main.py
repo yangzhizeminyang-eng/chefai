@@ -14,6 +14,7 @@
       spec add-home-entries-and-covers）。
 """
 
+import threading
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -209,12 +210,71 @@ app.mount(
 )
 
 
+def _warmup_embedding_provider() -> None:
+    """启动期嵌入预热（函数）。
+
+    说明：
+        仅 EMBEDDING_PROVIDER=bailian 且 EMBEDDING_WARMUP 开启时生效：
+        后台 daemon 线程显式构造 BailianEmbeddingProvider（不经工厂单例，
+        避免回落 hash 造成「预热成功」的误导日志）并预热一次嵌入调用——
+        验证百炼配置可用、建立 HTTP 连接、填充查询缓存（模块级 LRU 与
+        工厂实例共享）。任何失败仅 WARNING，绝不阻断/拖慢应用启动；
+        hash 缺省下为 no-op。
+
+    参数：
+        无。
+
+    返回值：
+        None。
+
+    异常：
+        不抛出（预热失败仅记 WARNING）。
+    """
+    # 开关判断：provider 非 bailian 或 warmup 关闭时直接返回（hash 缺省下为 no-op）
+    if (
+        settings.EMBEDDING_PROVIDER.strip().lower() != "bailian"
+        or settings.EMBEDDING_WARMUP.strip().lower() not in ("on", "true", "1")
+    ):
+        return
+
+    def _run() -> None:
+        """预热执行体（闭包）：构造直连百炼的 provider 并做一次嵌入调用。
+
+        说明：
+            局部导入 app.ability.embedding 避免模块级循环导入；
+            显式构造 BailianEmbeddingProvider 而非走工厂（工厂在配置缺失时
+            会静默回落 hash provider，无法起到「验证百炼配置」的作用）。
+
+        参数：
+            无。
+
+        返回值：
+            None。
+
+        异常：
+            任何异常均被捕获并降级为 WARNING 日志，不向外抛出。
+        """
+        try:
+            # 局部导入：避免 main.py 模块加载期与 ability 包产生循环导入
+            from app.ability.embedding import BailianEmbeddingProvider
+
+            provider = BailianEmbeddingProvider()
+            provider.embed(["预热"])  # 一次最小嵌入调用：验证配置 + 预热连接与查询缓存
+            logger.info("embedding warmup ok", extra={"space": provider.space_name})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("embedding warmup failed: %s", exc)
+
+    threading.Thread(target=_run, daemon=True, name="embedding-warmup").start()
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     """应用启动钩子（函数）。
 
     说明：
-        打印配置摘要（脱敏，不输出 API Key），便于排查部署环境。
+        打印配置摘要（脱敏，不输出 API Key），便于排查部署环境；
+        并触发嵌入提供方后台预热（仅 bailian + warmup 开启时生效，
+        daemon 线程执行，失败仅 WARNING，不阻断启动）。
 
     参数：
         无。
@@ -225,6 +285,7 @@ def on_startup() -> None:
     异常：
         无。
     """
+    _warmup_embedding_provider()
     logger.info(
         "startup",
         extra={

@@ -181,6 +181,9 @@ class RecipeEmbedding(Base):
         - source='verified' → recipe_id 指向官方菜谱；
           source='ai_private' → innovation_recipe_id + owner_user_id 必填
           （CHECK chk_recipe_embedding_chk_ai_owner 强制）。
+        - embedding_model 为嵌入空间版本标识（如 'hash-v1' /
+          'qwen3.7-text-embedding'），同一表可共存多空间行，检索/回填按
+          当前提供方空间过滤（GAP-4 防混存错乱）。
     """
 
     __tablename__ = "recipe_embedding"
@@ -192,6 +195,7 @@ class RecipeEmbedding(Base):
         Index("idx_emb_source", "source"),
         Index("idx_emb_owner", "owner_user_id"),
         Index("idx_emb_innovation", "innovation_recipe_id"),
+        Index("idx_emb_model", "embedding_model"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -208,5 +212,9 @@ class RecipeEmbedding(Base):
     )
     source: Mapped[str] = mapped_column(
         String(16), nullable=False, default="verified", server_default="verified"
+    )
+    # 嵌入空间版本标识（GAP-4 防混存错乱）：存量行经 server_default 原子回填 'hash-v1'
+    embedding_model: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="hash-v1", server_default="hash-v1"
     )
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), **_TS, nullable=False)

@@ -13,6 +13,18 @@
     VISION_PROVIDER 取 'mock'（缺省，确定性 mock）或 'vlm'（阿里云百炼
     qwen omni 系列多模态模型，经 OpenAI 兼容协议调用）；
     VISION_MAX_ITEMS 为单次识别返回条目上限（超出的条目被截断）。
+    EMBEDDING_PROVIDER / EMBEDDING_MODEL_NAME / EMBEDDING_BATCH_SIZE /
+    EMBEDDING_API_BASE / EMBEDDING_API_KEY / EMBEDDING_TIMEOUT_SECONDS /
+    EMBEDDING_WARMUP：向量嵌入（阿里云百炼 qwen3.7-text-embedding，
+    OpenAI 兼容协议）参数——EMBEDDING_PROVIDER 取 'hash'（缺省，确定性哈希
+    兜底）或 'bailian'（百炼远程语义嵌入，阶段二 'bgem3' 占位）；
+    EMBEDDING_API_BASE / EMBEDDING_API_KEY 为空串时回落复用
+    VISION_BASE_URL / VISION_API_KEY（百炼同一凭证）；
+    EMBEDDING_WARMUP 控制启动期预热（仅 bailian 生效）。
+    RETRIEVAL_VECTOR / RETRIEVAL_VECTOR_FOR_INGREDIENTS / RETRIEVAL_FUSION：
+    检索开关——RETRIEVAL_VECTOR 为向量路径总开关（'on'/'off'）；
+    RETRIEVAL_VECTOR_FOR_INGREDIENTS 控制手选食材合成查询（默认 'off'）；
+    RETRIEVAL_FUSION 为三路融合策略（'fixed' 缺省 / 'rrf'）。
     APP_HOST / APP_PORT：应用监听地址与端口
 
 异常：
@@ -46,6 +58,17 @@ class Settings(BaseSettings):
         VISION_MODEL：视觉模型名称（如 qwen3.8-omni-flash）。
         VISION_TIMEOUT_SECONDS：视觉模型请求超时秒数（拍照识别 P95 预算对齐 20s）。
         VISION_MAX_ITEMS：单次识别返回条目上限（超出截断，防噪声刷屏）。
+        EMBEDDING_PROVIDER：嵌入提供方取值（'hash' 缺省确定性哈希兜底 /
+        'bailian' 百炼远程语义嵌入 / 'bgem3' 阶段二占位）。
+        EMBEDDING_MODEL_NAME：嵌入模型名称（如 qwen3.7-text-embedding）。
+        EMBEDDING_BATCH_SIZE：嵌入请求单批文本条数上限。
+        EMBEDDING_API_BASE：嵌入服务 OpenAI 兼容地址（空串回落 VISION_BASE_URL）。
+        EMBEDDING_API_KEY：嵌入服务 API Key（空串回落 VISION_API_KEY）。
+        EMBEDDING_TIMEOUT_SECONDS：嵌入请求超时秒数。
+        EMBEDDING_WARMUP：启动期预热开关（'on'/'off'，仅 bailian 生效）。
+        RETRIEVAL_VECTOR：向量检索路径总开关（'on' 缺省 / 'off'）。
+        RETRIEVAL_VECTOR_FOR_INGREDIENTS：手选食材合成查询向量开关（默认 'off'）。
+        RETRIEVAL_FUSION：三路融合策略取值（'fixed' 缺省 / 'rrf'）。
         APP_HOST：FastAPI 监听主机。
         APP_PORT：FastAPI 监听端口。
 
@@ -81,6 +104,19 @@ class Settings(BaseSettings):
     VISION_MODEL: str = ""
     VISION_TIMEOUT_SECONDS: int = 20
     VISION_MAX_ITEMS: int = 12
+
+    # 向量嵌入（百炼 qwen3.7-text-embedding，OpenAI 兼容协议）+ 检索开关
+    # （API BASE/KEY 空串时由消费方回落 VISION_BASE_URL/VISION_API_KEY）
+    EMBEDDING_PROVIDER: str = "hash"
+    EMBEDDING_MODEL_NAME: str = "qwen3.7-text-embedding"
+    EMBEDDING_BATCH_SIZE: int = 10
+    EMBEDDING_API_BASE: str = ""
+    EMBEDDING_API_KEY: str = ""
+    EMBEDDING_TIMEOUT_SECONDS: int = 10
+    EMBEDDING_WARMUP: str = "on"
+    RETRIEVAL_VECTOR: str = "on"
+    RETRIEVAL_VECTOR_FOR_INGREDIENTS: str = "off"
+    RETRIEVAL_FUSION: str = "fixed"
 
     # 应用
     APP_HOST: str = "0.0.0.0"

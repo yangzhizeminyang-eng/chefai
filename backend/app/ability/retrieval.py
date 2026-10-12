@@ -1,14 +1,22 @@
-"""菜谱混合召回模块（Task 8 升级：pgvector 混合检索 R-1 收敛）。
+"""菜谱混合召回模块（Task 8 升级：pgvector 混合检索 R-1 收敛；向量模型升级扩展）。
 
 职责：
     实现阶段一默认检索（spec D5：不下载向量模型）+ 向量混合召回（spec D3）：
     ① 有食材输入时按 recipe_ingredient 覆盖数降序召回（食材覆盖率优先）；
     ② query_text 非空时按菜名 ILIKE 与食材名/别名匹配召回（搜索/自然语言路径）；
-    ③ 向量路径（use_vector=True 且 query_text 非空）：查询文本 → 嵌入 → 双分支检索——
+    ③ 向量路径（use_vector 且查询文本非空）：查询文本 → 嵌入 → 双分支检索——
        - pgvector 可用（probe_pgvector）→ raw SQL `<=>` 余弦距离 Top-20；
        - 不可用 → 从 embedding_json 读出（≤800 行）纯 Python 点积 Top-20（无 numpy）；
+       两分支均按当前嵌入空间（provider.space_name → embedding_model 列）过滤，
+       不同空间的向量绝不通算余弦（GAP-4）；
+    合成查询（C4）：RETRIEVAL_VECTOR_FOR_INGREDIENTS 开启且「无文本有食材」时，
+    用食材名空格拼接构造查询文本走向量，纯食材推荐获得语义召回；
     三路并集按 recipe_id 合并去重，向量命中但关键词未命中的加 matched_by_vector
-    来源标记；Top-8（top_k）截断返回，返回结构与既有一致，下游 hard_filter/rank 无感。
+    来源标记；
+    RRF 融合（C5）：RETRIEVAL_FUSION=rrf 时按 ①覆盖 / ②文本 / ③向量 三路排名做
+    Reciprocal Rank Fusion（score = Σ 1/(60+rank)），候选携带 _fusion_ranks 内部键
+    标注各路排名；缺省 fixed 模式保持升级前四段固定优先级排序（行为逐字节一致）；
+    Top-8（top_k）截断返回，返回结构与既有一致，下游 hard_filter/rank 无感。
 
 分区红线（spec D3）：
     默认调用（推荐链路）只查 source='verified'——AI 私有向量行（source='ai_private'）
@@ -31,6 +39,7 @@ from app.ability.embedding import (
     probe_pgvector,
 )
 from app.ability.ranking import is_valid_ingredient_name
+from app.core.config import settings
 from app.core.db import engine
 from app.core.logging import get_logger
 from app.models import Ingredient, IngredientAlias, Recipe, RecipeEmbedding, RecipeIngredient
@@ -189,18 +198,23 @@ def extract_ingredient_names_from_text(
         return []
 
 
-def _vector_search_pgvector(query_vector: list[float], include_private_owner: int | None) -> dict[int, float]:
+def _vector_search_pgvector(
+    query_vector: list[float], include_private_owner: int | None, space_name: str
+) -> dict[int, float]:
     """pgvector raw SQL 余弦检索分支（函数）。
 
     说明：
         向量列 embedding(vector(1024)) 仅存在于迁移中，raw SQL 以 `<=>` 余弦距离
         排序取 Top-20；使用独立 engine 连接，失败不污染调用方事务。
+        空间过滤（GAP-4）：每个分支都限定 embedding_model = 当前嵌入空间，
+        不同空间向量绝不通算余弦。
         分区红线：默认仅 source='verified'；include_private_owner 时追加该用户
         source='ai_private' 行（代码断言，AI 私有菜谱不进默认推荐）。
 
     参数：
         query_vector：查询向量（1024 维，已归一化）。
         include_private_owner：创新链路归属用户 ID；None 仅查 verified。
+        space_name：当前嵌入空间标识（与 embedding_model 列匹配）。
 
     返回值：
         dict[int, float]：recipe_id → 余弦相似度（Top-20，降序）。
@@ -209,13 +223,15 @@ def _vector_search_pgvector(query_vector: list[float], include_private_owner: in
         SQL 异常向上抛出（由 _vector_search 统一捕获降级）。
     """
     q_literal = "[" + ",".join(f"{x:.6f}" for x in query_vector) + "]"
+    # 🔴 OR 分支必须括号包裹：空间过滤 AND 进每个分支（否则 verified 行会绕过空间过滤）
     sql = (
         "SELECT recipe_id, 1 - (embedding <=> CAST(:q AS vector)) AS sim "
-        "FROM recipe_embedding WHERE source = 'verified'"
+        "FROM recipe_embedding "
+        "WHERE (source = 'verified' AND embedding_model = :m)"
     )
-    params: dict = {"q": q_literal}
+    params: dict = {"q": q_literal, "m": space_name}
     if include_private_owner is not None:
-        sql += " OR (source = 'ai_private' AND owner_user_id = :owner)"
+        sql += " OR (source = 'ai_private' AND owner_user_id = :owner AND embedding_model = :m)"
         params["owner"] = int(include_private_owner)
     sql += " ORDER BY embedding <=> CAST(:q AS vector) LIMIT :n"
     params["n"] = VECTOR_TOP_N
@@ -225,19 +241,21 @@ def _vector_search_pgvector(query_vector: list[float], include_private_owner: in
 
 
 def _vector_search_json(
-    session: Session, query_vector: list[float], include_private_owner: int | None
+    session: Session, query_vector: list[float], include_private_owner: int | None, space_name: str
 ) -> dict[int, float]:
     """embedding_json 便携列 Python 点积检索分支（函数，无 numpy）。
 
     说明：
-        无 pgvector 扩展环境（本机）走此分支：读 verified 行（≤800 行）+
-        （创新链路）指定用户的 ai_private 行，embedding_json 均已 L2 归一化，
-        纯 Python 点积即余弦相似度（1024 维 × 数百行，毫秒级）。
+        无 pgvector 扩展环境（本机）走此分支：读「当前嵌入空间」的 verified 行
+        （≤800 行）+（创新链路）指定用户的 ai_private 行，embedding_json 均已
+        L2 归一化，纯 Python 点积即余弦相似度（1024 维 × 数百行，毫秒级）。
+        空间过滤（GAP-4）：两个 select 分支均限定 embedding_model = 当前空间。
 
     参数：
         session：数据库会话。
         query_vector：查询向量（1024 维，已归一化）。
         include_private_owner：创新链路归属用户 ID；None 仅查 verified（分区红线）。
+        space_name：当前嵌入空间标识（与 embedding_model 列匹配）。
 
     返回值：
         dict[int, float]：recipe_id → 余弦相似度（Top-20，降序）。
@@ -247,6 +265,7 @@ def _vector_search_json(
     """
     base_cols = (RecipeEmbedding.recipe_id, RecipeEmbedding.embedding_json)
     stmt = select(*base_cols).where(RecipeEmbedding.source == "verified")  # 🔴 默认仅 verified
+    stmt = stmt.where(RecipeEmbedding.embedding_model == space_name)  # 空间过滤（GAP-4）
     if include_private_owner is not None:
         # 创新链路分区：verified + 指定用户的 ai_private（其余用户私有行绝不出现）
         stmt = select(*base_cols).where(
@@ -256,6 +275,7 @@ def _vector_search_json(
                 & (RecipeEmbedding.owner_user_id == int(include_private_owner)),
             )
         )
+        stmt = stmt.where(RecipeEmbedding.embedding_model == space_name)  # 空间过滤（GAP-4）
     rows = session.execute(stmt.limit(VECTOR_SCAN_MAX)).all()
     dim = len(query_vector)
     scored: list[tuple[int, float]] = []
@@ -289,8 +309,8 @@ def _vector_search(
     provider = get_embedding_provider()
     query_vector = provider.embed([query_text])[0]
     if probe_pgvector(engine):
-        return _vector_search_pgvector(query_vector, include_private_owner)
-    return _vector_search_json(session, query_vector, include_private_owner)
+        return _vector_search_pgvector(query_vector, include_private_owner, provider.space_name)
+    return _vector_search_json(session, query_vector, include_private_owner, provider.space_name)
 
 
 def retrieve_candidates(
@@ -308,10 +328,16 @@ def retrieve_candidates(
     说明：
         - 有 ingredient_ids：按「候选菜谱引用的用户食材数（覆盖数）」降序召回；
         - 有 query_text：追加菜名 ILIKE 召回 + 按文本中解析出的食材召回；
-        - use_vector 且 query_text 非空：追加向量语义召回（Top-20），
+        - use_vector 且查询文本非空：追加向量语义召回（Top-20），
           pgvector 可用走 raw SQL `<=>`，否则 embedding_json 纯 Python 点积；
+        - 合成查询（C4）：RETRIEVAL_VECTOR_FOR_INGREDIENTS 开启且「无文本有食材」
+          时，用食材名空格拼接构造查询文本走向量（上限 TEXT_MATCH_LIMIT 个名称）；
         - 三路并集按 recipe_id 合并去重；向量命中但关键词未命中的候选标记
           matched_by_vector=True（下游排序在菜名命中之后、其余之前）；
+        - 排序（RETRIEVAL_FUSION）：'rrf' 时按 ①覆盖/②文本/③向量 三路排名做
+          Reciprocal Rank Fusion（score = Σ 1/(60+rank)）排序，候选携带
+          _fusion_ranks 内部键标注各路排名；缺省 fixed 为固定优先级排序
+          （覆盖数降序 → 菜名命中 → 向量相似度 → id 升序，与升级前一致）；
         - 三路皆空：回退全部已发布菜谱（保证冷启动可演示）；
         - 🔴 分区红线：默认（include_private_owner=None）向量查询只查
           source='verified'，AI 私有菜谱绝不进入默认推荐；
@@ -332,7 +358,7 @@ def retrieve_candidates(
             recipe_id/title/difficulty/time_minutes/calories_kcal/allergen_codes/
             ingredient_allergen_codes/dietary_flags/equipment/covered_count/
             covered_names/main_ingredient_names/seasoning_names/matched_by_title/
-            matched_by_vector。
+            matched_by_vector（rrf 融合时另含内部键 _fusion_ranks）。
 
     异常：
         不抛出（查询/向量异常时降级或返回空列表，由 compose 标注「暂时无法检索」）。
@@ -340,6 +366,9 @@ def retrieve_candidates(
     try:
         id_score: dict[int, int] = {}          # recipe_id → 覆盖数
         title_matched: set[int] = set()        # 菜名命中集合
+        path_coverage: list[int] = []          # ① 覆盖路的 recipe_id 排名序（SQL 已降序）
+        text_rank_extra: dict[int, int] = {}   # ② 文本扩展路 recipe_id → 该路覆盖数
+        path_vector: list[int] = []            # ③ 向量路命中序（③ 后由 dict 保序赋值）
 
         # ① 食材覆盖召回：引用了用户食材的已发布菜谱，按覆盖数降序
         if ingredient_ids:
@@ -354,6 +383,7 @@ def retrieve_candidates(
             )
             for recipe_id, covered in session.execute(stmt).all():
                 id_score[int(recipe_id)] = int(covered)
+                path_coverage.append(int(recipe_id))  # ① 覆盖路排名序（SQL 已按覆盖数降序）
 
         # ② 文本召回：菜名 ILIKE + 文本解析出的食材引用
         if query_text:
@@ -378,12 +408,30 @@ def retrieve_candidates(
                 )
                 for recipe_id, covered in session.execute(stmt2).all():
                     id_score[int(recipe_id)] = max(id_score.get(int(recipe_id), 0), int(covered))
+                    # ② 文本扩展路排名序的覆盖数（id_score 的 max 逻辑不变，另存供 RRF 排名）
+                    text_rank_extra[int(recipe_id)] = int(covered)
 
-        # ③ 向量语义召回（use_vector + 非空文本；异常降级走既有路径，绝不抛错）
+        # ③ 向量语义召回（异常降级走既有路径，绝不抛错）
         vector_sims: dict[int, float] = {}     # 仅向量命中的 recipe_id → 余弦相似度
-        if use_vector and query_text:
+        # 合成查询（C4）：开关开启且「无文本有食材」时，用食材名空格拼接构造查询文本走向量
+        synthetic_query: str | None = None
+        if (
+            use_vector
+            and not query_text
+            and ingredient_ids
+            and settings.RETRIEVAL_VECTOR_FOR_INGREDIENTS.strip().lower() in ("on", "true", "1")
+        ):
+            name_rows = session.execute(
+                select(Ingredient.id, Ingredient.name).where(Ingredient.id.in_(ingredient_ids))
+            ).all()
+            name_by_id = {int(i): str(n).strip() for i, n in name_rows if n and str(n).strip()}
+            names = [name_by_id[int(i)] for i in ingredient_ids if int(i) in name_by_id][:TEXT_MATCH_LIMIT]
+            synthetic_query = " ".join(names) or None
+        effective_query = query_text or synthetic_query
+        if use_vector and effective_query:
             try:
-                vector_hits = _vector_search(session, query_text, include_private_owner)
+                vector_hits = _vector_search(session, effective_query, include_private_owner)
+                path_vector = list(vector_hits.keys())  # ③ 向量路命中序（dict 保序，供 RRF）
                 for recipe_id in vector_hits:
                     if recipe_id not in id_score:
                         id_score[recipe_id] = 0
@@ -457,15 +505,37 @@ def retrieve_candidates(
                     "_vector_sim": round(vector_sims.get(rid, 0.0), 6),
                 }
             )
-        # 排序：覆盖数降序 → 菜名命中优先 → 向量相似度降序 → recipe_id 升序（结果稳定）
-        candidates.sort(
-            key=lambda c: (
-                -c["covered_count"],
-                not c["matched_by_title"],
-                -c["_vector_sim"],
-                c["recipe_id"],
+        if settings.RETRIEVAL_FUSION.strip().lower() == "rrf":
+            # RRF 三路融合（C5）：score = Σ 1/(60+rank)，仅用排名不用原始分数（免调权、量纲无关）
+            fusion_ranks: dict[int, dict[str, int]] = {}
+            rrf_score: dict[int, float] = {}
+            # 文本路排名序：菜名命中（② 前半，命中即标题精确匹配）在前，
+            # 其余按「该路覆盖数降序 → recipe_id 升序」补全（稳定）
+            text_ranked = sorted(title_matched) + sorted(
+                (rid for rid in text_rank_extra if rid not in title_matched),
+                key=lambda rid: (-text_rank_extra[rid], rid),
             )
-        )
+            for path_name, ranked_ids in (
+                ("coverage", path_coverage),
+                ("text", text_ranked),
+                ("vector", path_vector),
+            ):
+                for rank, rid in enumerate(ranked_ids, start=1):
+                    rrf_score[rid] = rrf_score.get(rid, 0.0) + 1.0 / (60 + rank)
+                    fusion_ranks.setdefault(rid, {})[path_name] = rank
+            candidates.sort(key=lambda c: (-rrf_score.get(c["recipe_id"], 0.0), c["recipe_id"]))
+            for c in candidates:
+                c["_fusion_ranks"] = fusion_ranks.get(c["recipe_id"], {})
+        else:
+            # 固定优先级（缺省，行为与升级前逐字节一致）：覆盖数降序 → 菜名命中 → 向量相似度 → id 升序
+            candidates.sort(
+                key=lambda c: (
+                    -c["covered_count"],
+                    not c["matched_by_title"],
+                    -c["_vector_sim"],
+                    c["recipe_id"],
+                )
+            )
         # Top-K 截断（spec：默认 ≤8 条返回，下游 hard_filter/rank 在此集合内工作）
         return candidates[:top_k]
     except Exception as exc:  # noqa: BLE001 —— 召回失败返回空集，由上层标注降级

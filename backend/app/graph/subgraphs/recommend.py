@@ -34,7 +34,6 @@ OBS-03（NL 问句食材并入）：
 from __future__ import annotations
 
 import operator
-import os
 from collections.abc import Callable
 from typing import Annotated, TypedDict
 
@@ -42,6 +41,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.ability import hard_filter, load_weights, retrieve_candidates
 from app.ability.retrieval import extract_ingredient_names_from_text, match_ingredients_in_text
+from app.core.config import settings
 from app.core.db import SessionLocal
 from app.core.logging import get_logger
 from app.graph.nodes.common import make_span, now_ms
@@ -298,7 +298,7 @@ def make_recipe_retrieve():
         """混合召回节点（函数）。
 
         说明：
-            向量路径开关：环境变量 RETRIEVAL_VECTOR（'on' 缺省 | 'off'），off 时
+            向量路径开关：settings.RETRIEVAL_VECTOR（'on' 缺省 | 'off'），off 时
             走纯关键词路径；on 时 retrieve_candidates 内部自动双分支（pgvector
             raw SQL / embedding_json Python 点积）并全程兜底降级，绝不抛错。
 
@@ -314,7 +314,7 @@ def make_recipe_retrieve():
         start = now_ms()
         ids = list(state.get("resolved_ingredient_ids") or [])
         text = state.get("input_text") or None
-        use_vector = os.environ.get("RETRIEVAL_VECTOR", "on").strip().lower() in ("on", "true", "1")
+        use_vector = settings.RETRIEVAL_VECTOR.strip().lower() in ("on", "true", "1")
         with SessionLocal() as session:
             candidates = retrieve_candidates(
                 session, ids, query_text=text, limit=200, use_vector=use_vector
