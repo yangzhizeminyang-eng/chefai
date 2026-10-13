@@ -1,0 +1,27 @@
+{
+  "name": "AI厨娘",
+  "appid": "",
+  "description": "AI 厨娘智能烹饪助手微信小程序",
+  "versionName": "0.1.0",
+  "versionCode": "100",
+  "transformPx": false,
+  "vueVersion": "3",
+  "mp-weixin": {
+    "appid": "touristappid",
+    "setting": {
+      "urlCheck": false,
+      "es6": true,
+      "postcss": true,
+      "minified": true
+    },
+    "usingComponents": true,
+    "lazyCodeLoading": "requiredComponents",
+    "darkmode": true,
+    "themeLocation": "theme.json",
+    "permission": {
+      "scope.camera": {
+        "desc": "用于拍摄食材照片进行识别"
+      }
+    }
+  }
+}

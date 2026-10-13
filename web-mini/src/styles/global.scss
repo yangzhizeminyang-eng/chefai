@@ -1,0 +1,82 @@
+/**
+ * 文件级注释：全局通用样式——引入设计 token，定义页面根容器 .page、
+ * 深色模式覆盖 .page.dark（WCAG AA 对比度已校验）、卡片 .card、
+ * 底部安全区 .safe-bottom、最小热区 .hit 等通用类。
+ * 使用方式：页面根节点 class="page"，深色页 class="page dark"。
+ */
+@import './tokens.scss';
+
+/* 页面根容器：统一背景、字号、文字色与盒模型 */
+.page {
+  min-height: 100vh;
+  background-color: var(--bg-page);
+  font-size: var(--font-size-base);
+  color: var(--text-primary);
+  box-sizing: border-box;
+}
+
+/* 深色模式覆盖：整组变量翻转为深色套（对比度均 ≥4.5:1，满足 WCAG AA） */
+.page.dark {
+  --bg-page: #141414;
+  --bg-card: #1f1f1f;
+  --bg-elevated: #292929;
+  --text-primary: #f5f5f5;      /* 对 #141414 ≈ 17:1 */
+  --text-secondary: #c9c9c9;    /* 对 #141414 ≈ 11.5:1 */
+  --text-tertiary: #8c8c8c;     /* 对 #141414 ≈ 5.5:1 */
+  --text-inverse: #262626;
+  --border-color: #3a3a3a;
+  --divider: #2c2c2c;
+  --color-primary: #ff8a5c;
+  --color-primary-weak: #3a2217;
+  --color-danger: #ff6b61;      /* 对 #141414 ≈ 5:1 */
+  --color-danger-bg: #3a1815;
+  --color-warning: #f0a35e;
+  --color-warning-bg: #3a2a17;
+  --color-info: #9db9d6;
+  --color-info-bg: #1b2a3a;
+  --color-success: #58c884;
+  --shadow-card: 0 4rpx 16rpx rgba(0, 0, 0, 0.4);
+}
+
+/* 通用卡片：浅色/深色自动跟随语义变量 */
+.card {
+  background-color: var(--bg-card);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+}
+
+/* 底部安全区：适配 iPhone 底部横条 */
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* 最小热区：保证可点元素 ≥44pt */
+.hit {
+  min-width: var(--hit-min);
+  min-height: var(--hit-min);
+}
+
+/* ═══════════════ 全局字号三档（Task 3 追加；绑定页面根节点 class 生效） ═══════════════
+ * 与 platform/fontSize.ts 联动：根节点 :class="fontSizeClass"（font-sm / font-base / font-lg），
+ * 覆盖 --font-size-* 语义变量，元素字号一律引用变量而非写死，实现全局缩放。 */
+
+/* 小字号档（紧凑信息场景） */
+.font-sm {
+  --font-size-sm: 24rpx;
+  --font-size-base: 28rpx;
+  --font-size-lg: 32rpx;
+}
+
+/* 标准字号档（默认） */
+.font-base {
+  --font-size-sm: 28rpx;
+  --font-size-base: 32rpx;
+  --font-size-lg: 36rpx;
+}
+
+/* 大字号档（适老化 / 大字需求） */
+.font-lg {
+  --font-size-sm: 32rpx;
+  --font-size-base: 36rpx;
+  --font-size-lg: 40rpx;
+}

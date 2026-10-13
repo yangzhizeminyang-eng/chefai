@@ -1,0 +1,48 @@
+/**
+ * 文件级注释：设计 token（CSS 自定义属性）——字号 / 热区 / 圆角 / 间距 / 色彩语义 / 阴影。
+ * 说明：小程序不支持 :root，统一挂在 page 选择器上；深色模式覆盖值见 global.scss 的 .page.dark。
+ * 颜色规范：浅色主色 #ff7a45 与 theme.json 保持一致；字号三档 14/16/18px + 烹饪模式专档 32px。
+ */
+page {
+  /* 字号三档（14/16/18px → rpx） */
+  --font-size-sm: 28rpx;
+  --font-size-base: 32rpx;
+  --font-size-lg: 36rpx;
+  --font-size-cooking: 64rpx; /* 烹饪模式专档 ≥32px，见 cooking-mode.scss */
+
+  /* 热区 ≥44pt（点击区域最小尺寸） */
+  --hit-min: 88rpx;
+
+  /* 圆角 */
+  --radius-ctrl: 12rpx;
+  --radius-card: 24rpx;
+  --radius-pill: 999rpx;
+
+  /* 间距 */
+  --space-xs: 8rpx;
+  --space-sm: 16rpx;
+  --space-md: 24rpx;
+  --space-lg: 32rpx;
+  --space-xl: 48rpx;
+
+  /* 浅色语义（深色覆盖见 global.scss 的 .page.dark） */
+  --bg-page: #f6f7f9;
+  --bg-card: #ffffff;
+  --bg-elevated: #ffffff;
+  --text-primary: #262626;
+  --text-secondary: #595959;
+  --text-tertiary: #8c8c8c;
+  --text-inverse: #ffffff;
+  --border-color: #e8e8e8;
+  --divider: #f0f0f0;
+  --color-primary: #ff7a45;
+  --color-primary-weak: #fff3ec;
+  --color-danger: #d93026;
+  --color-danger-bg: #fdecea;
+  --color-warning: #e8833a;
+  --color-warning-bg: #fdf3ea;
+  --color-info: #5b7a9d;
+  --color-info-bg: #eef3f8;
+  --color-success: #2e9e5b;
+  --shadow-card: 0 4rpx 16rpx rgba(0, 0, 0, 0.04);
+}

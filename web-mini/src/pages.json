@@ -1,0 +1,122 @@
+{
+  "pages": [
+    { "path": "pages/index/index", "style": { "navigationBarTitleText": "首页", "enablePullDownRefresh": false } },
+    { "path": "pages/disclaimer/index", "style": { "navigationBarTitleText": "免责声明" } },
+    { "path": "pages/consent/index", "style": { "navigationBarTitleText": "敏感信息授权" } },
+    { "path": "pages/profile/list", "style": { "navigationBarTitleText": "家庭档案" } },
+    { "path": "pages/profile/member-edit", "style": { "navigationBarTitleText": "成员编辑" } },
+    { "path": "pages/profile/skill", "style": { "navigationBarTitleText": "厨艺与设备" } },
+    { "path": "pages/profile/goal", "style": { "navigationBarTitleText": "饮食目标" } },
+    { "path": "pages/fridge/index", "style": { "navigationBarTitleText": "我的冰箱" } },
+    { "path": "pages/favorites/index", "style": { "navigationBarTitleText": "收藏·历史" } },
+    { "path": "pages/me/index", "style": { "navigationBarTitleText": "我的" } },
+    { "path": "pages/notfound/index", "style": { "navigationBarTitleText": "页面不存在" } }
+  ],
+  "subPackages": [
+    {
+      "root": "pages/recommend",
+      "pages": [
+        { "path": "select", "style": { "navigationBarTitleText": "怎么吃" } },
+        { "path": "today", "style": { "navigationBarTitleText": "今天吃什么" } },
+        { "path": "photo", "style": { "navigationBarTitleText": "拍照识别" } },
+        { "path": "recognize", "style": { "navigationBarTitleText": "识别结果" } },
+        { "path": "voice", "style": { "navigationBarTitleText": "语音点菜" } },
+        { "path": "list", "style": { "navigationBarTitleText": "推荐列表" } },
+        { "path": "filtered", "style": { "navigationBarTitleText": "筛选结果" } },
+        { "path": "search", "style": { "navigationBarTitleText": "搜索" } },
+        { "path": "detail", "style": { "navigationBarTitleText": "菜谱详情" } }
+      ]
+    },
+    {
+      "root": "pages/cooking",
+      "pages": [
+        { "path": "allergen-confirm", "style": { "navigationBarTitleText": "过敏原确认" } },
+        { "path": "guide", "style": { "navigationStyle": "custom", "disableScroll": false } },
+        { "path": "timer", "style": { "navigationBarTitleText": "计时器" } },
+        { "path": "ask", "style": { "navigationBarTitleText": "烹饪问答" } },
+        { "path": "finish", "style": { "navigationBarTitleText": "完成烹饪" } }
+      ]
+    },
+    {
+      "root": "pages/nutrition",
+      "pages": [
+        { "path": "summary", "style": { "navigationBarTitleText": "营养总览" } },
+        { "path": "today", "style": { "navigationBarTitleText": "今日摄入" } },
+        { "path": "manual", "style": { "navigationBarTitleText": "手动记录" } },
+        { "path": "entry-edit", "style": { "navigationBarTitleText": "记录编辑" } },
+        { "path": "shopping", "style": { "navigationBarTitleText": "购物清单" } }
+      ]
+    },
+    {
+      "root": "pages/member",
+      "pages": [
+        { "path": "signature", "style": { "navigationBarTitleText": "签名定制" } },
+        { "path": "settings", "style": { "navigationBarTitleText": "设置" } },
+        { "path": "about", "style": { "navigationBarTitleText": "关于" } },
+        { "path": "center", "style": { "navigationBarTitleText": "会员中心" } },
+        { "path": "benefits", "style": { "navigationBarTitleText": "会员权益" } },
+        { "path": "orders", "style": { "navigationBarTitleText": "我的订单" } },
+        { "path": "feedback", "style": { "navigationBarTitleText": "意见反馈" } }
+      ]
+    },
+    {
+      "root": "pages/innovation",
+      "pages": [
+        { "path": "entry", "style": { "navigationBarTitleText": "AI 创新" } },
+        { "path": "confirm", "style": { "navigationBarTitleText": "创新确认" } },
+        { "path": "result", "style": { "navigationBarTitleText": "创新结果" } },
+        { "path": "detail", "style": { "navigationBarTitleText": "创新详情" } },
+        { "path": "mine", "style": { "navigationBarTitleText": "我的创新" } }
+      ]
+    }
+  ],
+  "preloadRule": {
+    "pages/index/index": { "network": "all", "packages": ["pages/recommend"] },
+    "pages/recommend/detail": { "network": "all", "packages": ["pages/cooking", "pages/innovation"] },
+    "pages/cooking/finish": { "network": "all", "packages": ["pages/nutrition"] },
+    "pages/me/index": { "network": "all", "packages": ["pages/member"] }
+  },
+  "tabBar": {
+    "custom": false,
+    "color": "@tabFontColor",
+    "selectedColor": "@tabSelectedColor",
+    "backgroundColor": "@tabBgColor",
+    "borderStyle": "@tabBorderStyle",
+    "list": [
+      {
+        "pagePath": "pages/index/index",
+        "text": "首页",
+        "iconPath": "static/tab/home.png",
+        "selectedIconPath": "static/tab/home-active.png"
+      },
+      {
+        "pagePath": "pages/fridge/index",
+        "text": "我的冰箱",
+        "iconPath": "static/tab/fridge.png",
+        "selectedIconPath": "static/tab/fridge-active.png"
+      },
+      {
+        "pagePath": "pages/favorites/index",
+        "text": "收藏·历史",
+        "iconPath": "static/tab/fav.png",
+        "selectedIconPath": "static/tab/fav-active.png"
+      },
+      {
+        "pagePath": "pages/me/index",
+        "text": "我的",
+        "iconPath": "static/tab/me.png",
+        "selectedIconPath": "static/tab/me-active.png"
+      }
+    ]
+  },
+  "globalStyle": {
+    "navigationBarTitleText": "AI 厨娘",
+    "navigationBarBackgroundColor": "@navBgColor",
+    "navigationBarTextStyle": "@navTxtStyle",
+    "backgroundColor": "@bgColor",
+    "backgroundTextStyle": "@bgTxtStyle",
+    "darkmode": true,
+    "themeLocation": "theme.json",
+    "rpxCalcMaxDeviceWidth": 960
+  }
+}

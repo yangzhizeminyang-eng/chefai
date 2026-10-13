@@ -1,0 +1,15 @@
+{
+  "description": "web-mini 根目录项目配置：miniprogramRoot 指向 uni-app 编译产物，微信开发者工具导入本目录即可运行",
+  "compileType": "miniprogram",
+  "miniprogramRoot": "dist/build/mp-weixin/",
+  "appid": "touristappid",
+  "projectname": "AI厨娘",
+  "setting": {
+    "urlCheck": false,
+    "es6": true,
+    "postcss": true,
+    "minified": true,
+    "bigPackageSizeSupport": true
+  },
+  "condition": {}
+}

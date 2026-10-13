@@ -1,0 +1,8 @@
+/**
+ * 文件级注释：烹饪模式专档样式——P-15 分步引导使用，独立于用户字号设置。
+ * 说明：将基础字号强制切换为烹饪专档（≥32px），仅作用于 .cooking-mode
+ * 根节点子树；引入方式：在引导页 <style> 中 @import 本文件后于根节点挂 class。
+ */
+.cooking-mode {
+  --font-size-base: var(--font-size-cooking);
+}
