@@ -47,21 +47,115 @@ const loaded = ref(false)
 const resolvedCover = computed(() => {
   const url = props.coverUrl
   if (!url) return ''
-  if (/^https?:\/\//i.test(url)) return url
+  if (/^(https?:\/\/|data:)/i.test(url)) return url
   return API_BASE_URL + url
 })
 
-// coverUrl 变化（组件复用 / 详情切换菜谱）时重置加载状态，避免残留旧图状态
+/**
+ * 远程封面 → data URL 缓存（模块级 Map：绝对 url → data:image/...;base64,...）。
+ * 🔴 真机适配（最终方案）：Android/iOS 微信真机的 <image> 组件对 HTTP 明文图片受限、
+ * downloadFile 通道真机同样被拦（实测），而 **request 通道真机已验证可连本地后端**——
+ * 因此网络封面统一经 uni.request（responseType: 'arraybuffer'）拉取二进制，
+ * 转 base64 data URL 渲染（data: 协议不受任何真机网络拦截）。
+ * 上线 HTTPS 域名后本逻辑同样工作（request 对 HTTPS 照常可用）。
+ * 内存评估：单封面 base64 约 300KB，列表页同屏 ≤8 张约 2.4MB，可接受；
+ * 缓存 Map 避免滚动/复用重复拉取。
+ */
+const dataUrlCache = new Map<string, string>()
+
+/** 实际渲染给 <image> 的 src（data URL；就绪前为空串显示骨架） */
+const displaySrc = ref('')
+
+/**
+ * 从 URL 扩展名推断 MIME（base64 data URL 前缀用；未知扩展按 JPEG）。
+ * @param url 封面绝对地址
+ * @returns image MIME 字符串
+ */
+function coverMime(url: string): string {
+  const lower = url.toLowerCase()
+  if (lower.endsWith('.png')) return 'image/png'
+  if (lower.endsWith('.webp')) return 'image/webp'
+  if (lower.endsWith('.gif')) return 'image/gif'
+  return 'image/jpeg'
+}
+
+/**
+ * 经 request 通道拉取封面二进制并转 base64 data URL。
+ * @param url 封面绝对地址
+ * @returns data URL（data:image/...;base64,...）
+ * @throws statusCode ≠ 200 或网络失败时抛出（由调用方静默处理走占位回落）
+ */
+function fetchCoverAsDataUrl(url: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    uni.request({
+      url,
+      method: 'GET',
+      responseType: 'arraybuffer',
+      timeout: 15000,
+      success: (res) => {
+        if (res.statusCode !== 200) {
+          reject(new Error(`cover fetch status ${res.statusCode}`))
+          return
+        }
+        const base64 = uni.arrayBufferToBase64(res.data as ArrayBuffer)
+        resolve(`data:${coverMime(url)};base64,${base64}`)
+      },
+      fail: (err) => {
+        reject(new Error(err.errMsg || 'request fail'))
+      },
+    })
+  })
+}
+
+/**
+ * 加载封面到可渲染状态：缓存命中直接用；未命中经 request 通道拉取转 data URL 后写缓存。
+ * @param url 解析后的封面绝对地址（可空）
+ * @returns 无
+ * @throws 不抛出（拉取失败置 loadError 走占位回落，绝不裂图）
+ */
+async function loadDisplaySrc(url: string): Promise<void> {
+  if (!url) {
+    displaySrc.value = ''
+    return
+  }
+  // data URL / 本地路径：直接渲染（缓存命中 / 未来 base64 场景）
+  if (!/^https?:\/\//i.test(url)) {
+    displaySrc.value = url
+    return
+  }
+  const cached = dataUrlCache.get(url)
+  if (cached) {
+    displaySrc.value = cached
+    return
+  }
+  try {
+    const dataUrl = await fetchCoverAsDataUrl(url)
+    dataUrlCache.set(url, dataUrl)
+    // 异步期间组件可能已切换封面：仅当仍是当前封面时才落地，防旧图串场
+    if (resolvedCover.value === url) {
+      displaySrc.value = dataUrl
+    }
+  } catch {
+    if (resolvedCover.value === url) {
+      loadError.value = true
+    }
+  }
+}
+
+// coverUrl 变化（组件复用 / 详情切换菜谱）：重置状态并按解析结果加载封面
 watch(
   () => props.coverUrl,
   () => {
     loadError.value = false
     loaded.value = false
+    displaySrc.value = ''
+    void loadDisplaySrc(resolvedCover.value)
   },
+  { immediate: true },
 )
 
-/** 是否展示占位回落块（无 URL 或加载出错） */
-const showPlaceholder = computed(() => !props.coverUrl || loadError.value)
+/** 是否展示占位回落块（无可显示图或加载出错） */
+const showPlaceholder = computed(() => !displaySrc.value || loadError.value)
 
 /**
  * seed 字符串 → 稳定正整数（字符码累加哈希）。
@@ -103,9 +197,9 @@ const sizeClass = computed(() => `is-${props.size}`)
       <view v-if="!loaded" class="cover-skeleton" />
       <image
         class="cover-img"
-        :src="resolvedCover"
+        :src="displaySrc"
         mode="aspectFill"
-        lazy-load
+        webp
         @load="loaded = true"
         @error="loadError = true"
       />

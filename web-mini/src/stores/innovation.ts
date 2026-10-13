@@ -16,6 +16,7 @@
  * resume 在轮询窗口内恢复调度（重新等待一个轮询间隔后继续），轮询 promise 保持挂起。
  */
 import { defineStore } from 'pinia'
+import { useIngredientsStore } from './ingredients'
 import {
   getInnovationJob,
   getInnovationRecipe,
@@ -154,8 +155,52 @@ export const useInnovationStore = defineStore('innovation', {
     generating: false,
     /** 预检/生成错误（归一化 ApiError） */
     error: null as ApiError | null,
+    /**
+     * 自定义食材名（不在食材库里的，用户自由输入；对齐 web 端 InnovateView
+     * customInput 语义——库选 + 自定义合并为本次创新食材条件）
+     */
+    customNames: [] as string[],
   }),
+  getters: {
+    /**
+     * 本次创新的全部食材名 = 食材库已选 + 自定义输入（去重合并，库选在前）。
+     * @returns 食材名数组（precheck / jobCreate 请求体来源）
+     */
+    allPickedNames(state): string[] {
+      const ingredientsStore = useIngredientsStore()
+      const names = ingredientsStore.selectedList.map((s) => s.name)
+      for (const c of state.customNames) {
+        if (!names.includes(c)) names.push(c)
+      }
+      return names
+    },
+  },
   actions: {
+    /**
+     * 添加自定义食材（去重、非空守卫；对齐 web InnovateView addCustom 语义）。
+     * @param name 用户输入的食材名（内部自行 trim）
+     * @returns 无
+     */
+    addCustom(name: string): void {
+      const t = name.trim()
+      if (!t) return
+      if (!this.customNames.includes(t)) this.customNames.push(t)
+    },
+    /**
+     * 移除自定义食材。
+     * @param name 自定义食材名
+     * @returns 无
+     */
+    removeCustom(name: string): void {
+      this.customNames = this.customNames.filter((n) => n !== name)
+    },
+    /**
+     * 清空自定义食材（随已选集清空联动调用）。
+     * @returns 无
+     */
+    clearCustom(): void {
+      this.customNames = []
+    },
     /**
      * 预检 + 生成主链路（M-01 异步任务化）：
      * ① 前端 precheck 保留（拦截卡提前展示，命中拦截省一次任务提交）；

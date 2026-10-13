@@ -1,0 +1,86 @@
+# =====================================================================
+# 文件名: docker-compose.prod.yml（生产覆盖文件）
+# 用途:   「AI 厨娘」Web 端生产部署覆盖层，与 docker-compose.yml 叠加使用。
+#
+# 用法（项目根目录执行）：
+#   docker compose --env-file .env.production \
+#     -f docker-compose.yml -f docker-compose.prod.yml up -d
+#   （推荐直接用 scripts/deploy.sh，它已封装好上面的命令与前置检查）
+#
+# 🔴 前置：Docker Compose 版本需 ≥ 2.24（本文件使用 !reset 语法）
+#   核对：docker compose version     # 需 v2.24.0 及以上
+#   若低于 2.24：把 docker-compose.yml 的 api.ports 一行直接删掉，并跳过本文件。
+#
+# 本覆盖层只做 5 件事，其余一律沿用 docker-compose.yml：
+#   1. web  改用本地 load 的镜像 —— 2C2G 服务器上构建前端（两次 npm ci +
+#      vue-tsc + 两次 vite build，峰值 >1.5GB）会 OOM，构建必须放本地
+#   2. web  对外端口改为 8005（宿主 8005 → 容器 80；nginx 内部不改，前端
+#      baseURL 是同源相对路径，故零代码改动）
+#   3. api  移除宿主机 8000 发布 —— 后端只走 aicook-net 内网，外部统一经 nginx
+#   4. db/api 的密码与管理员密钥改为环境变量注入（消灭硬编码凭据）
+#   5. api  挂载语料库与封面目录 —— 🔴 镜像内不含这两份数据，不挂载则
+#      `python -m app.seed` 会静默跳过语料导入，上线后菜谱库为空
+# =====================================================================
+
+services:
+
+  # ---------- web：本地构建好的镜像 + 对外 8005 ----------
+  web:
+    # 镜像由本地 `docker build -f Dockerfile.web` + `docker save` 产出，
+    # 经 scp 送达服务器后 `docker load`。compose 检测到该镜像已存在即直接复用，
+    # 不会触发构建（deploy.sh 会在启动前断言镜像存在，双重保险）。
+    image: ${WEB_IMAGE:-aicook-web:20261013}
+    ports:
+      - "${WEB_PORT:-8005}:80"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ---------- api：取消 8000 对外 + 凭据走环境变量 + 挂载语料/封面 ----------
+  api:
+    # 🔴 清除 docker-compose.yml 中的 `8000:8000` 发布。
+    #    Compose 对序列型键（ports）默认是「合并」而非「替换」，必须用
+    #    !reset 才能真正清空；deploy.sh 会在启动后断言 8000 未监听。
+    ports: !reset []
+    environment:
+      # 三个值全部来自 .env.production（deploy.sh 用 --env-file 注入）。
+      # `:?` 表示缺值时 compose 直接报错退出，避免带着默认弱口令上线。
+      DB_PASSWORD: ${DB_PASSWORD:?缺少 DB_PASSWORD，请在 .env.production 中配置}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?缺少 ADMIN_PASSWORD，请在 .env.production 中配置}
+      ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET:?缺少 ADMIN_JWT_SECRET，请在 .env.production 中配置}
+    volumes:
+      # 🔴 语料库（HowToCook，约 265MB）：backend/.dockerignore 排除了 data/，
+      #    且 Dockerfile 只 COPY app/alembic，故镜像内没有语料。
+      #    代码里的 ensure_corpus() 兜底是 `git clone`，但 python:3.11-slim
+      #    不含 git → 容器内必然失败 → seed 会打印「跳过语料导入」并继续，
+      #    结果是菜谱库为空、推荐与检索全部无数据。必须宿主机挂载。
+      - ./backend/data:/app/data
+      # 菜谱封面目录：FastAPI 将其挂载在 /v1/media/recipe-covers。
+      # 不挂载则容器重建后 seed 生成的封面全部丢失（368 张）。
+      - ./backend/assets:/app/assets
+      # uploads 命名卷沿用 docker-compose.yml 的定义（此处不重复声明）
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # ---------- db：密码走环境变量 ----------
+  db:
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?缺少 DB_PASSWORD，请在 .env.production 中配置}
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # ---------- redis：阶段二预留，仅补日志限额防止磁盘写满 ----------
+  redis:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

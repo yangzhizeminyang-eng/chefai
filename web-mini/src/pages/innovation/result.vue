@@ -7,9 +7,11 @@
   - 生成中 UI：SkeletonPage（detail 形态）+ 进度文案轮换（5s 一换，禁止白屏转圈）
     + 取消按钮（stopPolling + 返回）；
   - 完成 → 呈现创新菜卡（菜名 / RecipeCover 占位封面 / 亮点标签 / 用量清单 / 步骤摘要）
-    + trackEvent('innovation_result')；降级（basis.generated_by === 'template'）→ DegradedBar；
+    + trackEvent('innovation_result')；模板降级（basis.generated_by === 'template'）→
+    🔴 不展示模板菜谱，改为"不建议生成"提示态（调整食材 / 重新生成，历史行为是直出
+    "X炒Y"模板菜，用户感知为"没有智能体思考"，已按产品要求调整）；
   - 超时/失败（store 归一 TIMEOUT / GENERATION_FAILED）→ ErrorState + 重试
-    （重新 postInnovationJobCreate → startPolling，食材取自 ingredients.selectedList）；
+    （重新 postInnovationJobCreate → startPolling，食材取自 innovation.allPickedNames）；
   - 轮询 blocked（job 风控拦截，store 映射为 precheck 结构）→ RiskBlockModal +
     trackEvent('innovation_blocked')（安全类立即 flush）+ 关闭后返回上一页；
   - 「查看完整」→ ROUTES.INNOVATION_DETAIL + '?recipe_id='；
@@ -22,7 +24,6 @@ import { computed, onUnmounted, ref } from 'vue'
 import { onHide, onLoad, onShow, onUnload } from '@dcloudio/uni-app'
 import type { ApiError } from '@shared/types'
 import { postInnovationJobCreate } from '@/api/endpoints'
-import { useIngredientsStore } from '@/stores/ingredients'
 import { useInnovationStore } from '@/stores/innovation'
 import { ROUTES, goRoute } from '@/utils/routes'
 import { flushOnHide, trackEvent } from '@/utils/track'
@@ -34,10 +35,10 @@ import OfflineBar from '@/components/OfflineBar.vue'
 import SkeletonPage from '@/components/SkeletonPage.vue'
 import EmptyState from '@/components/EmptyState.vue'
 import ErrorState from '@/components/ErrorState.vue'
-import DegradedBar from '@/components/DegradedBar.vue'
 import RiskBlockModal from '@/components/RiskBlockModal.vue'
 import RecipeCover from '@/components/RecipeCover.vue'
 import DisclaimerBar from '@/components/DisclaimerBar.vue'
+import BaseButton from '@/components-base/BaseButton.vue'
 
 /** 页面阶段：polling 轮询中 / result 结果呈现 / error 错误态 / blocked 拦截确认 */
 type Phase = 'polling' | 'result' | 'error' | 'blocked'
@@ -47,9 +48,7 @@ const { isDark } = useTheme()
 /** 字号档位 class（根节点 class） */
 const { fontSizeClass } = useFontSize()
 
-/** 食材 store（重试时重新取已选食材名） */
-const ingredients = useIngredientsStore()
-/** 创新 store（startPolling / current / precheck / stopPolling / pausePolling） */
+/** 创新 store（startPolling / current / precheck / allPickedNames / stopPolling / pausePolling） */
 const innovation = useInnovationStore()
 /** 全局网络态（离线提示条显隐） */
 const network = useAppNetwork()
@@ -170,15 +169,16 @@ function closeBlocked(): void {
 }
 
 /**
- * 重新生成（error 态重试）：重新提交异步任务并再次轮询；
+ * 重新生成（error 态重试 / 模板降级态"重新生成"按钮共用）：重新提交异步任务并再次轮询；
+ * 食材条件用 allPickedNames（库选 + 自定义合并，与 entry 页同源）；
  * 已选集为空时提示先去选食材（不放出注定失败的请求）。
  * @returns 无
  */
 function retryGenerate(): void {
-  const names = ingredients.selectedList.map((s) => s.name)
+  const names = innovation.allPickedNames
   if (names.length === 0) {
     toastInfo('请先去选择食材')
-    goRoute(ROUTES.RECOMMEND_SELECT)
+    goRoute(ROUTES.INNOVATION_ENTRY)
     return
   }
   void postInnovationJobCreate(names)
@@ -189,6 +189,14 @@ function retryGenerate(): void {
       pollError.value = e
       phase.value = 'error'
     })
+}
+
+/**
+ * 返回创新入口页（模板降级态"调整食材"动作，重新编辑食材条件）。
+ * @returns 无
+ */
+function goEntry(): void {
+  goRoute(ROUTES.INNOVATION_ENTRY)
 }
 
 /**
@@ -281,9 +289,25 @@ onUnmounted(() => {
 
       <!-- ═══ 结果呈现 ═══ -->
       <template v-else-if="phase === 'result' && recipe">
-        <!-- 模板降级提示条（P1 DEF-01：LLM 降级规则模板生成） -->
-        <DegradedBar v-if="isDegraded" />
+        <!-- 🔴 模板降级（basis.generated_by === 'template'）→ 不再展示模板菜谱：
+             智能体未能基于食材完成高质量创新（超时/不可行），按产品要求提示
+             "不建议生成"并引导调整食材或重新生成（历史行为是直出"X炒Y"模板菜） -->
+        <template v-if="isDegraded">
+          <EmptyState
+            icon="🤔"
+            title="当前食材组合暂不建议生成创新菜"
+            desc="智能体基于这些食材与你的档案未能得到高质量的创新组合（可能是食材搭配可行性有限）。试试调整食材、补充食材性质描述后再生成"
+            action-text="调整食材"
+            @action="goEntry"
+          />
+          <view class="result__degraded-ops">
+            <BaseButton type="primary" @click="retryGenerate">重新生成</BaseButton>
+            <BaseButton type="ghost" @click="goEntry">返回调整食材</BaseButton>
+          </view>
+        </template>
 
+        <!-- 真实 LLM 结果（basis.generated_by === 'llm'）：完整呈现 -->
+        <template v-else>
         <!-- 菜名 + AI 创新徽标 + 封面 -->
         <view class="result__card">
           <view class="result__head">
@@ -331,6 +355,7 @@ onUnmounted(() => {
 
         <!-- 免责声明条（G-02） -->
         <DisclaimerBar scene="detail" />
+        </template>
       </template>
 
       <!-- ═══ 兜底空态（phase=result 但 current 意外为空，理论不可达防御） ═══ -->
@@ -509,6 +534,14 @@ onUnmounted(() => {
 }
 
 /* 查看完整：主色实底整行 */
+/* 模板降级提示态的操作按钮组（调整食材 / 重新生成） */
+.result__degraded-ops {
+  margin-top: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
 .result__primary-btn {
   box-sizing: border-box;
   width: 100%;

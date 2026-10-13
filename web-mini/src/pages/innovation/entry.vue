@@ -48,8 +48,14 @@ const network = useAppNetwork()
 /** 创新模块是否关闭（远程开关显式 false；undefined 视为放开） */
 const innovationDisabled = computed(() => config.switches.innovation === false)
 
-/** 已选食材列表（{id, name}，chips 渲染与生成条件来源） */
+/** 已选食材列表（{id, name}，chips 渲染与生成条件来源；仅库选部分） */
 const pickedList = computed(() => ingredients.selectedList)
+
+/** 自定义食材名（用户自由输入，不在食材库里的；存 innovation store 供 confirm 共用） */
+const customNames = computed(() => innovation.customNames)
+
+/** 本次创新的全部食材名（库选 + 自定义合并，precheck/jobCreate 请求体来源） */
+const pickedNames = computed(() => innovation.allPickedNames)
 
 /** 已选食材 id 集合（候选置灰判定） */
 const pickedIds = computed(() => new Set(pickedList.value.map((s) => s.id)))
@@ -143,13 +149,58 @@ function removePicked(id: number): void {
 }
 
 /**
- * 清空全部已选食材（chips 区"清空"按钮，二次确认不必要——可重新添加）。
+ * 清空全部已选食材（含自定义食材，联动 store；可重新添加无需二次确认）。
  * @returns 无
  */
 function clearPicked(): void {
-  if (pickedList.value.length === 0) return
+  if (pickedList.value.length === 0 && customNames.value.length === 0) return
   ingredients.clear()
+  innovation.clearCustom()
   toastInfo('已清空已选食材')
+}
+
+/**
+ * 确认加入（回车 / "添加"按钮，单一输入框统一入口）：
+ * - 输入词与库选/自定义重复 → 提示已添加；
+ * - 候选列表有精确同名命中 → 加入食材库已选集；
+ * - 无库内命中 → 作为自定义食材加入（支持食材性质描述，如"低脂的海鲜"）。
+ * 成功后清空输入框与候选区，可连续输入。
+ * @returns 无
+ */
+function confirmInput(): void {
+  const q = keyword.value.trim()
+  if (!q) {
+    toastInfo('请输入食材名称')
+    return
+  }
+  if (pickedIds.value.has(q as unknown as number) || customNames.value.includes(q) ||
+      pickedList.value.some((s) => s.name === q)) {
+    toastInfo('该食材已在列表中')
+    return
+  }
+  // 候选精确同名命中 → 走库选 toggle（携带 id/category 等完整字段）
+  const exact = candidates.value.find((c) => c.name === q)
+  if (exact) {
+    ingredients.toggle(exact)
+    toastInfo(`已添加「${q}」`)
+    keyword.value = ''
+    candidates.value = []
+    return
+  }
+  // 无库内命中 → 自定义食材（支持任意名称/性质描述）
+  innovation.addCustom(q)
+  toastInfo(`已添加自定义食材「${q}」`)
+  keyword.value = ''
+  candidates.value = []
+}
+
+/**
+ * 移除自定义食材（自定义 chips × 按钮）。
+ * @param name 自定义食材名
+ * @returns 无
+ */
+function removeCustom(name: string): void {
+  innovation.removeCustom(name)
 }
 
 /**
@@ -170,17 +221,20 @@ function closeBlocked(): void {
  */
 async function startInnovation(): Promise<void> {
   if (launching.value) return
-  if (pickedList.value.length === 0) {
+  // 空守卫用合并源（库选 + 自定义）：仅自定义输入（无库选）同样可以创新
+  if (pickedNames.value.length === 0) {
     toastInfo('请先添加需要创新的食材')
     return
   }
   launching.value = true
   trackEvent('innovation_enter')
   trackEvent('innovation_precheck')
-  const pickedNames = pickedList.value.map((s) => s.name)
+  // 🔴 请求体必须用 allPickedNames（库选 + 自定义合并）——曾漏自定义食材导致
+  // 仅自定义输入时被空守卫拦截、precheck/jobCreate 丢失用户输入（历史缺陷，勿回退）
+  const names = pickedNames.value
   let pre: InnovationPrecheckResponse
   try {
-    pre = await postInnovationPrecheck(pickedNames)
+    pre = await postInnovationPrecheck(names)
   } catch (e) {
     launching.value = false
     toastError((e as ApiError).message || '预检失败，请重试')
@@ -195,10 +249,17 @@ async function startInnovation(): Promise<void> {
     blockedVisible.value = true
     return
   }
+  // 🔴 预检明确不可行（ok=false 且未被风控拦截）：生成前置闸门——提示不建议生成，
+  //    不放出注定低质的生成请求（对应产品要求"不能实现则提示用户不建议生成"）
+  if (pre.ok === false) {
+    launching.value = false
+    toastInfo('当前食材组合不建议生成创新菜，试试调整食材或补充描述')
+    return
+  }
   // 预检通过：提交异步生成任务（202 秒回），轮询移交 result 页
   trackEvent('innovation_generate')
   try {
-    const job = await postInnovationJobCreate(pickedNames)
+    const job = await postInnovationJobCreate(names)
     goRoute(`${ROUTES.INNOVATION_RESULT}?job_id=${encodeURIComponent(job.job_id)}`)
   } catch (e) {
     toastError((e as ApiError).message || '任务提交失败，请重试')
@@ -212,7 +273,8 @@ async function startInnovation(): Promise<void> {
  * @returns 无
  */
 function goConfirm(): void {
-  if (pickedList.value.length === 0) {
+  // 空守卫用合并源（库选 + 自定义），与 startInnovation 一致
+  if (pickedNames.value.length === 0) {
     toastInfo('请先添加需要创新的食材')
     return
   }
@@ -262,12 +324,12 @@ onHide(() => {
           <text class="entry__intro-line entry__intro-line--muted">生成结果仅供参考，请遵循基本烹饪安全常识。</text>
         </view>
 
-        <!-- 食材编辑卡片（页内闭环：搜索 + 增删，不跳转选择页） -->
+        <!-- 食材编辑卡片（页内闭环：搜索 + 增删 + 自定义输入，不跳转选择页） -->
         <view class="entry__section">
           <view class="entry__section-head">
-            <text class="entry__section-title">本次将使用的食材（{{ pickedList.length }}）</text>
+            <text class="entry__section-title">本次将使用的食材（{{ pickedNames.length }}）</text>
             <view
-              v-if="pickedList.length > 0"
+              v-if="pickedNames.length > 0"
               class="entry__clear"
               @click="clearPicked"
             >
@@ -275,28 +337,43 @@ onHide(() => {
             </view>
           </view>
 
-          <!-- 已选 chips：点 × 移除 -->
-          <view v-if="pickedList.length > 0" class="entry__chips">
+          <!-- 已选 chips：库选（搜索/候选加入）+ 自定义（自由输入），均可 × 移除 -->
+          <view v-if="pickedNames.length > 0" class="entry__chips">
             <view v-for="item in pickedList" :key="item.id" class="entry__chip">
               {{ item.name }}
               <text class="entry__chip-x" @click.stop="removePicked(item.id)">×</text>
             </view>
+            <view
+              v-for="name in customNames"
+              :key="`c-${name}`"
+              class="entry__chip entry__chip--custom"
+            >
+              {{ name }}
+              <text class="entry__chip-x" @click.stop="removeCustom(name)">×</text>
+            </view>
           </view>
-          <text v-else class="entry__empty-hint">还没有添加食材，搜一搜手边有什么</text>
+          <text v-else class="entry__empty-hint">还没有添加食材，搜一搜或直接输入手边有什么</text>
 
-          <!-- 搜索框：300ms 防抖拉候选 -->
-          <view class="entry__search">
-            <BaseInput
-              :model-value="keyword"
-              placeholder="搜索食材，如：鸡蛋、培根、海带"
-              @update:model-value="onSearchInput"
-            />
+          <!-- 单一输入行：输入即搜库候选（点选加入）；回车/添加 = 精确命中入库选、
+               无命中作为自定义食材加入（支持食材性质描述）——搜索与自定义合一 -->
+          <view class="entry__custom-row">
+            <view class="entry__custom-input">
+              <BaseInput
+                v-model="keyword"
+                placeholder="搜索食材，或直接输入库里没有的食材"
+                :maxlength="20"
+                @update:model-value="onSearchInput"
+                @confirm="confirmInput"
+              />
+            </view>
+            <BaseButton type="default" size="sm" @click="confirmInput">添加</BaseButton>
           </view>
+          <text class="entry__custom-tip">输入后点"添加"或按回车：库内食材直接加入，库里没有的按自定义食材加入</text>
 
-          <!-- 搜索候选：点击加入/移除，已选置灰 -->
+          <!-- 候选区：输入即搜库，点击加入，已选置灰 -->
           <view v-if="searching" class="entry__candidates-tip">搜索中…</view>
           <view v-else-if="keyword.trim() && candidates.length === 0" class="entry__candidates-tip">
-            没有找到匹配的食材
+            库内没有匹配——点上方"添加"按自定义食材加入
           </view>
           <view v-else-if="candidates.length > 0" class="entry__chips">
             <view
@@ -441,6 +518,35 @@ onHide(() => {
     opacity: 0.5;
     border-color: var(--color-primary);
   }
+}
+
+/* 自定义 chip：虚线描边区分"手动输入的食材/描述" */
+.entry__chip--custom {
+  border-style: dashed;
+  border-color: var(--color-info);
+  background: var(--color-info-bg);
+  color: var(--color-info);
+}
+
+/* 自定义输入行：输入框占满 + 添加按钮固定右侧 */
+.entry__custom-row {
+  margin-top: var(--space-md);
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.entry__custom-input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 自定义输入说明：引导用户自由描述食材性质（AI 创新输入面） */
+.entry__custom-tip {
+  margin-top: var(--space-xs);
+  font-size: var(--font-size-sm);
+  color: var(--text-tertiary);
+  line-height: 1.6;
 }
 
 .entry__empty-hint {

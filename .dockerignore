@@ -16,3 +16,9 @@ logs
 .vscode
 项目开发文档
 scripts
+# 生产密钥与镜像搬运包（防止误入构建上下文 / 泄漏）
+.env
+.env.*
+!.env.example
+*.tar
+*.tar.gz

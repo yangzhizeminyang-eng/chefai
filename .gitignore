@@ -1,0 +1,46 @@
+# =====================================================================
+# 项目根 .gitignore
+# 说明: backend/ 另有独立 .gitignore（覆盖 data/ 与 .env）；
+#       本文件负责根级与部署相关文件，重点是**防止机密与搬运包被提交**。
+# 注意: node_modules/ 与 dist/ 在历史提交中已被跟踪，本文件的对应规则
+#       只阻止「新增文件」进入版本库，不会自动取消已有跟踪。
+#       如需彻底清理（可选，属独立动作）：
+#         git rm -r --cached web-stage1/node_modules admin-web/node_modules web-mini/node_modules
+# =====================================================================
+
+# ---------- 🔴 机密：绝不提交 ----------
+.env
+.env.*
+*.local
+!.env.example
+!.env.production.example
+
+# ---------- 镜像 / 备份搬运包（体积大且含完整运行态） ----------
+*.tar
+*.tar.gz
+
+# ---------- 运行时产物 ----------
+logs/
+*.log
+*.pid
+backend/uploads/
+
+# ---------- 语料缓存（backend/.gitignore 已覆盖，此处兜底） ----------
+backend/data/
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+
+# ---------- Node（仅阻止新增） ----------
+node_modules/
+dist/
+
+# ---------- 编辑器与临时目录 ----------
+.trae/
+.vscode/
+.idea/
+*.tmp

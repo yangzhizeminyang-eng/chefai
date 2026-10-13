@@ -17,7 +17,6 @@ import { computed, ref } from 'vue'
 import { onHide, onLoad } from '@dcloudio/uni-app'
 import type { ApiError, InnovationPrecheckResponse } from '@shared/types'
 import { postInnovationJobCreate, postInnovationPrecheck } from '@/api/endpoints'
-import { useIngredientsStore } from '@/stores/ingredients'
 import { useInnovationStore } from '@/stores/innovation'
 import { useProfileStore } from '@/stores/profile'
 import { ROUTES, goRoute } from '@/utils/routes'
@@ -38,17 +37,15 @@ const { isDark } = useTheme()
 /** 字号档位 class（根节点 class） */
 const { fontSizeClass } = useFontSize()
 
-/** 食材 store（selectedList 确认条件） */
-const ingredients = useIngredientsStore()
-/** 创新 store（precheck 状态同步 + onHide 暂停轮询安全调用） */
+/** 创新 store（precheck 状态同步 + allPickedNames 生成条件 + onHide 暂停轮询） */
 const innovation = useInnovationStore()
 /** 家庭档案 store（family/skill/goal 三段摘要） */
 const profile = useProfileStore()
 /** 全局网络态（离线提示条显隐） */
 const network = useAppNetwork()
 
-/** 已选食材名列表（本次生成条件） */
-const pickedNames = computed(() => ingredients.selectedList.map((s) => s.name))
+/** 已选食材名列表（本次生成条件：库选 + 自定义输入合并，与 entry 页同源） */
+const pickedNames = computed(() => innovation.allPickedNames)
 
 /** 预检中标记（确认按钮 loading） */
 const prechecking = ref(false)
