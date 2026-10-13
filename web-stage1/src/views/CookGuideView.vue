@@ -30,8 +30,10 @@
  * F 模块新增：
  *       ⑫ 离线可读（NFR-3.6）：进入引导保存菜谱快照到 IndexedDB（utils/offlineCache），
  *          断点恢复失败时回退本地快照渲染步骤，不依赖网络；
- *       ⑬ 免手语音（PRD US-F4）：Web Speech API 指令白名单本地解析（utils/voiceCommand），
- *          「下一步/上一步/暂停/继续」映射到既有切换与计时器处理函数。
+ *       ⑬ 免手语音（PRD US-F4）：麦克风采集 → 静音分段 → 后端 /v1/speech/asr
+ *          （百炼 qwen3-asr-flash）转写（utils/asrVoiceCommand），白名单本地解析
+ *          （utils/voiceCommand），「下一步/上一步/暂停/继续」映射到既有切换与
+ *          计时器处理函数。
  * DEF-05 修复：
  *       ⑭ 完成页评分组件：完成面板新增 el-rate 星级 + 标签多选（PRD P-18：太咸/
  *          太淡/火大了/完美/成品卖相差）+「提交评价」，携带 {rating, tags} 调
@@ -45,7 +47,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import { Mic as MicIcon, Timer as TimerIcon } from '@element-plus/icons-vue'
-import { finishCookingSession, getRecipe, postCookingHelp } from '@/api/endpoints'
+import { finishCookingSession, getRecipe, postCookingHelp, postSpeechAsr } from '@/api/endpoints'
 import type { ApiError, RecipeStep } from '@/api/types'
 import { useCookingStore } from '@/stores/cooking'
 import { useMeStore } from '@/stores/me'
@@ -60,11 +62,8 @@ import {
   saveRecipeSnapshot,
   type RecipeSnapshot,
 } from '@/utils/offlineCache'
-import {
-  createVoiceCommandController,
-  type VoiceCommand,
-  type VoiceCommandError,
-} from '@/utils/voiceCommand'
+import { createAsrVoiceController, type VoiceCommand, type VoiceCommandError } from '@/utils/asrVoiceCommand'
+import { parseHelpQuestion, parseStepNumber, parseTimerMinutes } from '@/utils/voiceCommand'
 import AllergenAlertBar from '@/components/AllergenAlertBar.vue'
 
 /** 路由（取 :sessionId 与退出/完成跳转） */
@@ -674,11 +673,37 @@ function resumeAllTimers(): void {
 }
 
 /**
- * 语音指令分发：映射到既有动作函数（步骤切换 / 计时器暂停恢复），不重复实现。
- * @param command 白名单命中的指令
+ * 停止全部计时（语音 timer_stop 落点）：清掉运行中与已暂停的所有计时，
+ * 与「暂停」不同，口令语义是「不要这个计时了」。
  * @returns 无
  */
-function handleVoiceCommand(command: VoiceCommand): void {
+function stopAllTimers(): void {
+  multiTimer.clearAll()
+  ElMessage.info('已停止全部计时')
+}
+
+/** 语音预设计时映射（口令词 → 常用烹饪时长，对齐 QUICK_PRESETS 语义） */
+const VOICE_TIMER_PRESETS: ReadonlyArray<{ keyword: string; minutes: number; name: string }> = [
+  { keyword: '焯水', minutes: 1, name: '焯水' },
+  { keyword: '煎', minutes: 3, name: '煎制' },
+  { keyword: '炖', minutes: 5, name: '炖煮' },
+  { keyword: '焖', minutes: 8, name: '焖煮' },
+  { keyword: '蒸', minutes: 10, name: '蒸制' },
+]
+
+/**
+ * 语音指令分发：映射到既有动作函数（步骤切换 / 计时器 / 求助），不重复实现。
+ * timer_open 携带「N 分钟」时直接按口令时长启动一路计时（如「计时 5 分钟」），
+ * 未提及分钟则仅打开抽屉；timer_preset 按口令词的常用时长直接起计时（如「焯水」
+ * 1 分钟），口令中带「N 分钟」则以口令时长优先（如「焯水 2 分钟」）；
+ * step_jump 提取「第 N 步」跳转；help 携带问题正文时开弹窗并自动提交（如
+ * 「帮我求助 火太大怎么办」），只说「求助」则打开弹窗手动输入；
+ * finish 仅在最后一步生效（防误结束会话）。
+ * @param command 白名单命中的指令
+ * @param text 原始转写文本（提取参数用，可缺省）
+ * @returns 无
+ */
+function handleVoiceCommand(command: VoiceCommand, text?: string): void {
   switch (command) {
     case 'next':
       goNextStep()
@@ -686,23 +711,74 @@ function handleVoiceCommand(command: VoiceCommand): void {
     case 'prev':
       goPrevStep()
       break
+    case 'timer_open': {
+      // 未提及分钟时按默认 5 分钟直接起一路计时（口令「计时」= 快速起表，而非仅开抽屉）
+      const minutes = (text ? parseTimerMinutes(text) : null) ?? 5
+      newTimerMinutes.value = minutes
+      addTimer()
+      ElMessage.success(`已启动计时：${minutes} 分钟`)
+      openTimerDrawer()
+      break
+    }
+    case 'timer_preset': {
+      const transcript = text ?? ''
+      const preset = VOICE_TIMER_PRESETS.find((p) => transcript.includes(p.keyword))
+      const minutes = parseTimerMinutes(transcript) ?? preset?.minutes ?? null
+      if (minutes != null) {
+        newTimerName.value = preset?.name ?? `计时 ${multiTimer.list().length + 1}`
+        newTimerMinutes.value = minutes
+        addTimer()
+        ElMessage.success(`已按口令启动${preset?.name ?? ''}计时：${minutes} 分钟`)
+        openTimerDrawer()
+      }
+      break
+    }
+    case 'step_jump': {
+      const no = text ? parseStepNumber(text) : null
+      if (no != null) onJump(no)
+      break
+    }
     case 'timer_pause':
       pauseAllTimers()
       break
     case 'timer_resume':
       resumeAllTimers()
       break
+    case 'timer_stop':
+      stopAllTimers()
+      break
+    case 'help': {
+      openHelp()
+      const question = text ? parseHelpQuestion(text) : null
+      if (question) {
+        helpQuestion.value = question
+        void onHelpSubmit()
+      }
+      break
+    }
+    case 'finish':
+      if (!offlineMode.value && isLast.value) {
+        void onFinish()
+      } else {
+        ElMessage.info('还没到最后一步；如需中途离开请点左上角「退出」')
+      }
+      break
+    case 'close':
+      // 依次收起求助弹窗 / 计时器抽屉 / 步骤列表（同时只会有一个打开，全置 false 幂等）
+      helpVisible.value = false
+      timerDrawerVisible.value = false
+      drawerVisible.value = false
+      break
   }
 }
 
 /**
  * 语音识别错误处理（经 onError 回调进入，不抛出）：
- * no-speech/aborted（没说话/主动停止）静默；权限类错误关闭开关并提示；其余轻提示。
- * @param error 错误对象（原生错误码 + 中文说明）
+ * 权限类错误关闭开关并提示；其余（麦克风缺失/上传网络异常）轻提示。
+ * @param error 错误对象（错误码 + 中文说明）
  * @returns 无
  */
 function onVoiceError(error: VoiceCommandError): void {
-  if (error.code === 'no-speech' || error.code === 'aborted') return
   if (error.code === 'not-allowed' || error.code === 'service-not-allowed') {
     voiceOn.value = false
     ElMessage.warning(error.message)
@@ -711,19 +787,20 @@ function onVoiceError(error: VoiceCommandError): void {
   ElMessage.warning(`语音识别异常：${error.message}`)
 }
 
-/** 语音控制器实例（识别 → 白名单解析 → handleVoiceCommand 分发） */
-const voiceController = createVoiceCommandController({
+/** 语音控制器实例（麦克风采集 → 云端 ASR 转写 → 白名单解析 → handleVoiceCommand 分发） */
+const voiceController = createAsrVoiceController({
+  transcribe: (wav) => postSpeechAsr(wav).then((r) => (r.degraded ? '' : r.text)),
   onCommand: handleVoiceCommand,
   onError: onVoiceError,
 })
 
 /**
- * 切换语音控制开关：开启开始识别监听，关闭停止；浏览器不支持时一次性提示。
+ * 切换语音控制开关：开启请求麦克风并持续监听，关闭释放；浏览器不支持时一次性提示。
  * @returns 无
  */
 function toggleVoice(): void {
   if (!voiceController.supported) {
-    ElMessage.info('当前浏览器不支持语音控制')
+    ElMessage.info('当前浏览器不支持语音采集（需 HTTPS 或 localhost 环境）')
     return
   }
   if (voiceOn.value) {

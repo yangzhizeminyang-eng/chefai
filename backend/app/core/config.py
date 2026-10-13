@@ -58,7 +58,13 @@ class Settings(BaseSettings):
         VISION_MODEL：视觉模型名称（如 qwen3.8-omni-flash）。
         VISION_TIMEOUT_SECONDS：视觉模型请求超时秒数（拍照识别 P95 预算对齐 20s）。
         VISION_MAX_ITEMS：单次识别返回条目上限（超出截断，防噪声刷屏）。
-        EMBEDDING_PROVIDER：嵌入提供方取值（'hash' 缺省确定性哈希兜底 /
+        SPEECH_PROVIDER：语音转写提供方取值（'mock' 缺省固定演示文本 /
+    'bailian' 阿里云百炼 qwen3-asr-flash，OpenAI 兼容协议）。
+    SPEECH_BASE_URL：语音模型 OpenAI 兼容服务地址（空串回落 VISION_BASE_URL）。
+    SPEECH_API_KEY：语音模型 API Key（空串回落 VISION_API_KEY）。
+    SPEECH_MODEL：语音模型名称（如 qwen3-asr-flash）。
+    SPEECH_TIMEOUT_SECONDS：语音识别请求超时秒数（免手语音指令链路，短句快响应）。
+    EMBEDDING_PROVIDER：嵌入提供方取值（'hash' 缺省确定性哈希兜底 /
         'bailian' 百炼远程语义嵌入 / 'bgem3' 阶段二占位）。
         EMBEDDING_MODEL_NAME：嵌入模型名称（如 qwen3.7-text-embedding）。
         EMBEDDING_BATCH_SIZE：嵌入请求单批文本条数上限。
@@ -104,6 +110,13 @@ class Settings(BaseSettings):
     VISION_MODEL: str = ""
     VISION_TIMEOUT_SECONDS: int = 20
     VISION_MAX_ITEMS: int = 12
+
+    # 语音转写（百炼 qwen3-asr-flash，OpenAI 兼容协议；BASE/KEY 空串回落 VISION_*）
+    SPEECH_PROVIDER: str = "mock"
+    SPEECH_BASE_URL: str = ""
+    SPEECH_API_KEY: str = ""
+    SPEECH_MODEL: str = "qwen3-asr-flash"
+    SPEECH_TIMEOUT_SECONDS: int = 15
 
     # 向量嵌入（百炼 qwen3.7-text-embedding，OpenAI 兼容协议）+ 检索开关
     # （API BASE/KEY 空串时由消费方回落 VISION_BASE_URL/VISION_API_KEY）

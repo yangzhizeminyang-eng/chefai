@@ -719,3 +719,33 @@ export function postVisionConfirm(names: string[]): Promise<VisionConfirmRespons
 export function postCookingHelp(sessionId: string, question: string): Promise<CookingHelpOutcome> {
   return apiClient.post(`/v1/cooking/sessions/${sessionId}/help`, { question })
 }
+
+/* ── 语音识别 ── */
+
+/** 语音转文字响应体 */
+export interface SpeechAsrResponse {
+  /** 转写文本（degraded 时为空串） */
+  text: string
+  /** 降级标记（provider 不可用时 true，引导文字输入） */
+  degraded: boolean
+  /** 降级说明（仅 degraded 时存在） */
+  message?: string
+}
+
+/** 语音识别 per-request 超时（毫秒）：短句 ASR 通常 1~3s，留网络余量 */
+const SPEECH_ASR_TIMEOUT_MS = 15000
+
+/**
+ * 语音转文字（POST /v1/speech/asr，multipart 上传，后端百炼 qwen3-asr-flash 转写）。
+ * 音频仅在内存中转写（后端隐私红线不落盘）；provider 失败返回 degraded=true 而非报错。
+ * @param file 音频 Blob（前端麦克风分段产生的 WAV）
+ * @returns 转写文本 + 降级标记
+ */
+export function postSpeechAsr(file: Blob): Promise<SpeechAsrResponse> {
+  const form = new FormData()
+  form.append('file', file, 'voice.wav')
+  return apiClient.post('/v1/speech/asr', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: SPEECH_ASR_TIMEOUT_MS,
+  })
+}

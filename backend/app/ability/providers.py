@@ -13,9 +13,11 @@
       「认出来却用不了」）；绝不输出任何可食性/安全性结论（RL-3 红线）；
     - ASRProvider：语音转写接口（音频字节 → 文本）；
     - MockASRProvider：返回固定演示文本（不落盘、无网络调用）；
+    - BailianASRProvider：真实语音转写——经 OpenAI 兼容协议调用阿里云百炼
+      qwen3-asr-flash（base_url/api_key 空串回落 VISION_*，百炼同一凭证）；
     - get_vision_provider / get_speech_provider：进程级单例工厂；视觉工厂读
       settings.VISION_PROVIDER（pydantic-settings 自 .env 加载，缺省 mock），
-      语音工厂读环境变量 SPEECH_PROVIDER（settings 暂无该字段，仍走 os.getenv，缺省 mock）。
+      语音工厂读 settings.SPEECH_PROVIDER（缺省 mock）。
 
 接入真实模型：
     provider 内任何异常由上层（路由层）捕获后降级：识别降级为手动选食材、
@@ -24,15 +26,16 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
-import os
 import random
 import re
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+import openai
 from sqlalchemy import select
 
 from app.ability.embedding import get_embedding_provider
@@ -212,6 +215,77 @@ class MockASRProvider(ASRProvider):
         if not audio_bytes:
             return ""
         return MOCK_ASR_TEXT
+
+
+class BailianASRProvider(ASRProvider):
+    """阿里云百炼 qwen3-asr-flash 语音转写实现（模型类）。
+
+    说明：
+        经 OpenAI 兼容协议调用百炼非实时语音识别：音频 base64 编码为
+        data URI 放入 input_audio 消息（编码后总大小须 ≤10MB，前端分段
+        短句上传远低于该上限）；asr_options 指定中文 + 逆文本标准化
+        （「下一步」等指令场景数字归一化）。网络/超时/鉴权失败统一抛
+        LLMError，由路由层既有降级捕获（degraded=true 引导文字输入）。
+        🔴 音频字节仅在内存中转 base64，绝不落盘（隐私红线）。
+
+        配置同源：BASE_URL / API_KEY 空串时回落 VISION_BASE_URL /
+        VISION_API_KEY（百炼同一凭证，与 EMBEDDING 回落策略一致）。
+    """
+
+    def __init__(self) -> None:
+        """初始化客户端（函数）。
+
+        说明：
+            base_url/api_key 按 SPEECH_* 取值（空回落 VISION_*），模型名
+            缺省 qwen3-asr-flash；客户端构造即创建，超时取 SPEECH_TIMEOUT_SECONDS。
+
+        异常：
+            LLMError：API Key 缺失（无可用凭证）时抛出。
+        """
+        base_url = settings.SPEECH_BASE_URL.strip() or settings.VISION_BASE_URL.strip()
+        api_key = settings.SPEECH_API_KEY.strip() or settings.VISION_API_KEY.strip()
+        if not api_key:
+            raise LLMError("SPEECH/VISION API Key 均未配置，无法调用百炼语音识别")
+        self._client = openai.OpenAI(
+            api_key=api_key,
+            base_url=base_url or None,
+            timeout=float(settings.SPEECH_TIMEOUT_SECONDS),
+        )
+        self._model = settings.SPEECH_MODEL.strip() or "qwen3-asr-flash"
+
+    def transcribe(self, audio_bytes: bytes) -> str:
+        """将音频转写为文本（百炼 qwen3-asr-flash，函数）。
+
+        参数：
+            audio_bytes：音频文件原始字节（🔴 仅内存处理，调用方保证不落盘）。
+
+        返回值：
+            str：转写文本（模型输出空内容返回空串）。
+
+        异常：
+            LLMError：网络/超时/鉴权/响应解析失败时抛出（路由层统一降级）。
+        """
+        data_uri = "data:audio/wav;base64," + base64.b64encode(audio_bytes).decode("ascii")
+        try:
+            completion = self._client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_audio",
+                                "input_audio": {"data": data_uri},
+                            }
+                        ],
+                    }
+                ],
+                stream=False,
+                extra_body={"asr_options": {"language": "zh", "enable_itn": True}},
+            )
+        except Exception as exc:  # noqa: BLE001 —— openai 异常统一包装为 LLMError
+            raise LLMError(f"百炼语音识别调用失败: {exc}") from exc
+        return str(completion.choices[0].message.content or "").strip()
 
 
 # ---------------------------------------------------------------------------
@@ -627,10 +701,14 @@ def _build_vision_provider() -> VisionProvider:
 
 
 def _build_speech_provider() -> ASRProvider:
-    """按环境变量构建语音转写 provider 实例（函数）。
+    """按 settings（.env）构建语音转写 provider 实例（函数）。
 
     说明：
-        读环境变量 SPEECH_PROVIDER（缺省 mock）；未知取值告警并回退 mock。
+        读 settings.SPEECH_PROVIDER（pydantic-settings 自 .env 加载，缺省 mock；
+        与 VISION 同口径——os.getenv 读不到 .env 值，必须走 settings）：
+        'mock' → MockASRProvider、'bailian' → BailianASRProvider（百炼
+        qwen3-asr-flash）；未知取值告警并回退 mock；构建异常同样回退 mock，
+        保证语音链路可降级可回退。
 
     返回值：
         ASRProvider：语音转写 provider 实例。
@@ -638,14 +716,16 @@ def _build_speech_provider() -> ASRProvider:
     异常：
         不抛出（任何异常回退 Mock 实现）。
     """
-    name = (os.getenv("SPEECH_PROVIDER") or "mock").strip().lower() or "mock"
+    name = (settings.SPEECH_PROVIDER or "mock").strip().lower() or "mock"
     try:
         if name == "mock":
             return MockASRProvider()
+        if name == "bailian":
+            return BailianASRProvider()
     except Exception as exc:  # noqa: BLE001 —— 构建失败回退 mock
         logger.warning("build speech provider %s failed, fallback to mock: %s", name, exc)
-    if name != "mock":
-        logger.warning("未知的 SPEECH_PROVIDER=%s，回退 mock（真实模型接入后在此扩展工厂分支）", name)
+        return MockASRProvider()
+    logger.warning("未知的 SPEECH_PROVIDER=%s，回退 mock（真实模型接入后在此扩展工厂分支）", name)
     return MockASRProvider()
 
 
@@ -703,6 +783,7 @@ __all__ = [
     "ASRProvider",
     "MockVisionProvider",
     "MockASRProvider",
+    "BailianASRProvider",
     "MultimodalVisionProvider",
     "VLM_SYSTEM_PROMPT",
     "VLM_USER_PROMPT",

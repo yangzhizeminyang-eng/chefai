@@ -55,6 +55,7 @@ def post_speech_asr(
 
     try:
         text = get_speech_provider().transcribe(audio_bytes)
+        logger.info("asr transcript: %r (bytes=%d)", text, len(audio_bytes))
     except Exception as exc:  # noqa: BLE001 —— provider 失败降级为文字输入引导
         logger.warning("speech provider failed: %s", exc)
         return {"text": "", "degraded": True, "message": "语音识别暂不可用，请使用文字输入"}

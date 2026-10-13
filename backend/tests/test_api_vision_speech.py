@@ -27,6 +27,7 @@ from sqlalchemy import select
 
 from app.ability.providers import (
     MOCK_ASR_TEXT,
+    MockASRProvider,
     MockVisionProvider,
     RecognizedItem,
     VisionProvider,
@@ -452,11 +453,17 @@ def test_mock_vision_provider_returns_real_ingredients() -> None:
     ]
 
 
-def test_speech_asr_returns_mock_text(client: TestClient) -> None:
+def test_speech_asr_returns_mock_text(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """ASR 正常返回 mock 演示文本（函数）。
+
+    说明：
+        显式指定 MockASRProvider：.env 将 SPEECH_PROVIDER 切为 bailian 后
+        默认工厂会构建真实 provider（fake 音频走降级路径），本用例只测 mock
+        文本契约，与部署配置解耦。
 
     参数：
         client：TestClient fixture。
+        monkeypatch：替换 speech 模块的 provider 工厂。
 
     返回值：
         None。
@@ -464,6 +471,7 @@ def test_speech_asr_returns_mock_text(client: TestClient) -> None:
     异常：
         断言失败即测试失败。
     """
+    monkeypatch.setattr(speech_module, "get_speech_provider", lambda: MockASRProvider())
     resp = client.post(
         "/v1/speech/asr",
         files={"file": ("voice.webm", b"fake-audio-bytes-in-memory", "audio/webm")},

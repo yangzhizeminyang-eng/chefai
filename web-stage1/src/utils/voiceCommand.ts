@@ -12,10 +12,24 @@ export type VoiceCommand =
   | 'next'
   /** 上一步（含近义：上一 / 退回） */
   | 'prev'
+  /** 打开计时器（含近义：计时 / 倒计时；可携带「N 分钟」直接启动） */
+  | 'timer_open'
+  /** 停止计时（含近义：取消计时 / 停止；清掉全部计时而非暂停） */
+  | 'timer_stop'
+  /** 跳转到第 N 步（口令形如「去第 3 步」「第 5 步」） */
+  | 'step_jump'
+  /** 预设计时（含近义：焯水 / 煎 / 炖 / 焖 / 蒸，按常用烹饪时长直接起计时） */
+  | 'timer_preset'
+  /** 完成做菜（含近义：做完了 / 做好了；仅最后一步生效，防误结束） */
+  | 'finish'
+  /** 关闭当前弹层（计时器抽屉 / 求助弹窗 / 步骤列表） */
+  | 'close'
   /** 暂停计时（含近义：暂停计时 / 停一下） */
   | 'timer_pause'
   /** 继续计时（含近义：继续计时 / 恢复） */
   | 'timer_resume'
+  /** 打开求助弹窗（含近义：帮助 / 帮忙） */
+  | 'help'
 
 /** 识别错误对象（经 onError 回调上交，宿主决定提示策略） */
 export interface VoiceCommandError {
@@ -106,14 +120,55 @@ type WindowWithSpeech = Window & {
 /**
  * 白名单规则表：按数组顺序首条命中即返回。
  * 顺序约定 —— next 必须先于 timer_resume：「继续做」包含「继续」，
- * 若 resume 先匹配会把「继续做」误判为暂停恢复。
+ * 若 resume 先匹配会把「继续做」误判为暂停恢复；
+ * pause / resume / stop 必须先于 timer_open：「暂停计时」「继续计时」「停止计时」
+ * 都含「计时」，若 timer_open 先匹配会误判为打开计时器；
+ * step_jump 在 timer_open 之后：「第一次计时」应优先归计时而非跳步骤。
  */
 const COMMAND_RULES: ReadonlyArray<{ command: VoiceCommand; keywords: readonly string[] }> = [
   { command: 'next', keywords: ['下一步', '下一', '继续做', '接下来', 'next'] },
   { command: 'prev', keywords: ['上一步', '上一', '退回', 'previous', 'back'] },
   { command: 'timer_pause', keywords: ['暂停', '停一下', 'pause'] },
   { command: 'timer_resume', keywords: ['继续', '恢复', 'resume'] },
+  { command: 'timer_stop', keywords: ['停止计时', '取消计时', '关闭计时', '关掉计时', '结束计时', '停止', '停掉'] },
+  { command: 'timer_open', keywords: ['计时', '倒计时', 'timer'] },
+  { command: 'step_jump', keywords: ['去第', '跳到第', '跳到', '第'] },
+  { command: 'timer_preset', keywords: ['焯水', '煎', '炖', '焖', '蒸'] },
+  { command: 'help', keywords: ['求助', '帮助', '帮忙', '救命', '帮我问', '问一下', 'help'] },
+  { command: 'finish', keywords: ['做完了', '做好了', '完成做菜'] },
+  { command: 'close', keywords: ['关闭', '关掉', '收起'] },
 ]
+
+/** 中文数字 → 阿拉伯数字（计时/步骤口令解析用，覆盖家常常用数） */
+const CN_DIGITS: Readonly<Record<string, number>> = {
+  一: 1,
+  二: 2,
+  两: 2,
+  三: 3,
+  四: 4,
+  五: 5,
+  六: 6,
+  七: 7,
+  八: 8,
+  九: 9,
+  十: 10,
+}
+
+/**
+ * 中文数字 token 转整数（内部纯函数）：支持 十 / 十五 / 二十 / 二十五 等组合。
+ * @param token 中文数字串（如「十」「三」「二十五」）
+ * @returns 对应整数；无法解析返回 null
+ */
+function parseCnInt(token: string): number | null {
+  if (token === '十') return 10
+  if (token.startsWith('十')) return token.length > 1 ? 10 + (CN_DIGITS[token.slice(1)] ?? 0) : 10
+  if (token.includes('十')) {
+    const [tens = '', ones] = token.split('十')
+    const value = (CN_DIGITS[tens] ?? 0) * 10 + (ones ? (CN_DIGITS[ones] ?? 0) : 0)
+    return value > 0 ? value : null
+  }
+  return CN_DIGITS[token] ?? null
+}
 
 /** 错误码 → 中文说明（onError 上交用，宿主可直接展示） */
 const ERROR_MESSAGES: Readonly<Record<string, string>> = {
@@ -143,6 +198,118 @@ export function parseVoiceCommand(text: string): VoiceCommand | null {
     }
   }
   return null
+}
+
+/** 计时分钟数提取正则：阿拉伯数字（ASR 开启 ITN 后「三」→「3」） */
+const ARABIC_MINUTES_RE = /(\d{1,3})\s*分钟?/
+/** 计时分钟数提取正则：中文数字（十 / 十五 / 二十 等组合） */
+const CN_MINUTES_RE = /([一两二三四五六七八九]|十[一二三四五六七八九]?|二十[一二三四五六七八九]?|三十)\s*分钟?/
+
+/**
+ * 从转写文本中提取计时分钟数（纯函数，timer_open 配套）。
+ * 归一化后按「阿拉伯数字 + 分钟/分」优先，其次中文数字组合
+ * （三分钟 / 十五分钟 / 二十五分钟）；超界（>180）返回 null 交由
+ * 宿主走抽屉手动输入路径。
+ *
+ * @param text 识别出的原始文本（如「计时 5 分钟」「炖十五分钟」）
+ * @returns 分钟数（1~180）；未提及分钟或超界返回 null
+ * @throws 不抛出（纯字符串运算）
+ */
+export function parseTimerMinutes(text: string): number | null {
+  const normalized = text.trim().toLowerCase()
+  if (!normalized) return null
+  const arabic = normalized.match(ARABIC_MINUTES_RE)
+  if (arabic) {
+    const minutes = Number.parseInt(arabic[1] ?? '', 10)
+    return minutes >= 1 && minutes <= 180 ? minutes : null
+  }
+  const cn = normalized.match(CN_MINUTES_RE)
+  if (cn) {
+    const minutes = parseCnInt(cn[1] ?? '')
+    return minutes != null && minutes >= 1 && minutes <= 180 ? minutes : null
+  }
+  return null
+}
+
+/** 步骤跳转口令正则：阿拉伯数字（ASR ITN 输出形态，如「去第 3 步」） */
+const ARABIC_STEP_RE = /第\s*(\d{1,2})\s*步/
+/** 步骤跳转口令正则：中文数字（如「第五步」「第二十五步」） */
+const CN_STEP_RE = /第\s*([一两二三四五六七八九十]{1,3})\s*步/
+
+/**
+ * 从转写文本中提取目标步骤序号（纯函数，step_jump 配套）。
+ * 优先「阿拉伯数字 + 步」，其次中文数字（第五步 / 第二十五步）。
+ *
+ * @param text 识别出的原始文本（如「去第 3 步」「跳到第五步」）
+ * @returns 步骤序号（1~99）；未提及步骤返回 null
+ * @throws 不抛出（纯字符串运算）
+ */
+export function parseStepNumber(text: string): number | null {
+  const normalized = text.trim().toLowerCase()
+  if (!normalized) return null
+  const arabic = normalized.match(ARABIC_STEP_RE)
+  if (arabic) {
+    const no = Number.parseInt(arabic[1] ?? '', 10)
+    return no >= 1 && no <= 99 ? no : null
+  }
+  const cn = normalized.match(CN_STEP_RE)
+  if (cn) return parseCnInt(cn[1] ?? '')
+  return null
+}
+
+/** 求助口令前缀剥离表（长词组在前，防「帮我」先吃掉「帮我求助一下」） */
+const HELP_PREFIXES: readonly string[] = [
+  '帮我发送求助',
+  '帮我求助一下',
+  '帮我求助',
+  '帮我问一下',
+  '帮我问下',
+  '帮我问',
+  '帮忙问一下',
+  '帮忙问下',
+  '帮忙问',
+  '帮我',
+  '帮忙',
+  '麻烦',
+  '请问',
+  '发送',
+  '发一下',
+  '提问',
+  '求助一下',
+  '求助',
+  '问一下',
+  '问下',
+  '问',
+]
+
+/** 口令首尾要剥掉的标点/引号（含全角） */
+const QUESTION_TRIM_RE = /^[\s，。！？、“”「」『』,!?]+|[\s，。！？、“”「」『』,!?]+$/g
+
+/**
+ * 从求助口令中提取问题正文（纯函数，help 指令配套）。
+ * 处理链：归一化 → 循环剥离前缀口令词（帮我发送求助 / 帮我求助一下 / 请问…）
+ * → 剥离首尾标点引号。剩余为空（只说了「求助」）返回 null，宿主仅开弹窗不提交。
+ *
+ * @param text 识别出的原始文本（如「帮我求助一下 火太大怎么办」）
+ * @returns 问题正文；无有效正文返回 null
+ * @throws 不抛出（纯字符串运算）
+ */
+export function parseHelpQuestion(text: string): string | null {
+  let normalized = text.trim().toLowerCase()
+  if (!normalized) return null
+  let stripped = true
+  while (stripped) {
+    stripped = false
+    for (const prefix of HELP_PREFIXES) {
+      if (normalized.startsWith(prefix)) {
+        normalized = normalized.slice(prefix.length).trim()
+        stripped = true
+        break
+      }
+    }
+  }
+  const question = normalized.replace(QUESTION_TRIM_RE, '').trim()
+  return question || null
 }
 
 /**
