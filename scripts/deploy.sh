@@ -100,9 +100,25 @@ c_ok "编排与构建文件齐备"
 
 # 后端运行期配置：缺失不致命（可后补），但会让 LLM/VLM 走默认值
 if [ -f "$ROOT/backend/.env" ]; then
-  c_ok "backend/.env 存在（LLM / VLM 配置将注入 api 容器）"
+  c_ok "backend/.env 存在（LLM / VLM / 语音配置将注入 api 容器）"
+
+  # Provider 体检：取 mock 时接口不会报错，只会静默返回演示内容 —— 最容易被误判为「功能坏了」
+  for key in VISION_PROVIDER SPEECH_PROVIDER TTS_PROVIDER; do
+    val="$(grep -E "^${key}=" "$ROOT/backend/.env" | tail -1 | cut -d= -f2- | tr -d ' \r')"
+    if [ "${val:-mock}" = "mock" ]; then
+      c_warn "${key}=mock —— 该能力在线上只返回演示内容（不报错、不提示）。
+     若要对外演示真实效果，请在 backend/.env 切到真实 Provider（vlm / bailian）。"
+    else
+      c_ok "${key}=${val}"
+    fi
+  done
+
+  # 行尾符体检：Windows 编辑后直传的 .env 若带 CRLF，值可能带尾部 \r 导致判断失配
+  if grep -q $'\r' "$ROOT/backend/.env" 2>/dev/null; then
+    c_warn "backend/.env 含 CRLF 行尾，建议转换后再部署：sed -i 's/\r$//' backend/.env"
+  fi
 else
-  c_warn "缺少 backend/.env —— 大模型与视觉识别可能不可用
+  c_warn "缺少 backend/.env —— 大模型、视觉识别与语音能力可能不可用
      修复：cp backend/.env.example backend/.env 并填写 LLM_API_KEY / VISION_API_KEY"
 fi
 
