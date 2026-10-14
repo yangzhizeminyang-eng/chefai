@@ -64,6 +64,19 @@ class Settings(BaseSettings):
     SPEECH_API_KEY：语音模型 API Key（空串回落 VISION_API_KEY）。
     SPEECH_MODEL：语音模型名称（如 qwen3-asr-flash）。
     SPEECH_TIMEOUT_SECONDS：语音识别请求超时秒数（免手语音指令链路，短句快响应）。
+    TTS_PROVIDER：语音合成提供方取值（'mock' 缺省静音 /
+    'bailian' 阿里云百炼 qwen3-tts-flash，DashScope 多模态生成协议）。
+    TTS_BASE_URL：语音合成服务地址（空串用 DashScope 默认端点）。
+    TTS_API_KEY：语音合成 API Key（空串回落 SPEECH_API_KEY / VISION_API_KEY）。
+    TTS_MODEL：语音合成模型名称（如 qwen3-tts-flash）。
+    TTS_VOICE：合成音色（如 Cherry）。
+    TTS_TIMEOUT_SECONDS：语音合成请求超时秒数。
+    VOICE_INTENT_ENABLED：语音意图理解开关（'on' 缺省 / 'off'）——白名单
+    未命中时是否调主 LLM（settings.LLM_*）做兜底意图解析；off 时直接返回
+    none（保持纯白名单行为，可随时回退）。
+    COOKING_HELP_AGENT_ENABLED：烹饪求助子智能体开关（'on' 缺省 / 'off'）——
+    求助回答是否结合当前步骤与用户档案经主 LLM 生成；off 或 LLM 失败时
+    回退关键词库/步骤要点模板。
     EMBEDDING_PROVIDER：嵌入提供方取值（'hash' 缺省确定性哈希兜底 /
         'bailian' 百炼远程语义嵌入 / 'bgem3' 阶段二占位）。
         EMBEDDING_MODEL_NAME：嵌入模型名称（如 qwen3.7-text-embedding）。
@@ -117,6 +130,20 @@ class Settings(BaseSettings):
     SPEECH_API_KEY: str = ""
     SPEECH_MODEL: str = "qwen3-asr-flash"
     SPEECH_TIMEOUT_SECONDS: int = 15
+
+    # 语音合成（百炼 qwen3-tts-flash，DashScope 多模态生成协议；KEY 空串回落 SPEECH_/VISION_*）
+    TTS_PROVIDER: str = "mock"
+    TTS_BASE_URL: str = ""
+    TTS_API_KEY: str = ""
+    TTS_MODEL: str = "qwen3-tts-flash"
+    TTS_VOICE: str = "Cherry"
+    TTS_TIMEOUT_SECONDS: int = 20
+
+    # 语音意图理解（白名单未命中时主 LLM 兜底解析；off = 纯白名单行为）
+    VOICE_INTENT_ENABLED: str = "on"
+
+    # 烹饪求助子智能体（结合步骤+档案经主 LLM 生成回答；off/失败回退模板）
+    COOKING_HELP_AGENT_ENABLED: str = "on"
 
     # 向量嵌入（百炼 qwen3.7-text-embedding，OpenAI 兼容协议）+ 检索开关
     # （API BASE/KEY 空串时由消费方回落 VISION_BASE_URL/VISION_API_KEY）

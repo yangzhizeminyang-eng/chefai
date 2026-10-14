@@ -19,12 +19,14 @@
  *       ⑧ 底部免责条（DisclaimerBar variant=default）。
  * 生命周期：onMounted 首拉；本页不拉 home 聚合（黄条仅消费既有 store 数据）。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { fetchDayMenu } from '@/api/dayMenu'
 import type { ApiError, RecommendResultItem } from '@/api/types'
 import { useHomeStore } from '@/stores/home'
 import { groupDayMenuByTime } from '@/utils/today'
+import { parseOrdinal } from '@/utils/voiceCommand'
+import { globalIntentFallback, setVoicePageHandler } from '@/utils/voiceAgent'
 import { toastInfo } from '@/utils/toast'
 import RecipeCard from '@/components/RecipeCard.vue'
 import DisclaimerBar from '@/components/DisclaimerBar.vue'
@@ -50,6 +52,46 @@ let staleStreak = 0
 
 /** 耗时口径分组结果（空档已被纯函数过滤，直接 v-for 渲染） */
 const grouped = computed(() => groupDayMenuByTime(results.value))
+
+/**
+ * 语音点菜：打开列表中第 no 个菜谱（内部函数）。
+ * 顺序与页面视觉顺序一致（按耗时分组从上到下）。
+ * @param no 序数（1 起）
+ * @returns 无
+ */
+function openByOrdinal(no: number): void {
+  const flat = grouped.value.flatMap((g) => g.items)
+  const item = flat[no - 1]
+  if (!item) {
+    toastInfo(`当前只有 ${flat.length} 道推荐，可以说「换一换」`)
+    return
+  }
+  toastInfo(`已为你打开第 ${no} 个：${item.title}`)
+  void router.push(`/recipe/${item.recipe_id}`)
+}
+
+/**
+ * 本页语音转写处理器（注册进全局语音助手）：
+ * 「第一个/第N个/随便来一个」语音点菜，「换一换」刷新批次，其余走 LLM 意图兜底。
+ * @param text 最终转写文本
+ * @returns 无
+ */
+async function handleVoiceTranscript(text: string): Promise<void> {
+  if (/随便|来一个/.test(text)) {
+    openByOrdinal(1)
+    return
+  }
+  const no = parseOrdinal(text)
+  if (no != null) {
+    openByOrdinal(no)
+    return
+  }
+  if (/换一换|换一批/.test(text)) {
+    void refreshBatch()
+    return
+  }
+  await globalIntentFallback(text)
+}
 
 /**
  * 判定两个批次是否为同一批（recipe_id 集合完全一致，忽略顺序与重复）。
@@ -121,6 +163,11 @@ function retry(): void {
 // 挂载即首拉（零输入直出，无「请先选择食材」拦截）
 onMounted(() => {
   void load()
+  setVoicePageHandler(handleVoiceTranscript)
+})
+
+onBeforeUnmount(() => {
+  setVoicePageHandler(null)
 })
 </script>
 

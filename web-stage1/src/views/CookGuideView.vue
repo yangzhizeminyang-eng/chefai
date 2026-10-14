@@ -43,11 +43,11 @@
  *       ⑮ 「查看营养」跳转携带 query（expand_nutrition=1 + 本次份数 servings），
  *          详情页自动展开营养区并按份数初始化，修复「查看营养丢份数」。
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import { Mic as MicIcon, Timer as TimerIcon } from '@element-plus/icons-vue'
-import { finishCookingSession, getRecipe, postCookingHelp, postSpeechAsr } from '@/api/endpoints'
+import { finishCookingSession, getRecipe, postCookingHelp, postVoiceIntent } from '@/api/endpoints'
 import type { ApiError, RecipeStep } from '@/api/types'
 import { useCookingStore } from '@/stores/cooking'
 import { useMeStore } from '@/stores/me'
@@ -62,8 +62,10 @@ import {
   saveRecipeSnapshot,
   type RecipeSnapshot,
 } from '@/utils/offlineCache'
-import { createAsrVoiceController, type VoiceCommand, type VoiceCommandError } from '@/utils/asrVoiceCommand'
-import { parseHelpQuestion, parseStepNumber, parseTimerMinutes } from '@/utils/voiceCommand'
+import type { VoiceCommand } from '@/utils/asrVoiceCommand'
+import { mentionsDuration, parseHelpQuestion, parseStepNumber, parseTimerMinutes, parseVoiceCommand } from '@/utils/voiceCommand'
+import { getStepAudio, putStepAudio } from '@/utils/ttsCache'
+import { setVoicePageHandler, setVoicePlayback, toggleVoiceAgent, voiceAgentEnabled } from '@/utils/voiceAgent'
 import AllergenAlertBar from '@/components/AllergenAlertBar.vue'
 
 /** 路由（取 :sessionId 与退出/完成跳转） */
@@ -106,6 +108,13 @@ const currentStepNo = computed<number>(() =>
 /** 步骤总数（离线态取快照长度，在线取 store） */
 const totalSteps = computed<number>(() =>
   offlineMode.value ? (offlineSnapshot.value?.steps.length ?? 0) : cookingStore.totalSteps,
+)
+
+/** 当前菜谱 ID（朗读音频缓存键；离线态取快照主键，在线取会话实体） */
+const currentRecipeId = computed<number | null>(() =>
+  offlineMode.value
+    ? (offlineSnapshot.value?.recipe_id ?? null)
+    : (cookingStore.session?.recipe_id ?? null),
 )
 
 /** 全量步骤列表（步骤列表抽屉渲染；离线态取快照） */
@@ -649,8 +658,8 @@ async function tryOfflineRestore(sessionId: string): Promise<boolean> {
 
 /* ═══ F 模块 ⑬：免手语音（PRD US-F4，白名单本地解析） ═══ */
 
-/** 语音开关状态（true = 正在监听麦克风） */
-const voiceOn = ref(false)
+/** 语音开关状态（即全局语音助手开关；烹饪页挂载期自动注册页面处理器） */
+const voiceOn = computed(() => voiceAgentEnabled.value)
 
 /**
  * 暂停全部运行中的计时器（语音 timer_pause 落点，复用单路暂停函数）。
@@ -692,19 +701,61 @@ const VOICE_TIMER_PRESETS: ReadonlyArray<{ keyword: string; minutes: number; nam
 ]
 
 /**
- * 语音指令分发：映射到既有动作函数（步骤切换 / 计时器 / 求助），不重复实现。
- * timer_open 携带「N 分钟」时直接按口令时长启动一路计时（如「计时 5 分钟」），
- * 未提及分钟则仅打开抽屉；timer_preset 按口令词的常用时长直接起计时（如「焯水」
- * 1 分钟），口令中带「N 分钟」则以口令时长优先（如「焯水 2 分钟」）；
- * step_jump 提取「第 N 步」跳转；help 携带问题正文时开弹窗并自动提交（如
- * 「帮我求助 火太大怎么办」），只说「求助」则打开弹窗手动输入；
- * finish 仅在最后一步生效（防误结束会话）。
+ * 语音指令分发（白名单命中入口）：从转写文本提取参数后交给统一动作执行。
+ * timer_open / step_jump 提取不到参数时（同音字/口语说法）转 LLM 意图兜底，
+ * 不直接落默认值——防止「说八分钟却计了 5 分钟」。
  * @param command 白名单命中的指令
  * @param text 原始转写文本（提取参数用，可缺省）
  * @returns 无
  */
 function handleVoiceCommand(command: VoiceCommand, text?: string): void {
-  switch (command) {
+  if (command === 'timer_preset') {
+    // 预设计时依赖口令词匹配（焯水/煎/炖/焖/蒸），仅白名单路径可达
+    const transcript = text ?? ''
+    const preset = VOICE_TIMER_PRESETS.find((p) => transcript.includes(p.keyword))
+    if (preset) {
+      applyAction('timer_open', { minutes: parseTimerMinutes(transcript) ?? preset.minutes, presetName: preset.name })
+      return
+    }
+  }
+  const minutes = text ? parseTimerMinutes(text) : null
+  const stepNo = text ? parseStepNumber(text) : null
+  if (command === 'timer_open' && minutes == null) {
+    // 关键参数缺失（如 ASR 同音字「吧分钟」）：交 LLM 意图解析真实时长
+    void onVoiceUnknown(text ?? '')
+    return
+  }
+  if (command === 'step_jump' && stepNo == null) {
+    void onVoiceUnknown(text ?? '')
+    return
+  }
+  applyAction(command, {
+    minutes,
+    stepNo,
+    question: text ? parseHelpQuestion(text) : null,
+  })
+}
+
+/** 统一动作参数（白名单提取或 LLM 意图解析产物） */
+interface VoiceActionParams {
+  minutes?: number | null
+  stepNo?: number | null
+  question?: string | null
+  presetName?: string
+}
+
+/**
+ * 统一动作执行：白名单命中与 LLM 意图兜底共用同一落点，避免双路径行为漂移。
+ * timer_open 未提及分钟时按默认 5 分钟直接起一路计时（口令「计时」= 快速起表）；
+ * help 携带问题正文时开弹窗并自动提交；finish 仅在最后一步生效（防误结束会话）。
+ * @param action 指令（none 直接忽略）
+ * @param p 动作参数（minutes/stepNo/question/presetName）
+ * @returns 无
+ */
+function applyAction(action: VoiceCommand | 'none', p: VoiceActionParams = {}): void {
+  switch (action) {
+    case 'none':
+      break
     case 'next':
       goNextStep()
       break
@@ -712,30 +763,16 @@ function handleVoiceCommand(command: VoiceCommand, text?: string): void {
       goPrevStep()
       break
     case 'timer_open': {
-      // 未提及分钟时按默认 5 分钟直接起一路计时（口令「计时」= 快速起表，而非仅开抽屉）
-      const minutes = (text ? parseTimerMinutes(text) : null) ?? 5
+      const minutes = p.minutes ?? 5
+      newTimerName.value = p.presetName ?? ''
       newTimerMinutes.value = minutes
       addTimer()
-      ElMessage.success(`已启动计时：${minutes} 分钟`)
+      ElMessage.success(`已启动${p.presetName ?? ''}计时：${minutes} 分钟`)
       openTimerDrawer()
       break
     }
-    case 'timer_preset': {
-      const transcript = text ?? ''
-      const preset = VOICE_TIMER_PRESETS.find((p) => transcript.includes(p.keyword))
-      const minutes = parseTimerMinutes(transcript) ?? preset?.minutes ?? null
-      if (minutes != null) {
-        newTimerName.value = preset?.name ?? `计时 ${multiTimer.list().length + 1}`
-        newTimerMinutes.value = minutes
-        addTimer()
-        ElMessage.success(`已按口令启动${preset?.name ?? ''}计时：${minutes} 分钟`)
-        openTimerDrawer()
-      }
-      break
-    }
     case 'step_jump': {
-      const no = text ? parseStepNumber(text) : null
-      if (no != null) onJump(no)
+      if (p.stepNo != null) onJump(p.stepNo)
       break
     }
     case 'timer_pause':
@@ -749,9 +786,8 @@ function handleVoiceCommand(command: VoiceCommand, text?: string): void {
       break
     case 'help': {
       openHelp()
-      const question = text ? parseHelpQuestion(text) : null
-      if (question) {
-        helpQuestion.value = question
+      if (p.question) {
+        helpQuestion.value = p.question
         void onHelpSubmit()
       }
       break
@@ -763,6 +799,9 @@ function handleVoiceCommand(command: VoiceCommand, text?: string): void {
         ElMessage.info('还没到最后一步；如需中途离开请点左上角「退出」')
       }
       break
+    case 'repeat':
+      if (currentStep.value?.description) void speakStep(currentStepNo.value, currentStep.value.description)
+      break
     case 'close':
       // 依次收起求助弹窗 / 计时器抽屉 / 步骤列表（同时只会有一个打开，全置 false 幂等）
       helpVisible.value = false
@@ -773,44 +812,189 @@ function handleVoiceCommand(command: VoiceCommand, text?: string): void {
 }
 
 /**
- * 语音识别错误处理（经 onError 回调进入，不抛出）：
+ * 白名单未命中兜底（混合架构第二级）：转写 + 烹饪上下文交主 LLM 解析意图，
+ * 解析成功按结构化参数执行；reply 有值时朗读给用户；失败/none 静默。
+ * @param text ASR 转写文本（白名单未命中）
+ * @returns 无
+ */
+async function onVoiceUnknown(text: string): Promise<void> {
+  const context = {
+    current_step_no: currentStepNo.value,
+    total_steps: totalSteps.value,
+    is_last: isLast.value,
+    current_step: (currentStep.value?.description ?? '').slice(0, 60),
+    timers: timerList.value.map((t) => ({ name: t.name, status: t.status, remaining_sec: t.remainingSec })),
+  }
+  let intent
+  try {
+    intent = await postVoiceIntent(text, context)
+  } catch {
+    return
+  }
+  if (intent.degraded || intent.action === 'none') {
+    if (intent.reply) playStepAudio(`/v1/speech/tts/stream?text=${encodeURIComponent(intent.reply)}`)
+    return
+  }
+  // LLM 漏提数字时用本地解析兜底（中文数字/阿拉伯数字双路）
+  const minutes = intent.minutes ?? parseTimerMinutes(text)
+  if (intent.action === 'timer_open' && minutes == null && mentionsDuration(text)) {
+    // 说了时长但没听清（如同音字「吧分钟」）：语音追问，绝不默默计 5 分钟
+    playStepAudio(`/v1/speech/tts/stream?text=${encodeURIComponent('没有听清时长，请再说一遍要计时几分钟')}`)
+    return
+  }
+  applyAction(intent.action as VoiceCommand | 'none', {
+    minutes,
+    stepNo: intent.step_no ?? parseStepNumber(text),
+    question: intent.question ?? parseHelpQuestion(text),
+  })
+}
+
+/**
+ * 烹饪页语音转写处理器（注册进全局语音智能体，免唤醒全量接管）：
+ * 白名单命中 → handleVoiceCommand；未命中 → LLM 意图兜底（onVoiceUnknown）。
+ * @param text 最终转写文本
+ * @returns 无
+ */
+async function handleVoiceTranscript(text: string): Promise<void> {
+  const command = parseVoiceCommand(text)
+  if (command) {
+    handleVoiceCommand(command, text)
+    return
+  }
+  await onVoiceUnknown(text)
+}
+
+/**
+ * 语音识别错误处理（经全局语音助手 onError 上交，不抛出）：
  * 权限类错误关闭开关并提示；其余（麦克风缺失/上传网络异常）轻提示。
  * @param error 错误对象（错误码 + 中文说明）
  * @returns 无
  */
-function onVoiceError(error: VoiceCommandError): void {
-  if (error.code === 'not-allowed' || error.code === 'service-not-allowed') {
-    voiceOn.value = false
-    ElMessage.warning(error.message)
-    return
-  }
-  ElMessage.warning(`语音识别异常：${error.message}`)
-}
-
-/** 语音控制器实例（麦克风采集 → 云端 ASR 转写 → 白名单解析 → handleVoiceCommand 分发） */
-const voiceController = createAsrVoiceController({
-  transcribe: (wav) => postSpeechAsr(wav).then((r) => (r.degraded ? '' : r.text)),
-  onCommand: handleVoiceCommand,
-  onError: onVoiceError,
-})
+/**
+ * 语音识别错误处理已上收至全局语音助手（utils/voiceAgent），本页不再重复处理。
+ */
 
 /**
  * 切换语音控制开关：开启请求麦克风并持续监听，关闭释放；浏览器不支持时一次性提示。
  * @returns 无
  */
+/**
+ * 切换语音控制开关：即全局语音助手开关（烹饪页注册处理器后免唤醒接管）；
+ * 浏览器不支持时全局助手会提示。
+ * @returns 无
+ */
 function toggleVoice(): void {
-  if (!voiceController.supported) {
-    ElMessage.info('当前浏览器不支持语音采集（需 HTTPS 或 localhost 环境）')
-    return
+  if (!voiceOn.value) {
+    setVoicePageHandler(handleVoiceTranscript)
   }
-  if (voiceOn.value) {
-    voiceController.stop()
-    voiceOn.value = false
-    return
+  toggleVoiceAgent()
+  if (!voiceAgentEnabled.value) {
+    // 关闭时若当前未在烹饪页也没关系：注销本页处理器（页面卸载时也会注销）
+    setVoicePageHandler(null)
   }
-  voiceController.start()
-  voiceOn.value = true
 }
+
+/* ═══ 步骤语音朗读（百炼 qwen3-tts-flash 流式 + IndexedDB 缓存） ═══ */
+
+/** 当前播放中的步骤音频（切步/重播时打断上一段） */
+let stepAudio: HTMLAudioElement | null = null
+/** 当前播放的 Blob URL（换播时 revoke 防内存泄漏） */
+let stepAudioUrl: string | null = null
+/** 朗读请求代次（防快速切步时旧请求后到覆盖新步骤） */
+let speakSeq = 0
+
+/**
+ * 朗读指定步骤（函数）。
+ * 优先命中 IndexedDB 缓存（秒播、零百炼调用）；未命中走后端流式端点
+ * （首声 ~1.5s）并后台预取下一步音频写缓存（下次切步大概率直接秒播）。
+ * 自动播放被浏览器拦截 / 合成失败时静默跳过（朗读为增强体验，不打扰做菜）。
+ * @param stepNo 步骤号（1 起，缓存键 + 预取基准）
+ * @param text 待朗读文本（步骤描述）
+ * @returns 无
+ */
+async function speakStep(stepNo: number, text: string): Promise<void> {
+  const content = text.trim()
+  if (!content) return
+  const seq = ++speakSeq
+  stopStepAudio()
+  const recipeId = currentRecipeId.value
+  if (recipeId != null) {
+    const cached = await getStepAudio(recipeId, stepNo)
+    if (seq !== speakSeq) return
+    if (cached) {
+      playStepAudio(URL.createObjectURL(cached))
+      void prefetchStepAudio(recipeId, stepNo + 1)
+      return
+    }
+  }
+  playStepAudio(`/v1/speech/tts/stream?text=${encodeURIComponent(content)}`)
+  void prefetchStepAudio(recipeId, stepNo + 1)
+}
+
+/**
+ * 播放一段音频（内部函数）：Audio 元素渐进/本地 Blob 播放，失败静默。
+ * 播放期间标记系统语音状态（全局语音助手丢弃输入，防外放回采与叠音）。
+ * @param src 音频源（流式 URL 或 Blob URL）
+ * @returns 无
+ */
+function playStepAudio(src: string): void {
+  const el = new Audio(src)
+  stepAudio = el
+  stepAudioUrl = src.startsWith('blob:') ? src : null
+  setVoicePlayback(true)
+  el.addEventListener('ended', () => setVoicePlayback(false))
+  el.addEventListener('error', () => setVoicePlayback(false))
+  el.play().catch(() => {
+    // 自动播放策略拦截或加载失败：静默跳过
+    stopStepAudio()
+  })
+}
+
+/**
+ * 停止当前朗读并释放 Blob URL（内部函数）。
+ * @returns 无
+ */
+function stopStepAudio(): void {
+  const wasPlaying = stepAudio != null
+  stepAudio?.pause()
+  stepAudio = null
+  if (stepAudioUrl) {
+    URL.revokeObjectURL(stepAudioUrl)
+    stepAudioUrl = null
+  }
+  if (wasPlaying) setVoicePlayback(false)
+}
+
+/**
+ * 预取指定步骤音频写入 IndexedDB（fire-and-forget，内部函数）。
+ * 已缓存 / 越界 / 无菜谱 ID 时静默跳过；目的是用户翻到下一步时直接秒播。
+ * @param recipeId 菜谱 ID
+ * @param stepNo 预取的步骤号
+ * @returns 无
+ */
+async function prefetchStepAudio(recipeId: number | null, stepNo: number): Promise<void> {
+  if (recipeId == null || stepNo < 1 || stepNo > totalSteps.value) return
+  if (await getStepAudio(recipeId, stepNo)) return
+  const step = stepList.value[stepNo - 1]
+  const content = step?.description?.trim()
+  if (!content) return
+  try {
+    const res = await fetch(`/v1/speech/tts/stream?text=${encodeURIComponent(content)}`)
+    if (res.ok) await putStepAudio(recipeId, stepNo, await res.blob())
+  } catch {
+    // 预取失败静默：该步未命中缓存时仍走流式播放
+  }
+}
+
+/** 进入新步骤自动朗读（含进页第一步；浏览器拦截自动播时静默跳过） */
+watch(
+  currentStepNo,
+  () => {
+    const step = currentStep.value
+    if (step?.description) void speakStep(currentStepNo.value, step.description)
+  },
+  { immediate: true },
+)
 
 /* ═══ Task 9 增强 ⑨：烹饪求助 ═══ */
 
@@ -876,6 +1060,8 @@ async function onHelpSubmit(): Promise<void> {
 // 并把当前菜谱快照写入 IndexedDB（F 模块 ⑫，fire-and-forget 失败不影响在线逻辑）。
 onMounted(() => {
   const sessionId = route.params.sessionId as string
+  // 全局语音助手已开启时，进入烹饪页自动注册页面处理器（免唤醒接管烹饪指令）
+  if (voiceAgentEnabled.value) setVoicePageHandler(handleVoiceTranscript)
   const restored = cookingStore.restoreById(sessionId)
   if (restored) {
     void saveOfflineSnapshot()
@@ -892,12 +1078,12 @@ onMounted(() => {
   })
 })
 
-// 卸载：释放 Wake Lock、停掉全部计时器、停止语音识别、解绑可见性监听
+// 卸载：释放 Wake Lock、停掉全部计时器、注销语音页面处理器（全局助手继续运行）、解绑可见性监听
 onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', onVisibilityChange)
   void releaseWakeLock()
   multiTimer.clearAll()
-  voiceController.stop()
+  setVoicePageHandler(null)
 })
 </script>
 

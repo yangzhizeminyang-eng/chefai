@@ -28,11 +28,13 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import httpx
 import json
 import random
 import re
 import threading
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 import openai
@@ -59,6 +61,58 @@ MOCK_ASR_TEXT = "用鸡蛋和西红柿做菜"
 
 # high 置信概率（spec：75% 概率 high，其余 low）
 _HIGH_CONFIDENCE_PROBABILITY = 0.75
+
+
+# ---------------------------------------------------------------------------
+# TTS 文本中文归一化（用户要求：所有语音输出必须是中文）
+# ---------------------------------------------------------------------------
+
+# 领域单位替换表（顺序敏感：长词组在前，防 "cm³" 被 "cm" 先吃掉）
+_TTS_UNIT_REPLACEMENTS: list[tuple[str, str]] = [
+    ("cm³", "立方厘米"),
+    ("cm3", "立方厘米"),
+    ("m³", "立方米"),
+    ("kg", "千克"),
+    ("cm", "厘米"),
+    ("mm", "毫米"),
+    ("ml", "毫升"),
+    ("℃", "摄氏度"),
+    ("°c", "摄氏度"),
+    ("°f", "华氏度"),
+    ("min", "分钟"),
+]
+
+# 数字后紧跟的孤立克单位 g（如「盐 2g」→「2克」；避免误伤其他拉丁词）
+_TTS_GRAM_RE = re.compile(r"(?<=\d)\s*g(?![a-za-z])", re.IGNORECASE)
+# 兜底：剔除剩余拉丁字母串（保证合成的语音永远不含英文读音）
+_TTS_LATIN_RE = re.compile(r"[a-z]+", re.IGNORECASE)
+
+
+def normalize_tts_text(text: str) -> str:
+    """TTS 前文本中文归一化（纯函数）。
+
+    说明：
+        菜谱步骤常含英文单位（2-10cm / 1cm³ / 盐 2g），qwen3-tts 会按英文
+        读音朗读；先按领域替换表转中文单位，再兜底剔除剩余拉丁字母串，
+        保证合成的语音全部为中文读法。数字/标点保留（中文音色按中文读）。
+
+    参数：
+        text：原始待合成文本。
+
+    返回值：
+        str：归一化后的文本（纯中文读法；空串透传）。
+
+    异常：
+        不抛出（纯字符串运算）。
+    """
+    result = text or ""
+    for src, dst in _TTS_UNIT_REPLACEMENTS:
+        result = result.replace(src, dst).replace(src.upper(), dst).replace(src.capitalize(), dst)
+    result = _TTS_GRAM_RE.sub("克", result)
+    # 数字区间读法：2-10 → 2到10（防 TTS 读成「减」）
+    result = re.sub(r"(?<=\d)\s*-\s*(?=\d)", "到", result)
+    result = _TTS_LATIN_RE.sub("", result)
+    return result
 
 
 @dataclass
@@ -127,6 +181,49 @@ class ASRProvider(ABC):
             实现方可抛出任意异常，调用方统一降级。
         """
         raise NotImplementedError
+
+
+class TTSProvider(ABC):
+    """语音合成提供方抽象接口（抽象类）。
+
+    说明：
+        缺省 Mock 实现；真实 TTS（阿里云百炼 qwen3-tts-flash 等）接入时继承本类。
+
+    异常：
+        实现方抛出的任何异常由调用方捕获并降级（degraded 标注，前端静默不播）。
+    """
+
+    @abstractmethod
+    def synthesize(self, text: str) -> tuple[str, str]:
+        """将文本合成为音频（抽象方法）。
+
+        参数：
+            text：待合成文本（步骤描述等）。
+
+        返回值：
+            tuple[str, str]：(音频 base64, 音频格式)（如 ("SUQz...", "mp3")）。
+
+        异常：
+            实现方可抛出任意异常，调用方统一降级。
+        """
+        raise NotImplementedError
+
+    def synthesize_stream(self, text: str) -> Iterator[bytes]:
+        """流式合成音频（可选覆写，缺省退化为整段合成后单块产出）。
+
+        参数：
+            text：待合成文本。
+
+        返回值：
+            Iterator[bytes]：音频字节分片迭代器（按序拼接为完整音频文件）。
+
+        异常：
+            实现方可抛出任意异常，调用方统一降级。
+        """
+        audio_base64, _format = self.synthesize(text)
+        if not audio_base64:
+            return iter(())
+        return iter([base64.b64decode(audio_base64)])
 
 
 class MockVisionProvider(VisionProvider):
@@ -286,6 +383,266 @@ class BailianASRProvider(ASRProvider):
         except Exception as exc:  # noqa: BLE001 —— openai 异常统一包装为 LLMError
             raise LLMError(f"百炼语音识别调用失败: {exc}") from exc
         return str(completion.choices[0].message.content or "").strip()
+
+
+class MockTTSProvider(TTSProvider):
+    """Mock 语音合成实现（模型类）。
+
+    说明：
+        不做任何合成，恒返回空音频（前端按 degraded 静默跳过播放）。
+    """
+
+    def synthesize(self, text: str) -> tuple[str, str]:
+        """返回空音频（函数）。
+
+        参数：
+            text：待合成文本（忽略）。
+
+        返回值：
+            tuple[str, str]：("", "wav")（空 base64，前端跳过播放）。
+
+        异常：
+            无。
+        """
+        return "", "wav"
+
+
+class BailianTTSProvider(TTSProvider):
+    """阿里云百炼 qwen3-tts-flash 语音合成实现（模型类）。
+
+    说明：
+        经 DashScope 多模态生成协议调用（官方 SDK SpeechSynthesizer 同源端点）：
+        POST {base}/services/aigc/multimodal-generation/generation，
+        input: {text, voice, format}；非流式响应直接携带 Base64 音频。
+        文档存在多种响应形态（output.audio.data /
+        output.choices[0].message.content[].audio.data），_extract_audio
+        逐路容错提取；任何失败抛 LLMError 由路由层降级。
+        配置同源：API_KEY 空串回落 SPEECH_API_KEY / VISION_API_KEY；
+        BASE_URL 空串用 DashScope 默认端点。
+    """
+
+    # DashScope 多模态生成默认端点（qwen3-tts-flash 官方调用地址）
+    _DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
+
+    def __init__(self) -> None:
+        """初始化客户端（函数）。
+
+        说明：
+            base_url 按 TTS_BASE_URL（空串用 DashScope 默认），api_key 按
+            TTS_API_KEY → SPEECH_API_KEY → VISION_API_KEY 三级回落。
+
+        异常：
+            LLMError：API Key 缺失（无可用凭证）时抛出。
+        """
+        base_url = settings.TTS_BASE_URL.strip() or self._DEFAULT_BASE_URL
+        api_key = (
+            settings.TTS_API_KEY.strip()
+            or settings.SPEECH_API_KEY.strip()
+            or settings.VISION_API_KEY.strip()
+        )
+        if not api_key:
+            raise LLMError("TTS/SPEECH/VISION API Key 均未配置，无法调用百炼语音合成")
+        self._base_url = base_url.rstrip("/")
+        self._api_key = api_key
+        self._model = settings.TTS_MODEL.strip() or "qwen3-tts-flash"
+        self._voice = settings.TTS_VOICE.strip() or "Cherry"
+
+    def synthesize(self, text: str) -> tuple[str, str]:
+        """将文本合成为音频（百炼 qwen3-tts-flash，函数）。
+
+        参数：
+            text：待合成文本（🔴 仅内存处理，不落盘）。
+
+        返回值：
+            tuple[str, str]：(音频 base64, 音频格式)。
+
+        异常：
+            LLMError：网络/超时/鉴权/响应解析失败时抛出（路由层统一降级）。
+        """
+        payload = {
+            "model": self._model,
+            "input": {"text": normalize_tts_text(text), "voice": self._voice, "format": "wav"},
+        }
+        try:
+            resp = httpx.post(
+                f"{self._base_url}/services/aigc/multimodal-generation/generation",
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=float(settings.TTS_TIMEOUT_SECONDS),
+            )
+            resp.raise_for_status()
+        except Exception as exc:  # noqa: BLE001 —— httpx 异常统一包装为 LLMError
+            raise LLMError(f"百炼语音合成调用失败: {exc}") from exc
+        try:
+            body = resp.json()
+        except ValueError as exc:
+            raise LLMError(f"百炼语音合成响应非 JSON: {exc}") from exc
+        audio_base64, audio_format = self._extract_audio(body)
+        audio_url = self._extract_audio_url(body)
+        if not audio_base64 and audio_url:
+            # 实测 qwen3-tts-flash 返回 OSS 临时 URL 而非 base64：服务端拉取转 base64
+            # （🔴 仅内存中转，不落盘；URL 有效期短，不透传给前端避免过期失效）
+            try:
+                dl = httpx.get(audio_url, timeout=float(settings.TTS_TIMEOUT_SECONDS))
+                dl.raise_for_status()
+                audio_base64 = base64.b64encode(dl.content).decode("ascii")
+            except Exception as exc:  # noqa: BLE001 —— 下载失败统一降级
+                raise LLMError(f"百炼语音合成音频下载失败: {exc}") from exc
+        if not audio_base64:
+            raise LLMError(f"百炼语音合成响应中未找到音频数据: {str(body)[:200]}")
+        return audio_base64, audio_format or "wav"
+
+    def synthesize_stream(self, text: str) -> Iterator[bytes]:
+        """流式合成音频（SSE 边合成边产出，函数）。
+
+        说明：
+            携 X-DashScope-SSE: enable 头请求，逐行解析 SSE data JSON，
+            增量音频 base64（audio.delta / audio.data 等形态容错）解码后
+            即刻产出，前端可边收边播；请求格式 mp3（浏览器可渐进播放）。
+            流中任何异常在迭代期抛出，由路由层终止流（已播部分保留）。
+
+        参数：
+            text：待合成文本（🔴 仅内存处理，不落盘）。
+
+        返回值：
+            Iterator[bytes]：音频字节分片迭代器。
+
+        异常：
+            LLMError：建连/HTTP 状态失败时抛出（首字节前失败路由层降级）。
+        """
+        payload = {
+            "model": self._model,
+            "input": {"text": normalize_tts_text(text), "voice": self._voice, "format": "mp3"},
+        }
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+            "X-DashScope-SSE": "enable",
+        }
+        with httpx.stream(
+            "POST",
+            f"{self._base_url}/services/aigc/multimodal-generation/generation",
+            headers=headers,
+            json=payload,
+            timeout=float(settings.TTS_TIMEOUT_SECONDS),
+        ) as resp:
+            if resp.status_code != 200:
+                raise LLMError(f"百炼语音合成流式调用失败: HTTP {resp.status_code}")
+            for line in resp.iter_lines():
+                if not line.startswith("data:"):
+                    continue
+                data = line[len("data:"):].strip()
+                if not data or data == "[DONE]":
+                    continue
+                try:
+                    chunk = json.loads(data)
+                except ValueError:
+                    continue
+                for piece in self._extract_stream_audio(chunk):
+                    if piece:
+                        yield piece
+
+    @staticmethod
+    def _extract_stream_audio(chunk: dict) -> list[bytes]:
+        """从单个 SSE 事件中提取增量音频字节（纯内部函数）。
+
+        说明：
+            容错候选：output.audio.delta（流式增量形态）、output.audio.data、
+            output.choices[0].message.content[].audio.{delta,data}。
+
+        参数：
+            chunk：单条 SSE data JSON 对象。
+
+        返回值：
+            list[bytes]：解码后的音频分片（无音频返回空列表）。
+
+        异常：
+            不抛出（base64 非法片段跳过）。
+        """
+        output = chunk.get("output") or {}
+        candidates: list[str] = []
+        audio = output.get("audio") or {}
+        if isinstance(audio, dict):
+            candidates.append(str(audio.get("delta") or ""))
+            candidates.append(str(audio.get("data") or ""))
+        for choice in output.get("choices") or []:
+            message = choice.get("message") or {}
+            content = message.get("content")
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict):
+                        item_audio = item.get("audio") or {}
+                        if isinstance(item_audio, dict):
+                            candidates.append(str(item_audio.get("delta") or ""))
+                            candidates.append(str(item_audio.get("data") or ""))
+        pieces: list[bytes] = []
+        for cand in candidates:
+            if cand:
+                try:
+                    pieces.append(base64.b64decode(cand))
+                except (ValueError, TypeError):
+                    continue
+        return pieces
+
+    @staticmethod
+    def _extract_audio_url(body: dict) -> str:
+        """从容错提取响应中的音频下载 URL（纯内部函数）。
+
+        参数：
+            body：响应 JSON 对象。
+
+        返回值：
+            str：音频 URL；未命中返回空串。
+
+        异常：
+            不抛出（键缺失按空串处理）。
+        """
+        output = body.get("output") or {}
+        audio = output.get("audio") or {}
+        return str(audio.get("url") or "")
+
+    @staticmethod
+    def _extract_audio(body: dict) -> tuple[str, str]:
+        """从容错提取响应中的 Base64 音频与格式（纯内部函数）。
+
+        说明：
+            逐路尝试文档出现过的响应形态：
+            ① output.choices[0].message.content 数组内 {type:audio,audio:{data,format}}；
+            ② output.audio.{data,format}（SDK SpeechSynthesizer 非流式形态）；
+            ③ output.choices[0].text（旧形态直接放 base64）。
+
+        参数：
+            body：响应 JSON 对象。
+
+        返回值：
+            tuple[str, str]：(音频 base64, 格式)；未命中返回 ("", "")。
+
+        异常：
+            不抛出（键缺失按空串处理）。
+        """
+        output = body.get("output") or {}
+        choices = output.get("choices") or []
+        for choice in choices:
+            message = choice.get("message") or {}
+            content = message.get("content")
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict):
+                        audio = item.get("audio") or {}
+                        data = str(audio.get("data") or "")
+                        if data:
+                            return data, str(audio.get("format") or "wav")
+            text = choice.get("text")
+            if isinstance(text, str) and len(text) > 64:
+                return text, "wav"
+        audio = output.get("audio") or {}
+        data = str(audio.get("data") or "")
+        if data:
+            return data, str(audio.get("format") or "wav")
+        return "", ""
 
 
 # ---------------------------------------------------------------------------
@@ -729,11 +1086,41 @@ def _build_speech_provider() -> ASRProvider:
     return MockASRProvider()
 
 
+def _build_tts_provider() -> TTSProvider:
+    """按 settings（.env）构建语音合成 provider 实例（函数）。
+
+    说明：
+        读 settings.TTS_PROVIDER（pydantic-settings 自 .env 加载，缺省 mock）：
+        'mock' → MockTTSProvider、'bailian' → BailianTTSProvider（百炼
+        qwen3-tts-flash）；未知取值告警并回退 mock；构建异常同样回退 mock，
+        保证朗读链路可降级可回退（失败静默不影响步骤引导主链路）。
+
+    返回值：
+        TTSProvider：语音合成 provider 实例。
+
+    异常：
+        不抛出（任何异常回退 Mock 实现）。
+    """
+    name = (settings.TTS_PROVIDER or "mock").strip().lower() or "mock"
+    try:
+        if name == "mock":
+            return MockTTSProvider()
+        if name == "bailian":
+            return BailianTTSProvider()
+    except Exception as exc:  # noqa: BLE001 —— 构建失败回退 mock
+        logger.warning("build tts provider %s failed, fallback to mock: %s", name, exc)
+        return MockTTSProvider()
+    logger.warning("未知的 TTS_PROVIDER=%s，回退 mock", name)
+    return MockTTSProvider()
+
+
 # ---- 进程级单例工厂（与 llm.py 的 get_llm_client 同款加锁单例风格）----
 _vision_provider: VisionProvider | None = None
 _vision_lock = threading.Lock()
 _speech_provider: ASRProvider | None = None
 _speech_lock = threading.Lock()
+_tts_provider: TTSProvider | None = None
+_tts_lock = threading.Lock()
 
 
 def get_vision_provider() -> VisionProvider:
@@ -777,18 +1164,43 @@ def get_speech_provider() -> ASRProvider:
     return _speech_provider
 
 
+def get_tts_provider() -> TTSProvider:
+    """获取语音合成 provider 进程级单例（函数）。
+
+    说明：
+        首次调用读取 settings.TTS_PROVIDER 并构建（缺省 mock）。
+
+    返回值：
+        TTSProvider：全局唯一语音合成 provider 实例。
+
+    异常：
+        不抛出（构建异常回退 Mock 实现）。
+    """
+    global _tts_provider
+    if _tts_provider is None:
+        with _tts_lock:
+            if _tts_provider is None:
+                _tts_provider = _build_tts_provider()
+    return _tts_provider
+
+
 __all__ = [
     "RecognizedItem",
     "VisionProvider",
     "ASRProvider",
+    "TTSProvider",
     "MockVisionProvider",
     "MockASRProvider",
+    "MockTTSProvider",
     "BailianASRProvider",
+    "BailianTTSProvider",
     "MultimodalVisionProvider",
     "VLM_SYSTEM_PROMPT",
     "VLM_USER_PROMPT",
     "MOCK_ASR_TEXT",
     "MOCK_VISION_COMMON_NAMES",
+    "normalize_tts_text",
     "get_vision_provider",
     "get_speech_provider",
+    "get_tts_provider",
 ]

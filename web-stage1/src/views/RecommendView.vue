@@ -15,11 +15,13 @@
  * 页面隐藏过滤开关与「不足 8 条」说明（语义不适配）。
  * 三态：加载 = 骨架屏 +「正在为你挑选…」；空 = 「放宽到差 1–2 样」/「补充食材」；异常 = el-alert + 重试。
  */
-import { computed, onMounted } from 'vue'
+import { computed, onBeforeUnmount, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { filterReasonLabel, useRecommendStore } from '@/stores/recommend'
 import { allergenLabel, groupResults } from '@/utils/recipe'
+import { parseOrdinal } from '@/utils/voiceCommand'
+import { globalIntentFallback, setVoicePageHandler } from '@/utils/voiceAgent'
 import AllergenAlertBar from '@/components/AllergenAlertBar.vue'
 import DisclaimerBar from '@/components/DisclaimerBar.vue'
 import RecipeCard from '@/components/RecipeCard.vue'
@@ -168,9 +170,50 @@ function retry(): void {
   void recommendStore.fetchRecommend(true)
 }
 
+/**
+ * 语音点菜：打开三档列表中第 no 个菜谱（内部函数）。
+ * 顺序与页面视觉顺序一致（✅现在就能做 → 🛒差 1–2 样 → 💡需要多买几样）。
+ * @param no 序数（1 起）
+ * @returns 无
+ */
+function openByOrdinal(no: number): void {
+  const flat = grouped.value.flatMap((g) => g.items)
+  const item = flat[no - 1]
+  if (!item) {
+    ElMessage.info(`当前只有 ${flat.length} 道推荐`)
+    return
+  }
+  ElMessage.success(`已为你打开第 ${no} 个：${item.title}`)
+  void router.push(`/recipe/${item.recipe_id}`)
+}
+
+/**
+ * 本页语音转写处理器（注册进全局语音助手）：
+ * 「第一个/第N个/随便来一个」语音点菜，其余走 LLM 意图兜底。
+ * @param text 最终转写文本
+ * @returns 无
+ */
+async function handleVoiceTranscript(text: string): Promise<void> {
+  if (/随便|来一个/.test(text)) {
+    openByOrdinal(1)
+    return
+  }
+  const no = parseOrdinal(text)
+  if (no != null) {
+    openByOrdinal(no)
+    return
+  }
+  await globalIntentFallback(text)
+}
+
 // 挂载即拉取推荐
 onMounted(() => {
   void initialFetch()
+  setVoicePageHandler(handleVoiceTranscript)
+})
+
+onBeforeUnmount(() => {
+  setVoicePageHandler(null)
 })
 </script>
 

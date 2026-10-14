@@ -24,6 +24,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.ability.cooking_help_agent import generate_cooking_help
+from app.ability.llm import LLMError
 from app.ability.nutrition import estimate_recipe_nutrition
 from app.api.v1.deps import (
     ERR_BAD_REQUEST,
@@ -33,8 +35,21 @@ from app.api.v1.deps import (
     get_or_create_user,
     resolve_anonymous_id,
 )
+from app.core.config import settings
 from app.core.db import get_db
-from app.models import CookingHelpLog, CookingSession, MealRecord, Recipe, RecipeFeedback, RecipeStep
+from app.core.logging import get_logger
+from app.models import (
+    CookingHelpLog,
+    CookingSession,
+    DietGoal,
+    Family,
+    FamilyMember,
+    MealRecord,
+    Recipe,
+    RecipeFeedback,
+    RecipeStep,
+    UserSkillProfile,
+)
 from app.safety.engine import RiskVerdict, get_risk_engine
 from app.schemas.cooking import (
     CookingSessionCreate,
@@ -43,6 +58,8 @@ from app.schemas.cooking import (
 )
 
 router = APIRouter(prefix="/cooking", tags=["cooking"])
+
+logger = get_logger(__name__)
 
 # 每会话求助次数上限（按 cooking_help_log 计数）
 _HELP_LIMIT_PER_SESSION = 3
@@ -550,6 +567,117 @@ def _build_step_answers(session: Session, row: CookingSession) -> list[str]:
     return answers
 
 
+def _build_help_agent_context(db: Session, row: CookingSession) -> dict:
+    """组装求助子智能体上下文（函数）。
+
+    说明：
+        汇聚菜谱（标题）、当前步骤文本、份数与用户档案（家庭成员过敏原/
+        口味/饮食限制、厨艺等级与设备、饮食目标）；任何一项查询失败按
+        缺省值跳过，绝不因档案缺失阻断求助。
+
+    参数：
+        db：请求级数据库会话。
+        row：烹饪会话实体（含 recipe_id/user_id/current_step_no）。
+
+    返回值：
+        dict：子智能体上下文。
+
+    异常：
+        不抛出（子查询逐项容错）。
+    """
+    context: dict = {
+        "recipe_title": "",
+        "servings": int(row.servings),
+        "current_step_no": int(row.current_step_no),
+        "total_steps": 0,
+        "current_step_text": "",
+        "family": {},
+        "skill": {},
+        "diet_goal": "",
+    }
+    try:
+        recipe = db.get(Recipe, row.recipe_id)
+        if recipe is not None:
+            context["recipe_title"] = recipe.title
+        steps = (
+            db.execute(
+                select(RecipeStep)
+                .where(RecipeStep.recipe_id == row.recipe_id)
+                .order_by(RecipeStep.step_no)
+            )
+            .scalars()
+            .all()
+        )
+        context["total_steps"] = len(steps)
+        current = next((s for s in steps if int(s.step_no) == int(row.current_step_no)), None)
+        if current is not None:
+            context["current_step_text"] = (current.description or "")[:120]
+    except Exception as exc:  # noqa: BLE001 —— 菜谱上下文缺失按空处理
+        logger.warning("help agent recipe context failed: %s", exc)
+    try:
+        families = (
+            db.execute(select(Family).where(Family.user_id == int(row.user_id)))
+            .scalars()
+            .all()
+        )
+        members: list[FamilyMember] = []
+        for family in families:
+            members.extend(
+                db.execute(
+                    select(FamilyMember).where(
+                        FamilyMember.family_id == int(family.id),
+                        FamilyMember.deleted_at.is_(None),
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        context["family"] = {
+            "allergen_codes": sorted(
+                {c for m in members for c in (m.allergen_codes or [])}
+            ),
+            "dietary_restrictions": sorted(
+                {r for m in members for r in (m.dietary_restrictions or [])}
+            ),
+            "age_groups": sorted({m.age_group for m in members}),
+        }
+    except Exception as exc:  # noqa: BLE001 —— 档案缺失按空处理
+        logger.warning("help agent family context failed: %s", exc)
+    try:
+        skill = (
+            db.execute(
+                select(UserSkillProfile).where(UserSkillProfile.user_id == int(row.user_id))
+            )
+            .scalars()
+            .first()
+        )
+        if skill is not None:
+            context["skill"] = {
+                "level": skill.skill_level,
+                "equipment": list(skill.equipment or []),
+            }
+    except Exception as exc:  # noqa: BLE001 —— 厨艺档案缺失按空处理
+        logger.warning("help agent skill context failed: %s", exc)
+    try:
+        goal = (
+            db.execute(
+                select(DietGoal)
+                .where(
+                    DietGoal.user_id == int(row.user_id),
+                    DietGoal.effective_to.is_(None),
+                )
+                .order_by(DietGoal.effective_from.desc())
+            )
+            .scalars()
+            .first()
+        )
+        if goal is not None:
+            context["diet_goal"] = goal.goal_type
+    except Exception as exc:  # noqa: BLE001 —— 饮食目标缺失按空处理
+        logger.warning("help agent diet goal context failed: %s", exc)
+    return context
+
+
 @router.post("/sessions/{session_id}/help", summary="烹饪求助（当前步骤问答，每会话限 3 次）")
 def help_cooking_session(
     session_id: int,
@@ -620,22 +748,34 @@ def help_cooking_session(
         session.commit()
         return {"blocked": True, "rule_id": verdict.rule_code, "message": message, "answers": []}
 
-    # 结构化回答（DEF-06：优先命中关键词库返回针对性要点；未命中回退当前步骤要点）
-    topic_answers = _match_help_topic(payload.question)
-    if topic_answers is not None:
-        answers = list(topic_answers)
-        # 附 1 条当前步骤相关的提示并入第三条（要点/失败补救优先，保持总数 ≤3）
-        if len(answers) < 3:
-            step_hint = next(
-                (a for a in _build_step_answers(session, row) if a.startswith(("要点", "失败补救"))),
-                None,
-            )
-            if step_hint:
-                answers.append(step_hint)
-    else:
-        answers = _build_step_answers(session, row)
-        # 回退口径明示：首条加前缀，让用户知道这是步骤要点而非对问题的直接解答
-        answers[0] = f"以下是本步要点：{answers[0]}"
+    # 求助子智能体：结合当前步骤与用户档案经主 LLM 生成针对性回答；
+    # 开关关闭 / LLM 失败时回退既有模板（关键词库 → 步骤要点），绝不阻断求助
+    answers: list[str] | None = None
+    if (settings.COOKING_HELP_AGENT_ENABLED or "on").strip().lower() == "on":
+        try:
+            context = _build_help_agent_context(session, row)
+            answers = generate_cooking_help(payload.question, context)
+        except LLMError as exc:
+            logger.warning("cooking help agent failed, fallback to template: %s", exc)
+            answers = None
+
+    if answers is None:
+        # 模板回退（DEF-06：优先命中关键词库返回针对性要点；未命中回退当前步骤要点）
+        topic_answers = _match_help_topic(payload.question)
+        if topic_answers is not None:
+            answers = list(topic_answers)
+            # 附 1 条当前步骤相关的提示并入第三条（要点/失败补救优先，保持总数 ≤3）
+            if len(answers) < 3:
+                step_hint = next(
+                    (a for a in _build_step_answers(session, row) if a.startswith(("要点", "失败补救"))),
+                    None,
+                )
+                if step_hint:
+                    answers.append(step_hint)
+        else:
+            answers = _build_step_answers(session, row)
+            # 回退口径明示：首条加前缀，让用户知道这是步骤要点而非对问题的直接解答
+            answers[0] = f"以下是本步要点：{answers[0]}"
     out_verdict = engine.scan("output", " ".join(answers))
     if out_verdict.hit and out_verdict.block:
         answers = [_FALLBACK_ANSWER]

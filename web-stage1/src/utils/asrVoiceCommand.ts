@@ -20,7 +20,13 @@ export interface AsrVoiceControllerOptions {
   /** 上传一段 WAV 并返回转写文本（宿主接 /v1/speech/asr；失败时抛异常或返回空串） */
   transcribe: (wav: Blob) => Promise<string>
   /** 白名单指令命中后的回调（宿主映射到既有动作函数；text 为原始转写，供提取计时分钟数） */
-  onCommand: (command: VoiceCommand, text?: string) => void
+  onCommand?: (command: VoiceCommand, text?: string) => void
+  /** 白名单未命中的回调（宿主走 LLM 意图解析兜底，可缺省） */
+  onUnknown?: (text: string) => void
+  /** 每句最终转写全量回调（宿主自行路由：白名单/唤醒词/LLM；可缺省） */
+  onTranscript?: (text: string) => void
+  /** 采集门控（可缺省）：返回 false 时暂停采集（系统播报期间防外放回采，且不产生 ASR 调用） */
+  shouldListen?: () => boolean
   /** 采集/识别出错回调（可缺省；不抛出） */
   onError?: (error: VoiceCommandError) => void
 }
@@ -37,8 +43,8 @@ export interface AsrVoiceController {
 
 /* ── VAD 分段参数（厨房环境：略长静音切句，防炒菜噪声误切） ── */
 
-/** 语句结束静音时长（毫秒）：低于它视为还在说一句话 */
-const SILENCE_END_MS = 900
+/** 语句结束静音时长（毫秒）：低于它视为还在说一句话（唤醒响应速度与切句准确性的折中） */
+const SILENCE_END_MS = 700
 /** 语句最短有效时长（毫秒）：短于此的「爆发声」（锅铲/碰撞）丢弃 */
 const MIN_UTTERANCE_MS = 350
 /** 单条语句最长时长（毫秒）：超长强制切分上传，防止无限增长 */
@@ -110,7 +116,7 @@ export function encodeWav(chunks: Float32Array[], sampleRate: number): Blob {
  * @throws 不抛出（错误全部经 onError 回调上交）
  */
 export function createAsrVoiceController(options: AsrVoiceControllerOptions): AsrVoiceController {
-  const { transcribe, onCommand, onError } = options
+  const { transcribe, onCommand, onUnknown, onTranscript, shouldListen, onError } = options
 
   /* 特性检测：SSR/非安全上下文（http 非本机）无 mediaDevices */
   const supported =
@@ -146,10 +152,12 @@ export function createAsrVoiceController(options: AsrVoiceControllerOptions): As
     try {
       const text = (await transcribe(wav)).trim()
       if (!text) return
+      onTranscript?.(text)
       const command = parseVoiceCommand(text)
       // 联调诊断：控制台可见每句转写与指令命中情况
-      console.debug('[voice] 转写:', text, '→ 指令:', command ?? '未命中白名单')
-      if (command) onCommand(command, text)
+      console.debug('[voice] 转写:', text, '→ 指令:', command ?? '未命中白名单，走 LLM 兜底')
+      if (command) onCommand?.(command, text)
+      else if (text) onUnknown?.(text)
     } catch {
       emitError('network')
     }
@@ -214,6 +222,8 @@ export function createAsrVoiceController(options: AsrVoiceControllerOptions): As
 
     return (event: AudioProcessingEvent): void => {
       if (!listening || manualStopped) return
+      // 采集门控：宿主播报期间暂停采集（不缓存不上传，防外放回采误触发）
+      if (shouldListen && !shouldListen()) return
       const input = event.inputBuffer.getChannelData(0)
       let sumSquares = 0
       for (let i = 0; i < input.length; i++) sumSquares += (input[i] ?? 0) * (input[i] ?? 0)

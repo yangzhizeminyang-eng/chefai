@@ -121,6 +121,13 @@ describe('parseTimerMinutes 计时口令分钟数提取', () => {
     expect(parseTimerMinutes('二十五分钟')).toBe(25)
   })
 
+  it('整十中文数字不被截断为 10（旧版「四十分钟」误算 10 的回归）', () => {
+    expect(parseTimerMinutes('四十分钟')).toBe(40)
+    expect(parseTimerMinutes('五十分钟')).toBe(50)
+    expect(parseTimerMinutes('九十分钟')).toBe(90)
+    expect(parseTimerMinutes('计时二十分钟')).toBe(20)
+  })
+
   it('未提及分钟 / 超界返回 null', () => {
     expect(parseTimerMinutes('打开计时器')).toBeNull()
     expect(parseTimerMinutes('')).toBeNull()

@@ -22,6 +22,8 @@ export type VoiceCommand =
   | 'timer_preset'
   /** 完成做菜（含近义：做完了 / 做好了；仅最后一步生效，防误结束） */
   | 'finish'
+  /** 朗读/重播当前步骤内容（含近义：再说一遍 / 这一步是什么） */
+  | 'repeat'
   /** 关闭当前弹层（计时器抽屉 / 求助弹窗 / 步骤列表） */
   | 'close'
   /** 暂停计时（含近义：暂停计时 / 停一下） */
@@ -135,6 +137,7 @@ const COMMAND_RULES: ReadonlyArray<{ command: VoiceCommand; keywords: readonly s
   { command: 'step_jump', keywords: ['去第', '跳到第', '跳到', '第'] },
   { command: 'timer_preset', keywords: ['焯水', '煎', '炖', '焖', '蒸'] },
   { command: 'help', keywords: ['求助', '帮助', '帮忙', '救命', '帮我问', '问一下', 'help'] },
+  { command: 'repeat', keywords: ['再说一遍', '再念一遍', '念一下', '读一下', '这步是什么', '这一步是什么', '重读', '重复'] },
   { command: 'finish', keywords: ['做完了', '做好了', '完成做菜'] },
   { command: 'close', keywords: ['关闭', '关掉', '收起'] },
 ]
@@ -202,8 +205,12 @@ export function parseVoiceCommand(text: string): VoiceCommand | null {
 
 /** 计时分钟数提取正则：阿拉伯数字（ASR 开启 ITN 后「三」→「3」） */
 const ARABIC_MINUTES_RE = /(\d{1,3})\s*分钟?/
-/** 计时分钟数提取正则：中文数字（十 / 十五 / 二十 等组合） */
-const CN_MINUTES_RE = /([一两二三四五六七八九]|十[一二三四五六七八九]?|二十[一二三四五六七八九]?|三十)\s*分钟?/
+/**
+ * 计时分钟数提取正则：中文数字串（捕获完整 token 后交 parseCnInt 解析，
+ * 覆盖 十五 / 四十 / 九十 / 二十五 等全部组合——旧版逐支枚举到「三十」，
+ * 「四十分钟」只匹配到「十」导致 40 被算成 10）。
+ */
+const CN_MINUTES_RE = /([一二两三四五六七八九十]{1,3})\s*分钟?/
 
 /**
  * 从转写文本中提取计时分钟数（纯函数，timer_open 配套）。
@@ -231,6 +238,28 @@ export function parseTimerMinutes(text: string): number | null {
   return null
 }
 
+/** 序数选择口令正则：「第 N 个」（阿拉伯数字或中文数字，ASR ITN 多为阿拉伯） */
+const ORDINAL_RE = /第\s*(\d{1,2}|[一两二三四五六七八九十]{1,3})\s*个/
+
+/**
+ * 从转写文本中提取「第 N 个」序数（纯函数，推荐列表语音点菜配套）。
+ * @param text 识别出的原始文本（如「帮我打开第二个」）
+ * @returns 序数（1~99）；未提及返回 null
+ * @throws 不抛出（纯字符串运算）
+ */
+export function parseOrdinal(text: string): number | null {
+  const normalized = text.trim().toLowerCase()
+  if (!normalized) return null
+  const m = normalized.match(ORDINAL_RE)
+  if (!m) return null
+  const token = m[1] ?? ''
+  if (/^\d+$/.test(token)) {
+    const no = Number.parseInt(token, 10)
+    return no >= 1 && no <= 99 ? no : null
+  }
+  return parseCnInt(token)
+}
+
 /** 步骤跳转口令正则：阿拉伯数字（ASR ITN 输出形态，如「去第 3 步」） */
 const ARABIC_STEP_RE = /第\s*(\d{1,2})\s*步/
 /** 步骤跳转口令正则：中文数字（如「第五步」「第二十五步」） */
@@ -255,6 +284,20 @@ export function parseStepNumber(text: string): number | null {
   const cn = normalized.match(CN_STEP_RE)
   if (cn) return parseCnInt(cn[1] ?? '')
   return null
+}
+
+/** 时长提及检测（阿拉伯数字 / 分钟 / 秒 / 中文数字） */
+const DURATION_MENTION_RE = /\d|分钟|秒|[一两二三四五六七八九十]/
+
+/**
+ * 判断转写文本是否提及了时长（纯函数，timer_open 参数缺失时区分
+ * 「只说了计时」（默认 5 分钟）与「说了时长但没听清」（应追问））。
+ * @param text 识别出的原始文本
+ * @returns true = 提及了数字/分钟/秒/中文数字
+ * @throws 不抛出（纯字符串运算）
+ */
+export function mentionsDuration(text: string): boolean {
+  return DURATION_MENTION_RE.test(text.trim())
 }
 
 /** 求助口令前缀剥离表（长词组在前，防「帮我」先吃掉「帮我求助一下」） */

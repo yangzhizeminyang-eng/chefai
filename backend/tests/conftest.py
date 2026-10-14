@@ -22,6 +22,10 @@ os.environ.setdefault("LLM_API_KEY", "test-offline")
 # 视觉识别同样离线化：强制 mock provider（.env 的 VISION_PROVIDER=vlm 仅用于
 # 本地/线上服务进程；测试进程绝不真实调用 VLM，防网络抖动与额度消耗）。
 os.environ.setdefault("VISION_PROVIDER", "mock")
+# 语音/求助智能体离线化：端点级测试默认关闭 LLM 兜底（意图/求助回退模板路径，
+# 确定性且快速）；智能体本身的行为在单测中经 monkeypatch 桩验证，不触网。
+os.environ.setdefault("VOICE_INTENT_ENABLED", "off")
+os.environ.setdefault("COOKING_HELP_AGENT_ENABLED", "off")
 
 from app.main import app  # noqa: E402  —— 必须在环境变量设置之后导入
 

@@ -16,7 +16,7 @@
  *       既有缩放管线刷新用量/营养，修复「查看营养丢份数」。
  * 三态：加载 = 详情骨架屏；异常 = el-alert + 重试（404 → 「菜谱不存在」）；空态仅 404 场景。
  */
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { getNutrition, getRecipe } from '@/api/endpoints'
@@ -26,6 +26,7 @@ import { useMeStore } from '@/stores/me'
 import { scaleStepHint } from '@/utils/scaling'
 import { formatAmountText } from '@/utils/unit'
 import { parseNutritionQuery } from '@/utils/nutritionQuery'
+import { globalIntentFallback, setVoicePageHandler } from '@/utils/voiceAgent'
 import AllergenAlertBar from '@/components/AllergenAlertBar.vue'
 import DisclaimerBar from '@/components/DisclaimerBar.vue'
 import RecipeCover from '@/components/RecipeCover.vue'
@@ -318,6 +319,20 @@ async function startCooking(): Promise<void> {
 }
 
 /**
+ * 本页语音转写处理器（注册进全局语音助手）：
+ * 「开始做菜/开始烹饪/就做这个」直接起烹饪会话，其余走 LLM 意图兜底。
+ * @param text 最终转写文本
+ * @returns 无
+ */
+async function handleVoiceTranscript(text: string): Promise<void> {
+  if (/开始做菜|开始烹饪|开始做|做这道菜|就做这个|开做/.test(text)) {
+    void startCooking()
+    return
+  }
+  await globalIntentFallback(text)
+}
+
+/**
  * 冲突二次确认「仍要继续」：进入已创建的会话。
  * @returns 无
  */
@@ -342,6 +357,12 @@ watch(
   },
   { immediate: true },
 )
+
+// 语音处理器注册：挂载期注册「开始做菜」口令，卸载期注销
+setVoicePageHandler(handleVoiceTranscript)
+onBeforeUnmount(() => {
+  setVoicePageHandler(null)
+})
 </script>
 
 <template>

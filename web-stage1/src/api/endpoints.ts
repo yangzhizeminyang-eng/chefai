@@ -749,3 +749,31 @@ export function postSpeechAsr(file: Blob): Promise<SpeechAsrResponse> {
     timeout: SPEECH_ASR_TIMEOUT_MS,
   })
 }
+
+/* ── 语音意图理解 ── */
+
+/** 语音意图解析响应体（action 与前端白名单一一对应；none=不可执行） */
+export interface VoiceIntentResponse {
+  action: string
+  minutes: number | null
+  step_no: number | null
+  question: string | null
+  reply: string | null
+  /** 降级标记（开关关闭 / LLM 失败时 true，前端静默忽略） */
+  degraded: boolean
+}
+
+/**
+ * 语音指令意图解析（POST /v1/speech/intent，白名单未命中时主 LLM 兜底）。
+ * 混合架构第二级：高频口令在前端白名单零延迟命中，长尾说法才走本端点
+ * （LLM 延迟 ~1-2s）；开关关闭或 LLM 失败返回 action=none + degraded=true。
+ * @param text 转写文本
+ * @param context 烹饪上下文（当前步骤/计时器状态，供合理性判断）
+ * @returns 结构化意图
+ */
+export function postVoiceIntent(
+  text: string,
+  context: Record<string, unknown>,
+): Promise<VoiceIntentResponse> {
+  return apiClient.post('/v1/speech/intent', { text, context }, { timeout: 15000 })
+}

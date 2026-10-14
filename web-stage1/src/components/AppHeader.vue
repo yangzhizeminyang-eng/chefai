@@ -9,8 +9,10 @@
  * - 页面级：FeedbackFab（全局反馈 FAB + 弹窗，fixed 定位挂在头部随壳渲染）。
  */
 import { computed } from 'vue'
+import { Mic as MicIcon } from '@element-plus/icons-vue'
 import { useDarkMode } from '@/composables/useDarkMode'
 import { useConfigStore } from '@/stores/config'
+import { toggleVoiceAgent, voiceAgentEnabled } from '@/utils/voiceAgent'
 import FeedbackFab from '@/components/FeedbackFab.vue'
 
 /** 深色模式组合式函数（单例状态） */
@@ -57,19 +59,36 @@ const recommendEnabled = computed(() => configStore.switches.recommend)
       <router-link class="app-header__link" to="/trace">调度面板</router-link>
     </nav>
 
-    <!-- 右：深色模式切换（图标 + 文字双通道，不依赖颜色） -->
-    <el-button
-      class="app-header__dark-btn"
-      :icon="isDark ? undefined : undefined"
-      circle
-      :aria-label="isDark ? '切换到浅色模式' : '切换到深色模式'"
-      :title="isDark ? '切换到浅色模式' : '切换到深色模式'"
-      @click="toggle"
-    >
-      <!-- 图标随模式切换：Sunny（当前深色，点回浅色）/ Moon（当前浅色，点去深色） -->
-      <el-icon v-if="isDark"><ElIconSunny /></el-icon>
-      <el-icon v-else><ElIconMoon /></el-icon>
-    </el-button>
+    <!-- 右：语音助手开关（唤醒词「嗨，厨娘」；麦克风常开需用户主动开启）+ 深色模式切换 -->
+    <div class="app-header__actions">
+      <el-tooltip
+        :content="voiceAgentEnabled ? '语音助手监听中：说「嗨，厨娘」唤醒' : '开启语音助手：说「嗨，厨娘」唤醒'" placement="bottom"
+      >
+        <el-button
+          class="app-header__voice-btn"
+          circle
+          :type="voiceAgentEnabled ? 'primary' : 'default'"
+          :aria-label="voiceAgentEnabled ? '关闭语音助手' : '开启语音助手'"
+          :title="voiceAgentEnabled ? '关闭语音助手' : '开启语音助手（说「嗨，厨娘」唤醒）'"
+          @click="toggleVoiceAgent"
+        >
+          <el-icon><MicIcon /></el-icon>
+        </el-button>
+      </el-tooltip>
+
+      <el-button
+        class="app-header__dark-btn"
+        :icon="isDark ? undefined : undefined"
+        circle
+        :aria-label="isDark ? '切换到浅色模式' : '切换到深色模式'"
+        :title="isDark ? '切换到浅色模式' : '切换到深色模式'"
+        @click="toggle"
+      >
+        <!-- 图标随模式切换：Sunny（当前深色，点回浅色）/ Moon（当前浅色，点去深色） -->
+        <el-icon v-if="isDark"><ElIconSunny /></el-icon>
+        <el-icon v-else><ElIconMoon /></el-icon>
+      </el-button>
+    </div>
 
     <!-- 全局反馈 FAB：fixed 定位（视觉在右下角），随壳渲染保证全页面可见 -->
     <FeedbackFab />
@@ -77,6 +96,12 @@ const recommendEnabled = computed(() => configStore.switches.recommend)
 </template>
 
 <style scoped>
+.app-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .app-header {
   position: sticky;
   top: 0;
