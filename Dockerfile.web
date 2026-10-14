@@ -2,8 +2,8 @@
 # 文件名: Dockerfile.web（项目根）
 # 用途:   「AI 厨娘」单镜像托管两套前端 + nginx 反代（决策：采用根级单镜像方案，
 #         不在 web-stage1 / admin-web 各自目录重复建 Dockerfile）
-#         - web-build 阶段：node:20-alpine 构建 web-stage1（npm ci && npm run build）；
-#         - admin-build 阶段：node:20-alpine 构建 admin-web，附加 --base=/admin/
+#         - web-build 阶段：node:22-alpine 构建 web-stage1（npm ci && npm run build）；
+#         - admin-build 阶段：node:22-alpine 构建 admin-web，附加 --base=/admin/
 #           使静态资源落在 /admin/assets/*，适配 nginx 子路径托管（不改动业务源码）；
 #         - nginx:alpine 运行层：web-stage1/dist → /usr/share/nginx/html/web（location /），
 #           admin-web/dist → /usr/share/nginx/html/admin（location /admin/），
@@ -13,8 +13,9 @@
 
 # ---------- web-stage1：用户端（默认 base=/，托管于 location /） ----------
 # 基础镜像走 docker.m.daocloud.io 加速前缀（当前网络直连 Docker Hub 被劫持，registry
-# 元数据返回 text/html）；如需官方源，删除前缀改回 node:20-alpine / nginx:alpine 即可
-FROM docker.m.daocloud.io/library/node:20-alpine AS web-build
+# 元数据返回 text/html）；如需官方源，删除前缀改回 node:22-alpine / nginx:alpine 即可
+FROM docker.m.daocloud.io/library/node:22-alpine AS web-build
+ENV NODE_OPTIONS=--max-old-space-size=768
 WORKDIR /src/web
 COPY web-stage1/package.json web-stage1/package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -22,7 +23,8 @@ COPY web-stage1/ ./
 RUN npm run build
 
 # ---------- admin-web：管理后台（--base=/admin/ 使资源路径与托管路径一致） ----------
-FROM docker.m.daocloud.io/library/node:20-alpine AS admin-build
+FROM docker.m.daocloud.io/library/node:22-alpine AS admin-build
+ENV NODE_OPTIONS=--max-old-space-size=768
 WORKDIR /src/admin
 COPY admin-web/package.json admin-web/package-lock.json ./
 RUN npm ci --no-audit --no-fund

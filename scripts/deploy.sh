@@ -185,9 +185,46 @@ if [ "$DO_CHECK" -eq 1 ]; then
 fi
 
 # =====================================================================
-# 1. 准备前端镜像
+# 1. 基础镜像别名（绕开仓库内写死的 daocloud 加速前缀）
 # =====================================================================
-c_info "步骤 1/7：准备前端镜像 $WEB_IMAGE"
+# 🔴 背景：Dockerfile 与 docker-compose.yml 内的镜像名带 `docker.m.daocloud.io/`
+#    前缀。镜像名里一旦写死 registry 主机，Docker 就**直连该 registry**，
+#    /etc/docker/daemon.json 的 registry-mirrors 完全不会生效。该前缀源
+#    已出现 502 Bad Gateway（2026-10-14 实测），会直接卡死 build 与 up。
+#    解法：先经镜像加速拉取官方镜像，再打上带前缀的别名 tag —— 构建与启动
+#    都命中本地镜像、不再触网。仓库文件无需改动，本地开发流程也不受影响。
+c_info "步骤 1/8：准备基础镜像"
+
+ensure_base_image() {
+  local official="$1" aliased="$2"
+  if docker image inspect "$aliased" >/dev/null 2>&1; then
+    c_ok "已就绪：$aliased"
+    return 0
+  fi
+  c_info "拉取 $official（经 registry-mirrors）"
+  if docker pull "$official" >/dev/null 2>&1; then
+    docker tag "$official" "$aliased"
+    c_ok "别名映射完成：$official → $aliased"
+  else
+    die "拉取 $official 失败。请先修好镜像加速源：
+       1) 测连通性：curl -s -o /dev/null -w '%{http_code}\\n' -m 8 https://mirror.ccs.tencentyun.com/v2/
+          （返回 200 或 401 都算可用）
+       2) 写入 /etc/docker/daemon.json 的 registry-mirrors 后 sudo systemctl restart docker"
+  fi
+}
+
+ensure_base_image "python:3.11-slim"       "docker.m.daocloud.io/library/python:3.11-slim"
+ensure_base_image "pgvector/pgvector:pg16" "docker.m.daocloud.io/pgvector/pgvector:pg16"
+ensure_base_image "redis:7-alpine"         "docker.m.daocloud.io/library/redis:7-alpine"
+# 注：Dockerfile.web 用到的 node:20-alpine / nginx:alpine 不在此清单 ——
+#     web 镜像由本地构建后 docker save/scp/load 送达，服务器既不构建、
+#     也不会用到这两个基础镜像（多阶段构建只保留运行层的 nginx:alpine，
+#     且该层已随镜像 tar 一并送达）。
+
+# =====================================================================
+# 2. 准备前端镜像
+# =====================================================================
+c_info "步骤 2/8：准备前端镜像 $WEB_IMAGE"
 
 if docker image inspect "$WEB_IMAGE" >/dev/null 2>&1; then
   c_ok "镜像已存在，跳过加载"
@@ -212,14 +249,14 @@ c_ok "前端镜像就绪（不会在服务器触发构建）"
 # =====================================================================
 # 2. 构建后端镜像（纯 Python wheel，服务器本地构建）
 # =====================================================================
-c_info "步骤 2/7：构建后端 api 镜像"
+c_info "步骤 3/8：构建后端 api 镜像"
 "${COMPOSE[@]}" build api
 c_ok "api 镜像构建完成"
 
 # =====================================================================
 # 3. 启动全栈
 # =====================================================================
-c_info "步骤 3/7：启动容器栈（db → api → web，按依赖顺序）"
+c_info "步骤 4/8：启动容器栈（db → api → web，按依赖顺序）"
 "${COMPOSE[@]}" up -d
 "${COMPOSE[@]}" ps
 c_ok "容器已拉起"
@@ -227,7 +264,7 @@ c_ok "容器已拉起"
 # =====================================================================
 # 4. 等待健康检查（经 nginx 反代，验证 nginx → api → db 全链路）
 # =====================================================================
-c_info "步骤 4/7：等待后端就绪（最长 ${HEALTH_TIMEOUT}s；首次启动需跑 alembic 迁移）"
+c_info "步骤 5/8：等待后端就绪（最长 ${HEALTH_TIMEOUT}s；首次启动需跑 alembic 迁移）"
 HEALTH_URL="http://127.0.0.1:${WEB_PORT}/v1/healthz"
 ok=0
 for i in $(seq 1 $((HEALTH_TIMEOUT / 3))); do
@@ -246,7 +283,7 @@ fi
 # =====================================================================
 # 5. 安全断言：8000 不得在宿主机监听
 # =====================================================================
-c_info "步骤 5/7：安全断言"
+c_info "步骤 6/8：安全断言"
 if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -qE ':8000[[:space:]]'; then
   die "宿主机 8000 端口正在监听 —— 后端不应对外暴露。请检查 compose 覆盖是否生效。"
 fi
@@ -256,7 +293,7 @@ c_ok "宿主机未监听 8000（后端仅容器内网可达）"
 # 6. 可选：种子数据初始化
 # =====================================================================
 if [ "$DO_SEED" -eq 1 ]; then
-  c_info "步骤 6/7：执行种子数据初始化（幂等，可重复执行）"
+  c_info "步骤 7/8：执行种子数据初始化（幂等，可重复执行）"
   c_warn "即将导入：食材 / 菜谱语料 / 风控规则 / 管理员账号。首次约 1~5 分钟。"
   "${COMPOSE[@]}" exec -T api python -m app.seed
   c_ok "种子数据初始化完成"
@@ -265,13 +302,13 @@ if [ "$DO_SEED" -eq 1 ]; then
     "SELECT (SELECT count(*) FROM recipe) AS recipes, (SELECT count(*) FROM ingredient) AS ingredients;" \
     || c_warn "数据量复核失败（表名可能不同，不影响部署）"
 else
-  c_info "步骤 6/7：跳过种子初始化（未指定 --seed）"
+  c_info "步骤 7/8：跳过种子初始化（未指定 --seed）"
 fi
 
 # =====================================================================
 # 7. 冒烟验证
 # =====================================================================
-c_info "步骤 7/7：冒烟验证"
+c_info "步骤 8/8：冒烟验证"
 smoke() {
   local path="$1" label="$2"
   local code

@@ -28,6 +28,9 @@ RUN pip install --prefix=/install -r requirements.txt
 FROM docker.m.daocloud.io/library/python:3.11-slim
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gosu \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 # pip --prefix=/install 的 bin 与 site-packages 恰好映射到 /usr/local 的同名路径
 COPY --from=builder /install /usr/local
@@ -35,9 +38,15 @@ COPY --from=builder /install /usr/local
 COPY app ./app
 COPY alembic ./alembic
 COPY alembic.ini ./
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin app \
+    && mkdir -p /app/uploads /app/assets/recipe_covers \
+    && chown -R app:app /app \
+    && chmod 0755 /usr/local/bin/docker-entrypoint.sh
 EXPOSE 8000
 # 健康检查：slim 镜像无 curl，用标准库 urllib 探测（数据库异常 503 视为不健康）
 HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=5 \
     CMD ["python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4).getcode() == 200 else 1)"]
-# 先迁移后启动：alembic 失败直接退出（compose 依 restart 策略重试），成功则 exec 交棒 uvicorn
-ENTRYPOINT ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port ${APP_PORT:-8000}"]
+USER root
+# 入口脚本先修复命名卷/绑定目录权限，再以 app 用户执行迁移与 Uvicorn。
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

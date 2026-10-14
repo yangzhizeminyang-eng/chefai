@@ -30,8 +30,14 @@ services:
     # 经 scp 送达服务器后 `docker load`。compose 检测到该镜像已存在即直接复用，
     # 不会触发构建（deploy.sh 会在启动前断言镜像存在，双重保险）。
     image: ${WEB_IMAGE:-aicook-web:20261013}
+    build: !reset null
     ports:
       - "${WEB_PORT:-8005}:80"
+    networks:
+      - edge
+    cpus: "0.50"
+    mem_limit: 192m
+    mem_reservation: 64m
     logging:
       driver: json-file
       options:
@@ -50,17 +56,24 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:?缺少 DB_PASSWORD，请在 .env.production 中配置}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?缺少 ADMIN_PASSWORD，请在 .env.production 中配置}
       ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET:?缺少 ADMIN_JWT_SECRET，请在 .env.production 中配置}
+      APP_PORT: "8000"
     volumes:
       # 🔴 语料库（HowToCook，约 265MB）：backend/.dockerignore 排除了 data/，
       #    且 Dockerfile 只 COPY app/alembic，故镜像内没有语料。
       #    代码里的 ensure_corpus() 兜底是 `git clone`，但 python:3.11-slim
       #    不含 git → 容器内必然失败 → seed 会打印「跳过语料导入」并继续，
       #    结果是菜谱库为空、推荐与检索全部无数据。必须宿主机挂载。
-      - ./backend/data:/app/data
+      - ./backend/data:/app/data:ro
       # 菜谱封面目录：FastAPI 将其挂载在 /v1/media/recipe-covers。
       # 不挂载则容器重建后 seed 生成的封面全部丢失（368 张）。
       - ./backend/assets:/app/assets
       # uploads 命名卷沿用 docker-compose.yml 的定义（此处不重复声明）
+    networks:
+      - edge
+      - data
+    cpus: "1.00"
+    mem_limit: 768m
+    mem_reservation: 384m
     logging:
       driver: json-file
       options:
@@ -71,6 +84,19 @@ services:
   db:
     environment:
       POSTGRES_PASSWORD: ${DB_PASSWORD:?缺少 DB_PASSWORD，请在 .env.production 中配置}
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - effective_cache_size=256MB
+      - -c
+      - max_connections=40
+    networks:
+      - data
+    cpus: "0.65"
+    mem_limit: 512m
+    mem_reservation: 256m
     logging:
       driver: json-file
       options:
@@ -79,8 +105,33 @@ services:
 
   # ---------- redis：阶段二预留，仅补日志限额防止磁盘写满 ----------
   redis:
+    command:
+      - redis-server
+      - --maxmemory
+      - 64mb
+      - --maxmemory-policy
+      - allkeys-lru
+      - --save
+      - ""
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - data
+    cpus: "0.25"
+    mem_limit: 128m
+    mem_reservation: 64m
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+
+networks:
+  edge:
+    name: aicook-edge
+  data:
+    name: aicook-data
+    internal: true

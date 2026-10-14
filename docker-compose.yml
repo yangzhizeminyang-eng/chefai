@@ -84,6 +84,12 @@ services:
       # 等 api 通过容器 HEALTHCHECK 后再启动 web，规避 nginx 启动期解析 upstream 的竞态
       api:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1/healthz | grep -q '^ok$'"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
     restart: unless-stopped
 
   # ---------- redis：阶段二预留（后端当前进程内缓存，不强依赖） ----------
