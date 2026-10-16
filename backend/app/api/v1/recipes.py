@@ -23,8 +23,7 @@ from app.api.v1.deps import (
     api_error,
     difficulty_label,
     format_amount,
-    get_or_create_user,
-    resolve_anonymous_id,
+    resolve_user,
 )
 from app.core.db import get_db
 from app.models import Ingredient, IngredientAlias, Recipe, RecipeFeedback, RecipeIngredient, RecipeStep
@@ -393,8 +392,7 @@ def post_recipe_feedback(
         HTTPException 404：菜谱不存在或未发布；422：action/rating 不合法。
     """
     recipe = _load_recipe_or_404(session, recipe_id)
-    anonymous_id = resolve_anonymous_id(None, request)
-    user = get_or_create_user(session, anonymous_id)
+    user = resolve_user(session, None, request)
     feedback = RecipeFeedback(
         user_id=int(user.id),
         recipe_id=int(recipe.id),

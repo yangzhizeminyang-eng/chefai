@@ -32,8 +32,7 @@ from app.api.v1.deps import (
     ERR_CONFLICT,
     ERR_NOT_FOUND,
     api_error,
-    get_or_create_user,
-    resolve_anonymous_id,
+    resolve_user,
 )
 from app.core.db import get_db
 from app.models import (
@@ -91,7 +90,7 @@ def _resolve_user(session: Session, request: Request, anon_id: str | None) -> Us
     异常：
         SQLAlchemyError 向上抛出（全局异常处理器兜底）。
     """
-    user = get_or_create_user(session, resolve_anonymous_id(anon_id, request))
+    user = resolve_user(session, anon_id, request)
     session.commit()
     return user
 

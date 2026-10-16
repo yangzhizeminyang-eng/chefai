@@ -1,0 +1,11 @@
+{
+  "14": {
+    "imagePath": "assets/images/03-recommend.png",
+    "extraImages": [
+      "assets/images/06-recipe-detail.png",
+      "assets/images/07-cook-guide.png",
+      "assets/images/08-blocked.png"
+    ],
+    "note": "页面 14「功能演示 · 真实界面」使用 4 张真实产品截图（2x2 网格），其余页面为纯排版"
+  }
+}

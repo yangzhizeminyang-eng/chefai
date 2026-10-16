@@ -5,7 +5,8 @@
     - api_error：构造统一错误 JSON（{code, message, detail}）的 HTTPException；
     - get_or_create_user：按 anonymous_id 检索/创建匿名用户（upsert 语义）；
     - resolve_anonymous_id：请求体 → X-Anonymous-Id 头 → 新建 的兜底解析链；
-    - get_current_user：FastAPI 依赖（档案端点用，自动 upsert 匿名用户）；
+    - resolve_user：JWT 优先、匿名头兜底 的当前用户解析（登录态统一入口）；
+    - get_current_user：FastAPI 依赖（档案端点用，JWT 优先，自动 upsert 匿名用户）；
     - resolve_existing_user_id：只读解析已存在用户 ID（ask/recommend 传参 runner 用）；
     - difficulty_label：DB 1~5 难度 → 前端三档文案映射。
 """
@@ -19,6 +20,7 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.core.idempotency import make_request_id
 from app.core.logging import get_logger, request_id_var
+from app.core.user_security import user_id_from_request
 from app.models import User
 
 logger = get_logger(__name__)
@@ -148,16 +150,49 @@ def get_or_create_user(session: Session, anonymous_id: str | None) -> User:
     return user
 
 
+def resolve_user(
+    session: Session, payload_anonymous_id: str | None, request: Request
+) -> User:
+    """解析当前请求用户：JWT 优先、匿名兜底（函数）。
+
+    说明：
+        登录态统一入口：Authorization Bearer 用户 token 合法时直接加载对应
+        user（不新建行，token 中 user_id 不存在则回退匿名链）；否则沿用匿名
+        解析链（请求体 anonymous_id → X-Anonymous-Id 头 → 自动建 anon_ 用户，
+        upsert 语义）。前端登录后匿名头仍会携带，但 JWT 优先保证账号隔离。
+
+    参数：
+        session：数据库会话。
+        payload_anonymous_id：请求体中的 anonymous_id（可 None）。
+        request：FastAPI 请求对象。
+
+    返回值：
+        User：当前用户 ORM 实例（新建实例由调用方 commit）。
+
+    异常：
+        SQLAlchemyError：数据库异常向上抛出（由全局异常处理器兜底）。
+    """
+    jwt_user_id = user_id_from_request(request)
+    if jwt_user_id is not None:
+        user = session.get(User, jwt_user_id)
+        if user is not None:
+            return user
+        logger.warning("jwt user_id=%s not found, fallback to anonymous", jwt_user_id)
+    anon_id = resolve_anonymous_id(payload_anonymous_id, request)
+    return get_or_create_user(session, anon_id)
+
+
 def get_current_user(request: Request, session: Session = Depends(get_db)) -> User:
     """解析当前请求用户并保证落库（函数，FastAPI 依赖）。
 
     说明：
-        匿名身份解析顺序：X-Anonymous-Id 请求头 → 自动生成 anon_ 前缀新用户
-        （跟随 consent/auth 端点的 upsert 惯例：未带头不拒绝，自动建档）；
-        新建或既有的用户行在此提交，后续端点可直接基于 user.id 关联写库。
+        JWT 优先（resolve_user），回退匿名身份解析：X-Anonymous-Id 请求头 →
+        自动生成 anon_ 前缀新用户（跟随 consent/auth 端点的 upsert 惯例：未带头
+        不拒绝，自动建档）；新建或既有的用户行在此提交，后续端点可直接基于
+        user.id 关联写库。
 
     参数：
-        request：FastAPI 请求对象（读 X-Anonymous-Id 头）。
+        request：FastAPI 请求对象（读 Authorization / X-Anonymous-Id 头）。
         session：请求级数据库会话（依赖缓存与端点共用同一实例）。
 
     返回值：
@@ -166,8 +201,7 @@ def get_current_user(request: Request, session: Session = Depends(get_db)) -> Us
     异常：
         SQLAlchemyError：数据库异常向上抛出（由全局异常处理器兜底）。
     """
-    anon_id = resolve_anonymous_id(None, request)
-    user = get_or_create_user(session, anon_id)
+    user = resolve_user(session, None, request)
     session.commit()
     return user
 
@@ -180,13 +214,13 @@ def resolve_existing_user_id(
     说明：
         与 get_or_create_user 的 upsert 不同，本函数不建行、不提交——仅用于
         ask/recommend 把既有用户身份传参给编排层（runner 据此加载档案）：
-        解析顺序：请求体 anonymous_id → X-Anonymous-Id 头 → None；
+        解析顺序：JWT 用户 token → 请求体 anonymous_id → X-Anonymous-Id 头 → None；
         用户不存在时返回 None（编排层按空档案处理，行为与无档案用户一致）。
 
     参数：
         session：数据库会话。
         payload_anonymous_id：请求体中的 anonymous_id（可 None）。
-        request：FastAPI 请求对象（读请求头）。
+        request：FastAPI 请求对象（读 Authorization / X-Anonymous-Id 头）。
 
     返回值：
         int | None：用户数据库 ID；请求未携带身份或用户不存在时返回 None。
@@ -195,6 +229,13 @@ def resolve_existing_user_id(
         不抛出（查询异常返回 None，不阻断主链路）。
     """
     try:
+        jwt_user_id = user_id_from_request(request)
+        if jwt_user_id is not None:
+            exists = session.execute(
+                select(User.id).where(User.id == jwt_user_id).limit(1)
+            ).scalar_one_or_none()
+            if exists is not None:
+                return int(exists)
         anon_id = resolve_anonymous_id(payload_anonymous_id, request)
         if not anon_id:
             return None

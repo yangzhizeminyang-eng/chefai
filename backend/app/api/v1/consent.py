@@ -18,8 +18,7 @@ from sqlalchemy.orm import Session
 from app.api.v1.deps import (
     ERR_VALIDATION,
     api_error,
-    get_or_create_user,
-    resolve_anonymous_id,
+    resolve_user,
 )
 from app.core.db import get_db
 from app.models import ConsentRecord, DisclaimerConsent
@@ -59,8 +58,7 @@ def record_disclaimer_consent(
     """
     body = payload or ConsentRequest()
     version = body.effective_version()
-    anon_id = resolve_anonymous_id(body.anonymous_id, request)
-    user = get_or_create_user(session, anon_id)
+    user = resolve_user(session, body.anonymous_id, request)
 
     # 幂等检查：同 user + version 已有记录则跳过
     exists = session.execute(
@@ -123,8 +121,7 @@ def record_sensitive_consent(
             f"scene={scene}（允许：{sorted(SCENE_TO_SCOPE)}）",
         )
 
-    anon_id = resolve_anonymous_id(payload.anonymous_id, request)
-    user = get_or_create_user(session, anon_id)
+    user = resolve_user(session, payload.anonymous_id, request)
 
     # 幂等：同 user + scope + version 未撤销记录直接复用（不重复插行）
     existing_id = session.execute(

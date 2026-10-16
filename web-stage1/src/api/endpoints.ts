@@ -6,6 +6,7 @@
 import apiClient, { INNOVATION_GENERATE_TIMEOUT_MS } from './index'
 import type {
   AnonymousResponse,
+  AuthResponse,
   AskResponse,
   BlockedResponse,
   ConsentResponse,
@@ -37,6 +38,7 @@ import type {
   InventoryListResponse,
   InventoryPatchBody,
   MeExportData,
+  MeInfoResponse,
   MemberMeResponse,
   MemberMockPayResponse,
   MemberOrderCreateResponse,
@@ -68,6 +70,31 @@ import type {
  */
 export function postAnonymous(): Promise<AnonymousResponse> {
   return apiClient.post('/v1/auth/anonymous', { client_type: 'web_stage1' })
+}
+
+/**
+ * 注册账号（POST /v1/auth/register）：自动携带 X-Anonymous-Id 头，
+ * 后端将当前匿名用户升级为注册账号，匿名期间档案/收藏等数据延续。
+ * @param username 用户名（3~30 字符）
+ * @param password 密码（6~64 字符）
+ * @param nickname 昵称（可缺省，默认取用户名）
+ */
+export function postRegister(username: string, password: string, nickname?: string): Promise<AuthResponse> {
+  return apiClient.post('/v1/auth/register', { username, password, nickname: nickname || null })
+}
+
+/**
+ * 用户名密码登录（POST /v1/auth/login）。
+ */
+export function postLogin(username: string, password: string): Promise<AuthResponse> {
+  return apiClient.post('/v1/auth/login', { username, password })
+}
+
+/**
+ * 当前登录用户信息（GET /v1/auth/me，JWT 鉴权）。
+ */
+export function getAuthMe(): Promise<MeInfoResponse> {
+  return apiClient.get('/v1/auth/me')
 }
 
 /**
@@ -710,14 +737,16 @@ export function postVisionConfirm(names: string[]): Promise<VisionConfirmRespons
 /* ── 烹饪求助 ── */
 
 /**
- * 烹饪过程求助（POST /v1/cooking/sessions/{id}/help）。
+ * 烹饪求助（POST /v1/cooking/sessions/{id}/help）。
  * 正常返回回答列表；命中风控返回 blocked 结构；429 为当日次数超限（由调用方按错误码处理）。
+ * 超时显式放宽到 30s：求助子智能体（主 LLM 结合步骤+档案生成）P95 可达 20s+，
+ * 沿用默认 12s 会误杀正常请求导致「加载超时，请重试」。
  * @param sessionId 烹饪会话 ID
  * @param question 求助问题
  * @returns 回答列表或拦截结构
  */
 export function postCookingHelp(sessionId: string, question: string): Promise<CookingHelpOutcome> {
-  return apiClient.post(`/v1/cooking/sessions/${sessionId}/help`, { question })
+  return apiClient.post(`/v1/cooking/sessions/${sessionId}/help`, { question }, { timeout: 30000 })
 }
 
 /* ── 语音识别 ── */

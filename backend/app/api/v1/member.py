@@ -43,8 +43,7 @@ from app.api.v1.deps import (
     ERR_CONFLICT,
     ERR_NOT_FOUND,
     api_error,
-    get_or_create_user,
-    resolve_anonymous_id,
+    resolve_user,
 )
 from app.core.db import get_db
 from app.core.logging import get_logger
@@ -249,7 +248,7 @@ def get_member_me(
     异常：
         数据库异常向上抛出（全局处理器兜底）。
     """
-    user = get_or_create_user(session, resolve_anonymous_id(None, request))
+    user = resolve_user(session, None, request)
     session.commit()
     status = get_member_status(session, int(user.id))
     quota = get_quota(session, int(user.id))
@@ -287,7 +286,7 @@ def create_member_order(
     if not _payment_switch_on(session):
         raise api_error(403, _ERR_PAYMENT_CLOSED, _MSG_PAYMENT_CLOSED)
 
-    user = get_or_create_user(session, resolve_anonymous_id(None, request))
+    user = resolve_user(session, None, request)
     price = _PRICE_TABLE[payload.product_type]["price_cents"]
     for _attempt in range(_ORDER_NO_MAX_RETRY):
         order = Order(
@@ -394,7 +393,7 @@ def list_member_orders(
     异常：
         数据库异常向上抛出（全局处理器兜底）。
     """
-    user = get_or_create_user(session, resolve_anonymous_id(None, request))
+    user = resolve_user(session, None, request)
     session.commit()
     stmt = (
         select(Order)

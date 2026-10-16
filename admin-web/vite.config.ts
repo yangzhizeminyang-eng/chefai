@@ -1,7 +1,8 @@
 /**
  * 文件职责：后台管理端 Vite 构建配置。
  * - Vue 插件与 @ 别名（指向 src 目录）；
- * - 开发代理：将 /admin/v1 转发到本地 FastAPI 后端（http://localhost:8000），
+ * - 开发代理：将 /admin/v1 转发到本地 FastAPI 后端（默认 http://localhost:8000，
+ *   可经 AICOOK_BACKEND_PORT 环境变量切换端口），
  *   前端统一走相对路径请求，避免 CORS 问题；后端不可用时仅表现为接口异常（页面三态兜底）；
  * - vitest 配置：node 环境跑纯函数单测（不引入 jsdom）；
  * - 固定开发端口 5174 + strictPort=true：端口被占用时直接报错退出，杜绝端口漂移。
@@ -12,8 +13,10 @@ import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
-// 后端服务地址（本地 FastAPI 默认端口 8000）
-const BACKEND_TARGET = 'http://localhost:8000'
+// 后端服务地址：优先读取启动脚本（scripts/manage.ps1）注入的 AICOOK_BACKEND_PORT
+// （后端端口漂移时联动切换代理目标），未注入时回退本地 FastAPI 默认端口 8000
+const BACKEND_PORT = process.env.AICOOK_BACKEND_PORT || '8000'
+const BACKEND_TARGET = `http://localhost:${BACKEND_PORT}`
 
 // https://vite.dev/config/
 export default defineConfig({

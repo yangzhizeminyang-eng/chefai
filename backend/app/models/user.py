@@ -44,6 +44,9 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     anonymous_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    # 账号体系扩展：注册用户名与密码哈希（匿名用户两列为 NULL，注册后回填绑定）
+    username: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     wx_openid: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
     wx_unionid: Mapped[str | None] = mapped_column(String(64), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
@@ -62,6 +65,12 @@ class User(Base):
             "wx_openid",
             unique=True,
             postgresql_where=text("wx_openid IS NOT NULL"),
+        ),
+        Index(
+            "uq_user_username",
+            "username",
+            unique=True,
+            postgresql_where=text("username IS NOT NULL"),
         ),
     )
 

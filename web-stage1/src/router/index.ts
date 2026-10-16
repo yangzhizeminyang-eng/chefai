@@ -15,6 +15,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { toastWarning } from '@/utils/toast'
 import { useIngredientsStore } from '@/stores/ingredients'
 import { useRecommendStore } from '@/stores/recommend'
+import { useAuthStore } from '@/stores/auth'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -49,6 +50,8 @@ const router = createRouter({
     { path: '/innovate', name: 'innovate', component: () => import('@/views/InnovateView.vue') },
     /** Task 9 拍照识别食材 */
     { path: '/recognize', name: 'recognize', component: () => import('@/views/RecognizeView.vue') },
+    /** 登录/注册（账号管理入口，登录墙唯一放行页） */
+    { path: '/login', name: 'login', component: () => import('@/views/LoginView.vue') },
     /** 404 兜底（N2/L2 修复）：必须位于路由表末尾，未知路径统一进 NotFoundView */
     { path: '/:pathMatch(.*)*', name: 'not-found', component: () => import('@/views/NotFoundView.vue') },
   ],
@@ -60,6 +63,16 @@ const router = createRouter({
  * @returns undefined 放行 / 路由地址字符串重定向
  */
 router.beforeEach((to) => {
+  // 守卫 0：登录墙——除 /login 外所有页面都要求已登录（账号内容按账号隔离的前提）；
+  // 未登录跳 /login 并携带来源页，登录/注册成功后回跳。
+  const authStore = useAuthStore()
+  if (to.name !== 'login' && !authStore.isLoggedIn) {
+    return { path: '/login', query: { redirect: to.fullPath } }
+  }
+  // 已登录访问 /login → 直接回首页（避免重复登录）
+  if (to.name === 'login' && authStore.isLoggedIn) {
+    return '/'
+  }
   // 守卫 1：未选食材进入推荐页 → 提示并回食材选择。
   // 例外：「问厨娘」搜索结果直达（recommend store askMode 已落库，无已选食材）→ 放行，
   // 修复闭环断裂：ask 命中 recipe_search 后不再被本守卫弹回 /select 丢弃结果。

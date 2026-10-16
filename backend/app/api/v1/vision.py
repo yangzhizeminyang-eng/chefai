@@ -31,8 +31,7 @@ from app.ability.uploads import cleanup_uploads
 from app.api.v1.deps import (
     ERR_VALIDATION,
     api_error,
-    get_or_create_user,
-    resolve_anonymous_id,
+    resolve_user,
 )
 from app.core.db import get_db
 from app.core.logging import get_logger
@@ -238,8 +237,7 @@ def post_vision_recognize(
         raise api_error(403, "FORBIDDEN", "识别功能暂未开放，请手动选择食材")
 
     # ② 用户解析（X-Anonymous-Id → user 现有惯例；缺省自动建匿名用户）
-    anonymous_id = resolve_anonymous_id(None, request)
-    user = get_or_create_user(session, anonymous_id)
+    user = resolve_user(session, None, request)
 
     # ③ 读取图片字节（同步读取 UploadFile 内存缓冲，不额外落盘）
     image_bytes = file.file.read() or b""

@@ -23,13 +23,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.v1.deps import ERR_NOT_FOUND, api_error, get_or_create_user, resolve_anonymous_id
+from app.api.v1.deps import ERR_NOT_FOUND, api_error, resolve_user
 from app.core.db import get_db
 from app.core.logging import get_logger
-from app.models import Feedback, User
+from app.models import Feedback
 from app.safety.engine import get_risk_engine
 from app.schemas.feedback import FeedbackCreateRequest
 
@@ -98,7 +97,7 @@ def create_feedback(
     异常：
         数据库异常向上抛出（全局处理器兜底）；风控异常已由引擎内部消化。
     """
-    user = get_or_create_user(session, resolve_anonymous_id(None, request))
+    user = resolve_user(session, None, request)
 
     # 风控 input 闸门：命中（或风控不可用）即拦截，不落库
     verdict = get_risk_engine().scan("input", payload.content)
@@ -159,11 +158,7 @@ def get_feedback_status(
     异常：
         HTTPException 404：反馈不存在或不属于本人。
     """
-    user = session.execute(
-        select(User).where(User.anonymous_id == (resolve_anonymous_id(None, request) or ""))
-    ).scalar_one_or_none()
-    if user is None:
-        raise api_error(404, ERR_NOT_FOUND, "反馈不存在", f"feedback_id={feedback_id}")
+    user = resolve_user(session, None, request)
 
     feedback = session.get(Feedback, feedback_id)
     if feedback is None or int(feedback.user_id or 0) != int(user.id):

@@ -15,7 +15,7 @@ import {
   deleteIngredient,
   getErrorMessage,
   listAliases,
-  listIngredients,
+  listAllIngredients,
   notifyApiError,
   updateIngredient,
 } from '@/api/admin'
@@ -33,7 +33,7 @@ const ALLERGEN_OPTIONS = ['milk', 'egg', 'fish', 'shellfish', 'nut', 'peanut', '
 const keyword = ref('')
 
 // 列表三态
-const { loading, error, items, load } = useSimpleList<Ingredient>(async () => (await listIngredients({ size: 500 })).items)
+const { loading, error, items, load } = useSimpleList<Ingredient>(async () => (await listAllIngredients()))
 
 /** 按关键词过滤后的食材列表 */
 const filteredItems = computed<Ingredient[]>(() => {

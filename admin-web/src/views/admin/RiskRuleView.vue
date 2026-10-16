@@ -1,7 +1,11 @@
-<!-- 文件职责：风控规则管理。规则表格（类型 / 模式 / 启停 switch+确认）+ 新增/编辑 + 按操作日志回滚（应用 before_snapshot）。 -->
+<!-- 文件职责：风控规则管理。规则表格（编码/类别/阶段/等级/阻断/启停 switch+确认）+ 新增/编辑（trigger_condition JSON 编辑）+ 按操作日志回滚。 -->
 <script setup lang="ts">
 /**
- * 风控规则逻辑：规则列表三态、启停（确认 + 接口）、规则表单、回滚（选择操作日志）。
+ * 风控规则逻辑（对齐后端真实契约）：
+ * - 列表三态、启停（body {enabled}，确认 + 接口）、规则表单、回滚（选择操作日志）；
+ * - 表单字段：rule_code / category(五类枚举) / stage_scope(input/output/both) /
+ *   trigger_condition(JSONB：keywords/groups/regex) / response_message_id / block /
+ *   risk_level(critical/high/medium) / evidence_ref / version / enabled。
  * 所有写操作前置确认，只读角色统一拦截提示。
  */
 import { onMounted, reactive, ref } from 'vue'
@@ -17,7 +21,7 @@ import {
   toggleRiskRule,
   updateRiskRule,
 } from '@/api/admin'
-import type { OperationLog, RiskRule, RiskRulePayload } from '@/api/admin'
+import type { OperationLog, RiskCategory, RiskLevel, RiskRule, RiskStage } from '@/api/admin'
 import { useSimpleList } from '@/composables/useList'
 import { useAuthStore } from '@/stores/auth'
 import { confirmAction } from '@/utils/interaction'
@@ -25,19 +29,36 @@ import { formatDate } from '@/utils/format'
 
 const auth = useAuthStore()
 
-/** 规则类型选项（允许自定义输入） */
-const RULE_TYPE_OPTIONS = [
-  { value: 'keyword', label: '关键词' },
-  { value: 'regex', label: '正则表达式' },
-  { value: 'user_blacklist', label: '用户黑名单' },
+/** 类别枚举选项（对齐 risk_rule.category CHECK 五类） */
+const CATEGORY_OPTIONS: Array<{ value: RiskCategory; label: string }> = [
+  { value: 'food_safety_high_risk', label: '食品安全高风险' },
+  { value: 'special_population', label: '特殊人群' },
+  { value: 'medical_refusal', label: '医疗拒绝' },
+  { value: 'pseudoscience', label: '伪科学' },
+  { value: 'output_ban', label: '输出违禁' },
 ]
 
-/** 规则类型中文映射 */
-const RULE_TYPE_LABELS: Record<string, string> = {
-  keyword: '关键词',
-  regex: '正则表达式',
-  user_blacklist: '用户黑名单',
-}
+/** 类别中文映射 */
+const CATEGORY_LABELS: Record<string, string> = Object.fromEntries(
+  CATEGORY_OPTIONS.map((o) => [o.value, o.label]),
+)
+
+/** 阶段枚举选项 */
+const STAGE_OPTIONS: Array<{ value: RiskStage; label: string }> = [
+  { value: 'input', label: '输入侧' },
+  { value: 'output', label: '输出侧' },
+  { value: 'both', label: '双侧' },
+]
+
+/** 风险等级选项 */
+const LEVEL_OPTIONS: Array<{ value: RiskLevel; label: string }> = [
+  { value: 'critical', label: 'critical' },
+  { value: 'high', label: 'high' },
+  { value: 'medium', label: 'medium' },
+]
+
+/** 等级标签颜色 */
+const LEVEL_TAG_TYPES: Record<string, string> = { critical: 'danger', high: 'warning', medium: 'info' }
 
 // 列表三态
 const { loading, error, items, load } = useSimpleList<RiskRule>(async () => (await listRiskRules()).items)
@@ -52,18 +73,55 @@ const saving = ref(false)
 /** 表单引用（用于触发校验） */
 const formRef = ref<FormInstance>()
 
-/** 规则表单（表单层面字段必填，提交时 message_id 为空才转 undefined） */
-const form = reactive<{ rule_type: string; pattern: string; message_id: string; enabled: boolean }>({
-  rule_type: 'keyword',
-  pattern: '',
-  message_id: '',
+/** 规则表单（trigger_condition 以 JSON 文本编辑，提交时 parse） */
+const form = reactive<{
+  rule_code: string
+  category: RiskCategory
+  stage_scope: RiskStage
+  triggerText: string
+  response_message_id: string
+  block: boolean
+  risk_level: RiskLevel
+  evidence_ref: string
+  version: string
+  enabled: boolean
+}>({
+  rule_code: '',
+  category: 'food_safety_high_risk',
+  stage_scope: 'input',
+  triggerText: '{\n  "keywords": []\n}',
+  response_message_id: '',
+  block: true,
+  risk_level: 'high',
+  evidence_ref: '',
+  version: 'v1',
   enabled: true,
 })
 
 /** 表单校验规则 */
 const rules: FormRules = {
-  rule_type: [{ required: true, message: '请选择或输入规则类型', trigger: 'change' }],
-  pattern: [{ required: true, message: '请输入匹配模式', trigger: 'blur' }],
+  rule_code: [{ required: true, message: '请输入规则编码（如 FS-901）', trigger: 'blur' }],
+  category: [{ required: true, message: '请选择类别', trigger: 'change' }],
+  stage_scope: [{ required: true, message: '请选择阶段', trigger: 'change' }],
+  risk_level: [{ required: true, message: '请选择风险等级', trigger: 'change' }],
+  version: [{ required: true, message: '请输入版本号', trigger: 'blur' }],
+}
+
+/**
+ * 解析 trigger_condition JSON 文本；非法返回 null 并提示。
+ */
+function parseTrigger(): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(form.triggerText) as unknown
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      ElMessage.error('触发条件必须是 JSON 对象（如 {"keywords": ["生豆芽"]}）')
+      return null
+    }
+    return parsed as Record<string, unknown>
+  } catch {
+    ElMessage.error('触发条件 JSON 格式不合法')
+    return null
+  }
 }
 
 /**
@@ -72,9 +130,15 @@ const rules: FormRules = {
 function openCreate(): void {
   if (!auth.ensureWritable()) return
   editingId.value = 0
-  form.rule_type = 'keyword'
-  form.pattern = ''
-  form.message_id = ''
+  form.rule_code = ''
+  form.category = 'food_safety_high_risk'
+  form.stage_scope = 'input'
+  form.triggerText = '{\n  "keywords": []\n}'
+  form.response_message_id = ''
+  form.block = true
+  form.risk_level = 'high'
+  form.evidence_ref = ''
+  form.version = 'v1'
   form.enabled = true
   dialogVisible.value = true
 }
@@ -86,33 +150,58 @@ function openCreate(): void {
 function openEdit(row: RiskRule): void {
   if (!auth.ensureWritable()) return
   editingId.value = row.id
-  form.rule_type = row.rule_type
-  form.pattern = row.pattern
-  form.message_id = row.message_id ?? ''
+  form.rule_code = row.rule_code
+  form.category = row.category
+  form.stage_scope = row.stage_scope
+  form.triggerText = JSON.stringify(row.trigger_condition ?? {}, null, 2)
+  form.response_message_id = row.response_message_id ?? ''
+  form.block = Boolean(row.block)
+  form.risk_level = row.risk_level
+  form.evidence_ref = row.evidence_ref ?? ''
+  form.version = row.version
   form.enabled = Boolean(row.enabled)
   dialogVisible.value = true
 }
 
 /**
- * 保存规则（新增或更新）。
+ * 保存规则（新增或更新）。编辑时 rule_code/category/stage_scope/version 由后端忽略，
+ * 仅 trigger_condition/block/risk_level/response_message_id/evidence_ref/enabled 可变。
  */
 async function handleSave(): Promise<void> {
   const valid = await formRef.value?.validate().then(() => true).catch(() => false)
   if (!valid) return
+  const trigger = parseTrigger()
+  if (trigger === null) return
   if (!await confirmAction(editingId.value ? '确认保存规则修改？' : '确认新增规则？', '保存确认')) return
-  const payload: RiskRulePayload = {
-    rule_type: form.rule_type.trim(),
-    pattern: form.pattern.trim(),
-    message_id: form.message_id.trim() || undefined,
-    enabled: form.enabled,
-  }
   saving.value = true
   try {
     if (editingId.value) {
-      await updateRiskRule(editingId.value, payload)
+      await updateRiskRule(editingId.value, {
+        rule_code: form.rule_code.trim(),
+        category: form.category,
+        stage_scope: form.stage_scope,
+        trigger_condition: trigger,
+        response_message_id: form.response_message_id.trim() || undefined,
+        block: form.block,
+        risk_level: form.risk_level,
+        evidence_ref: form.evidence_ref.trim() || undefined,
+        version: form.version.trim(),
+        enabled: form.enabled,
+      })
       ElMessage.success('保存成功')
     } else {
-      await createRiskRule(payload)
+      await createRiskRule({
+        rule_code: form.rule_code.trim(),
+        category: form.category,
+        stage_scope: form.stage_scope,
+        trigger_condition: trigger,
+        response_message_id: form.response_message_id.trim() || undefined,
+        block: form.block,
+        risk_level: form.risk_level,
+        evidence_ref: form.evidence_ref.trim() || undefined,
+        version: form.version.trim(),
+        enabled: form.enabled,
+      })
       ElMessage.success('新增成功')
     }
     dialogVisible.value = false
@@ -133,7 +222,7 @@ async function handleToggle(row: RiskRule): Promise<boolean> {
   if (!auth.ensureWritable()) return false
   if (!await confirmAction(`确认${row.enabled ? '停用' : '启用'}该规则？`, '启停确认')) return false
   try {
-    await toggleRiskRule(row.id)
+    await toggleRiskRule(row.id, !row.enabled)
     row.enabled = !row.enabled
     return true
   } catch (e) {
@@ -218,7 +307,7 @@ onMounted(() => {
   <div class="page">
     <el-card shadow="never">
       <div class="toolbar">
-        <span class="muted">命中规则用于 Agent 输出风控拦截，启停即时生效。</span>
+        <span class="muted">风控规则在输入/输出双侧拦截，启用后即时热更新生效。</span>
         <div class="grow" />
         <el-button type="warning" @click="openRollback">按操作日志回滚</el-button>
         <el-button @click="load">刷新</el-button>
@@ -232,24 +321,36 @@ onMounted(() => {
       <el-table v-loading="loading" :data="items" border stripe>
         <template #empty><el-empty description="暂无风控规则" /></template>
         <el-table-column prop="id" label="ID" width="70" />
-        <el-table-column label="类型" width="120">
+        <el-table-column prop="rule_code" label="规则编码" width="130" />
+        <el-table-column label="类别" width="140">
           <template #default="{ row }">
-            <el-tag>{{ RULE_TYPE_LABELS[row.rule_type] ?? row.rule_type }}</el-tag>
+            <el-tag>{{ CATEGORY_LABELS[row.category] ?? row.category }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="pattern" label="匹配模式" min-width="200" show-overflow-tooltip>
-          <template #default="{ row }"><span class="mono">{{ row.pattern }}</span></template>
+        <el-table-column label="阶段" width="90">
+          <template #default="{ row }">
+            {{ STAGE_OPTIONS.find((o) => o.value === row.stage_scope)?.label ?? row.stage_scope }}
+          </template>
         </el-table-column>
-        <el-table-column label="提示消息 ID" width="140">
-          <template #default="{ row }">{{ row.message_id || '-' }}</template>
+        <el-table-column label="触发条件" min-width="220" show-overflow-tooltip>
+          <template #default="{ row }"><span class="mono">{{ JSON.stringify(row.trigger_condition) }}</span></template>
         </el-table-column>
-        <el-table-column label="启用" width="100">
+        <el-table-column label="等级" width="100">
+          <template #default="{ row }">
+            <el-tag :type="LEVEL_TAG_TYPES[row.risk_level] ?? 'info'">{{ row.risk_level }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="阻断" width="80">
+          <template #default="{ row }">
+            <el-tag v-if="row.block" type="danger">一票否决</el-tag>
+            <span v-else class="muted">提示</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="version" label="版本" width="80" />
+        <el-table-column label="启用" width="90">
           <template #default="{ row }">
             <el-switch :model-value="row.enabled" :before-change="() => handleToggle(row)" />
           </template>
-        </el-table-column>
-        <el-table-column label="创建时间" width="170">
-          <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
         </el-table-column>
         <el-table-column label="操作" width="90" fixed="right">
           <template #default="{ row }">
@@ -260,18 +361,40 @@ onMounted(() => {
     </el-card>
 
     <!-- 新增 / 编辑对话框 -->
-    <el-dialog v-model="dialogVisible" :title="editingId ? '编辑规则' : '新增规则'" width="520px" destroy-on-close>
-      <el-form ref="formRef" :model="form" :rules="rules" label-width="100px">
-        <el-form-item label="规则类型" prop="rule_type">
-          <el-select v-model="form.rule_type" filterable allow-create default-first-option style="width: 100%">
-            <el-option v-for="opt in RULE_TYPE_OPTIONS" :key="opt.value" :label="opt.label" :value="opt.value" />
+    <el-dialog v-model="dialogVisible" :title="editingId ? '编辑规则' : '新增规则'" width="600px" destroy-on-close>
+      <el-form ref="formRef" :model="form" :rules="rules" label-width="110px">
+        <el-form-item label="规则编码" prop="rule_code">
+          <el-input v-model="form.rule_code" :disabled="!!editingId" placeholder="如 FS-901（创建后不可改）" />
+        </el-form-item>
+        <el-form-item label="类别" prop="category">
+          <el-select v-model="form.category" style="width: 100%">
+            <el-option v-for="opt in CATEGORY_OPTIONS" :key="opt.value" :label="opt.label" :value="opt.value" />
           </el-select>
         </el-form-item>
-        <el-form-item label="匹配模式" prop="pattern">
-          <el-input v-model="form.pattern" type="textarea" :rows="3" placeholder="关键词或正则表达式" />
+        <el-form-item label="阶段" prop="stage_scope">
+          <el-select v-model="form.stage_scope" style="width: 100%">
+            <el-option v-for="opt in STAGE_OPTIONS" :key="opt.value" :label="opt.label" :value="opt.value" />
+          </el-select>
         </el-form-item>
-        <el-form-item label="提示消息 ID">
-          <el-input v-model="form.message_id" placeholder="命中时的提示消息 ID（可选）" />
+        <el-form-item label="触发条件" prop="triggerText">
+          <el-input v-model="form.triggerText" type="textarea" :rows="5" placeholder='JSON 对象，如 {"keywords": ["生豆芽"], "groups": [...]}' />
+        </el-form-item>
+        <el-form-item label="风险等级" prop="risk_level">
+          <el-select v-model="form.risk_level" style="width: 100%">
+            <el-option v-for="opt in LEVEL_OPTIONS" :key="opt.value" :label="opt.label" :value="opt.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="一票否决">
+          <el-switch v-model="form.block" active-text="命中即阻断" inactive-text="仅提示" />
+        </el-form-item>
+        <el-form-item label="话术模板 ID">
+          <el-input v-model="form.response_message_id" placeholder="命中时的话术模板 ID（可选）" />
+        </el-form-item>
+        <el-form-item label="证据引用">
+          <el-input v-model="form.evidence_ref" placeholder="依据来源（可选，如 GB 2761）" />
+        </el-form-item>
+        <el-form-item label="版本" prop="version">
+          <el-input v-model="form.version" :disabled="!!editingId" placeholder="如 v1（创建后不可改）" style="width: 160px" />
         </el-form-item>
         <el-form-item label="启用">
           <el-switch v-model="form.enabled" active-text="启用" inactive-text="停用" />

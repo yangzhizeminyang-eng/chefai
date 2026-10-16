@@ -1,14 +1,16 @@
-<!-- 文件职责：营养数据维护。按食材搜索（下拉）→ 加载 per100g 营养字段 → 编辑保存（data_source 必填）。 -->
+<!-- 文件职责：营养数据维护。按食材搜索（下拉）→ 加载嵌套结构 nutrition 字段 → 编辑保存（data_source 必填）。 -->
 <script setup lang="ts">
 /**
- * 营养数据逻辑：食材下拉选择、营养数据加载（404 视为未录入）、表单校验保存。
+ * 营养数据逻辑：食材下拉选择、营养数据加载（nutrition=null 视为未录入）、表单校验保存。
+ * 后端契约：GET/PUT /admin/v1/nutrition/{id}，字段 kcal_100g/protein_g/fat_g/carbs_g/sodium_mg
+ * + data_source（必填）+ source_license。
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { ElMessage } from 'element-plus'
 
-import { getApiStatus, getErrorMessage, getNutrition, listIngredients, notifyApiError, updateNutrition } from '@/api/admin'
-import type { Ingredient, NutritionInfo } from '@/api/admin'
+import { getNutrition, getErrorMessage, listAllIngredients, notifyApiError, updateNutrition } from '@/api/admin'
+import type { Ingredient, NutritionPayload } from '@/api/admin'
 import { useAuthStore } from '@/stores/auth'
 import { confirmAction } from '@/utils/interaction'
 
@@ -32,14 +34,15 @@ const saving = ref(false)
 /** 表单引用（用于触发校验） */
 const formRef = ref<FormInstance>()
 
-/** 营养数据表单（per100g + 数据来源） */
-const form = reactive<NutritionInfo>({
-  kcal: null,
-  protein: null,
-  fat: null,
-  carb: null,
-  sodium: null,
+/** 营养数据表单（per100g + 数据来源，字段名对齐后端 ingredient_nutrition 列） */
+const form = reactive<NutritionPayload>({
+  kcal_100g: null,
+  protein_g: null,
+  fat_g: null,
+  carbs_g: null,
+  sodium_mg: null,
   data_source: '',
+  source_license: 'admin_manual',
 })
 
 /** 表单校验规则（data_source 必填） */
@@ -61,7 +64,7 @@ const selectedName = computed<string>(() => ingredientOptions.value.find((it) =>
 async function loadOptions(): Promise<void> {
   optionsLoading.value = true
   try {
-    ingredientOptions.value = (await listIngredients({ size: 500 })).items
+    ingredientOptions.value = await listAllIngredients()
   } catch (e) {
     notifyApiError(e, '食材列表加载失败')
   } finally {
@@ -70,7 +73,8 @@ async function loadOptions(): Promise<void> {
 }
 
 /**
- * 选中食材后拉取其营养数据；404 视为未录入，表单置空提示录入。
+ * 选中食材后拉取其营养数据（嵌套 {ingredient_id, nutrition}）；
+ * nutrition=null 视为未录入，表单置空提示录入。
  */
 async function handleSelect(): Promise<void> {
   if (!selectedId.value) {
@@ -80,29 +84,21 @@ async function handleSelect(): Promise<void> {
   loading.value = true
   loadError.value = ''
   try {
-    const info = await getNutrition(selectedId.value)
-    form.kcal = info.kcal ?? null
-    form.protein = info.protein ?? null
-    form.fat = info.fat ?? null
-    form.carb = info.carb ?? null
-    form.sodium = info.sodium ?? null
-    form.data_source = info.data_source ?? ''
+    const res = await getNutrition(selectedId.value)
+    const n = res.nutrition
+    form.kcal_100g = n?.kcal_100g ?? null
+    form.protein_g = n?.protein_g ?? null
+    form.fat_g = n?.fat_g ?? null
+    form.carbs_g = n?.carbs_g ?? null
+    form.sodium_mg = n?.sodium_mg ?? null
+    form.data_source = n?.data_source ?? ''
+    form.source_license = n?.source_license || 'admin_manual'
     loaded.value = true
+    if (!n) ElMessage.info('该食材暂无营养数据，请录入')
   } catch (e) {
-    if (getApiStatus(e) === 404) {
-      form.kcal = null
-      form.protein = null
-      form.fat = null
-      form.carb = null
-      form.sodium = null
-      form.data_source = ''
-      loaded.value = true
-      ElMessage.info('该食材暂无营养数据，请录入')
-    } else {
-      loadError.value = getErrorMessage(e, '营养数据加载失败')
-      loaded.value = false
-      notifyApiError(e, '营养数据加载失败')
-    }
+    loadError.value = getErrorMessage(e, '营养数据加载失败')
+    loaded.value = false
+    notifyApiError(e, '营养数据加载失败')
   } finally {
     loading.value = false
   }
@@ -125,7 +121,15 @@ async function handleSave(): Promise<void> {
   if (!await confirmAction(`确认保存「${selectedName.value}」的营养数据？`, '保存确认')) return
   saving.value = true
   try {
-    await updateNutrition(selectedId.value, { ...form, data_source: form.data_source.trim() })
+    await updateNutrition(selectedId.value, {
+      kcal_100g: form.kcal_100g,
+      protein_g: form.protein_g,
+      fat_g: form.fat_g,
+      carbs_g: form.carbs_g,
+      sodium_mg: form.sodium_mg,
+      data_source: form.data_source.trim(),
+      source_license: form.source_license.trim() || 'admin_manual',
+    })
     ElMessage.success('保存成功')
   } catch (e) {
     notifyApiError(e, '保存失败')
@@ -166,23 +170,26 @@ onMounted(() => {
       <div v-else-if="loading" v-loading="loading" class="empty-wrap loading-wrap" />
 
       <el-form v-else-if="loaded" ref="formRef" :model="form" :rules="rules" label-width="110px" class="nutrition-form">
-        <el-form-item label="热量 kcal">
-          <el-input-number v-model="form.kcal" :min="0" :precision="1" controls-position="right" placeholder="每100g" />
+        <el-form-item label="热量 kcal/100g">
+          <el-input-number v-model="form.kcal_100g" :min="0" :precision="1" controls-position="right" placeholder="每100g" />
         </el-form-item>
         <el-form-item label="蛋白质 g">
-          <el-input-number v-model="form.protein" :min="0" :precision="1" controls-position="right" placeholder="每100g" />
+          <el-input-number v-model="form.protein_g" :min="0" :precision="1" controls-position="right" placeholder="每100g" />
         </el-form-item>
         <el-form-item label="脂肪 g">
-          <el-input-number v-model="form.fat" :min="0" :precision="1" controls-position="right" placeholder="每100g" />
+          <el-input-number v-model="form.fat_g" :min="0" :precision="1" controls-position="right" placeholder="每100g" />
         </el-form-item>
         <el-form-item label="碳水 g">
-          <el-input-number v-model="form.carb" :min="0" :precision="1" controls-position="right" placeholder="每100g" />
+          <el-input-number v-model="form.carbs_g" :min="0" :precision="1" controls-position="right" placeholder="每100g" />
         </el-form-item>
         <el-form-item label="钠 mg">
-          <el-input-number v-model="form.sodium" :min="0" :precision="1" controls-position="right" placeholder="每100g" />
+          <el-input-number v-model="form.sodium_mg" :min="0" :precision="1" controls-position="right" placeholder="每100g" />
         </el-form-item>
         <el-form-item label="数据来源" prop="data_source">
           <el-input v-model="form.data_source" placeholder="必填，如 USDA / 中国食物成分表" style="width: 320px" />
+        </el-form-item>
+        <el-form-item label="来源许可">
+          <el-input v-model="form.source_license" placeholder="缺省 admin_manual" style="width: 320px" />
         </el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="saving" :disabled="auth.isReadonly" @click="handleSave">保存</el-button>

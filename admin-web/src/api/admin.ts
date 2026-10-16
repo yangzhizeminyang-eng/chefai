@@ -177,45 +177,89 @@ export interface IngredientPayload {
 
 // ==================== 营养 ====================
 
-/** 营养数据（per100g），data_source 必填 */
-export interface NutritionInfo {
-  ingredient_id?: number
-  kcal: number | null
-  protein: number | null
-  fat: number | null
-  carb: number | null
-  sodium: number | null
+/** 营养数据（per100g），data_source 必填；None = 未纳入统计，不得按 0 计算 */
+export interface NutritionData {
+  kcal_100g: number | null
+  protein_g: number | null
+  fat_g: number | null
+  carbs_g: number | null
+  sodium_mg: number | null
   data_source: string
+  source_license: string
+}
+
+/** 营养数据查询响应（嵌套结构） */
+export interface NutritionResponse {
+  ingredient_id: number
+  nutrition: NutritionData | null
+}
+
+/** 营养数据 upsert 入参 */
+export interface NutritionPayload {
+  kcal_100g: number | null
+  protein_g: number | null
+  fat_g: number | null
+  carbs_g: number | null
+  sodium_mg: number | null
+  data_source: string
+  source_license: string
 }
 
 // ==================== 风控 ====================
 
+/** 风控规则类别（risk_rule.category 五类枚举） */
+export type RiskCategory = 'food_safety_high_risk' | 'special_population' | 'medical_refusal' | 'pseudoscience' | 'output_ban'
+
+/** 风控阶段 */
+export type RiskStage = 'input' | 'output' | 'both'
+
+/** 风险等级 */
+export type RiskLevel = 'critical' | 'high' | 'medium'
+
 /** 风控规则 */
 export interface RiskRule {
   id: number
-  rule_type: string
-  pattern: string
-  message_id?: string
+  rule_code: string
+  category: RiskCategory
+  stage_scope: RiskStage
+  trigger_condition: Record<string, unknown>
+  response_message_id: string | null
+  block: boolean
+  risk_level: RiskLevel
+  evidence_ref: string | null
+  version: string
   enabled: boolean
-  created_at?: string
-  updated_at?: string
 }
 
 /** 风控规则新增 / 编辑入参 */
 export interface RiskRulePayload {
-  rule_type: string
-  pattern: string
-  message_id?: string
+  rule_code: string
+  category: RiskCategory
+  stage_scope: RiskStage
+  trigger_condition: Record<string, unknown>
+  response_message_id?: string
+  block: boolean
+  risk_level: RiskLevel
+  evidence_ref?: string
+  version: string
   enabled: boolean
 }
 
 // ==================== 违禁词 ====================
 
-/** 违禁词 */
-export interface SensitiveWord {
-  id: number
+/** 输出敏感词条目（remote_config 词表，无行 ID） */
+export interface SensitiveWordEntry {
   word: string
-  created_at?: string
+  replacement: string
+  category: string
+}
+
+/** 敏感词表查询响应 */
+export interface SensitiveWordsState {
+  words: SensitiveWordEntry[]
+  version: number
+  active_source: string
+  builtin_rules: number
 }
 
 // ==================== Agent 日志 ====================
@@ -320,24 +364,27 @@ export interface OrderItem {
 // ==================== 创新中心 ====================
 
 /** 搭配关系三选：协同 / 冲突 / 替代 */
-export type PairingRelation = 'pair' | 'conflict' | 'replace'
+export type PairingRelation = 'recommend' | 'conflict' | 'taboo'
 
 /** 创新搭配规则 */
 export interface InnovationRule {
   id: number
-  ingredient_a: string
-  ingredient_b: string
+  ingredient_a_id: number
+  ingredient_b_id: number
   relation: PairingRelation
+  technique_suggestion: string | null
+  rationale: string
   weight: number
   signed_by_expert: boolean
-  created_at?: string
 }
 
-/** 创新搭配规则新增 / 编辑入参 */
+/** 创新搭配规则新增 / 编辑入参（rationale 必填，烹饪学依据） */
 export interface InnovationRulePayload {
-  ingredient_a: string
-  ingredient_b: string
+  ingredient_a_id: number
+  ingredient_b_id: number
   relation: PairingRelation
+  technique_suggestion?: string
+  rationale: string
   weight: number
   signed_by_expert: boolean
 }
@@ -673,6 +720,22 @@ export async function listIngredients(params?: {
 }
 
 /**
+ * 拉取全量食材（后端 size 上限 100，自动翻页聚合；供下拉选择器使用）。
+ * @returns 全部食材列表
+ */
+export async function listAllIngredients(): Promise<Ingredient[]> {
+  const pageSize = 100
+  const first = await listIngredients({ page: 1, size: pageSize })
+  const all = [...first.items]
+  const totalPages = Math.ceil(first.total / pageSize)
+  for (let page = 2; page <= totalPages; page++) {
+    const next = await listIngredients({ page, size: pageSize })
+    all.push(...next.items)
+  }
+  return all
+}
+
+/**
  * 新增食材。
  * @param payload 名称 / 分类 / 致敏原 / 认证标记
  * @returns 新增后的食材
@@ -729,20 +792,21 @@ export async function deleteAlias(ingredientId: number, aliasId: number): Promis
 // ==================== 营养 ====================
 
 /**
- * 获取食材营养数据（未录入时后端可能返回 404，调用方按需兜底）。
+ * 获取食材营养数据（嵌套结构 {ingredient_id, nutrition}；nutrition 为 null 表示未录入，
+ * 未录入时后端不再 404，食材不存在才 404）。
  * @param ingredientId 食材 ID
- * @returns 营养数据（per100g）
+ * @returns 营养数据查询响应
  */
-export async function getNutrition(ingredientId: number): Promise<NutritionInfo> {
-  return requestGet<NutritionInfo>(`/admin/v1/nutrition/${ingredientId}`)
+export async function getNutrition(ingredientId: number): Promise<NutritionResponse> {
+  return requestGet<NutritionResponse>(`/admin/v1/nutrition/${ingredientId}`)
 }
 
 /**
- * 保存食材营养数据（data_source 必填，前端已做校验）。
+ * 保存食材营养数据（upsert，data_source 必填，前端已做校验）。
  * @param ingredientId 食材 ID
  * @param payload 营养字段 + 数据来源
  */
-export async function updateNutrition(ingredientId: number, payload: NutritionInfo): Promise<void> {
+export async function updateNutrition(ingredientId: number, payload: NutritionPayload): Promise<void> {
   await requestPut<unknown>(`/admin/v1/nutrition/${ingredientId}`, payload)
 }
 
@@ -776,11 +840,12 @@ export async function updateRiskRule(id: number, payload: RiskRulePayload): Prom
 }
 
 /**
- * 启停风控规则。
+ * 启停风控规则（热更新）。
  * @param id 规则 ID
+ * @param enabled 目标启用状态（后端要求 body {enabled}）
  */
-export async function toggleRiskRule(id: number): Promise<void> {
-  await requestPost<unknown>(`/admin/v1/risk-rules/${id}/toggle`)
+export async function toggleRiskRule(id: number, enabled: boolean): Promise<void> {
+  await requestPost<unknown>(`/admin/v1/risk-rules/${id}/toggle`, { enabled })
 }
 
 /**
@@ -794,38 +859,43 @@ export async function rollbackRiskRules(logId: number | string): Promise<void> {
 // ==================== 违禁词 ====================
 
 /**
- * 获取违禁词列表。
- * @returns 分页违禁词列表
+ * 获取输出敏感词表（remote_config 词表全量结构）。
+ * @returns {words, version, active_source, builtin_rules}
  */
-export async function listSensitiveWords(): Promise<PageResult<SensitiveWord>> {
-  return unwrapPage<SensitiveWord>(await requestGet<unknown>('/admin/v1/sensitive-words'))
+export async function listSensitiveWords(): Promise<SensitiveWordsState> {
+  const fallback: SensitiveWordsState = { words: [], version: 0, active_source: 'builtin', builtin_rules: 0 }
+  const data = await requestGet<unknown>('/admin/v1/sensitive-words')
+  const state = data as Partial<SensitiveWordsState> | undefined
+  return {
+    words: Array.isArray(state?.words) ? (state?.words as SensitiveWordEntry[]) : fallback.words,
+    version: typeof state?.version === 'number' ? state.version : 0,
+    active_source: state?.active_source ?? fallback.active_source,
+    builtin_rules: typeof state?.builtin_rules === 'number' ? state.builtin_rules : 0,
+  }
 }
 
 /**
- * 新增违禁词。
- * @param payload 词内容
- * @returns 新增后的违禁词
+ * 追加敏感词（重复时后端 409）。
+ * @param payload 词条（word + replacement + category）
  */
-export async function createSensitiveWord(payload: { word: string }): Promise<SensitiveWord> {
-  return requestPost<SensitiveWord>('/admin/v1/sensitive-words', payload)
+export async function createSensitiveWord(payload: SensitiveWordEntry): Promise<void> {
+  await requestPost<unknown>('/admin/v1/sensitive-words', payload)
 }
 
 /**
- * 编辑违禁词。
- * @param id 违禁词 ID
- * @param payload 词内容
- * @returns 更新后的违禁词
+ * 全量替换敏感词表。
+ * @param words 词条数组（全量覆盖）
  */
-export async function updateSensitiveWord(id: number, payload: { word: string }): Promise<SensitiveWord> {
-  return requestPut<SensitiveWord>(`/admin/v1/sensitive-words/${id}`, payload)
+export async function replaceSensitiveWords(words: SensitiveWordEntry[]): Promise<void> {
+  await requestPut<unknown>('/admin/v1/sensitive-words', { words })
 }
 
 /**
- * 删除违禁词。
- * @param id 违禁词 ID
+ * 删除敏感词（?word= 单删）。
+ * @param word 违规词
  */
-export async function deleteSensitiveWord(id: number): Promise<void> {
-  await requestDelete<unknown>(`/admin/v1/sensitive-words/${id}`)
+export async function deleteSensitiveWord(word: string): Promise<void> {
+  await requestDelete<unknown>(`/admin/v1/sensitive-words?word=${encodeURIComponent(word)}`)
 }
 
 // ==================== Agent 日志 ====================

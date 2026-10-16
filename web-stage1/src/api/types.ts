@@ -1177,3 +1177,21 @@ export interface CookingHelpBlockedResponse {
 
 /** 烹饪求助响应（正常回答或拦截结构二选一，运行时以 blocked 字段判别） */
 export type CookingHelpOutcome = CookingHelpResponse | CookingHelpBlockedResponse
+
+/** 注册/登录响应（签发 JWT + 账号基本信息） */
+export interface AuthResponse {
+  user_id: number
+  username: string
+  nickname: string | null
+  anonymous_id: string
+  access_token: string
+  token_type: string
+}
+
+/** 当前登录用户信息（GET /v1/auth/me） */
+export interface MeInfoResponse {
+  user_id: number
+  username: string
+  nickname: string | null
+  anonymous_id: string
+}

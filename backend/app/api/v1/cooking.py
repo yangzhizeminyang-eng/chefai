@@ -6,9 +6,10 @@
     - PATCH  /v1/cooking/sessions/{id}：步骤推进/断点（action=next|prev|abort、current_step_no、ack）；
     - POST   /v1/cooking/sessions/{id}/finish：完成会话（可选评分，rating 写 recipe_feedback；
                同步写 meal_record 饮食记录，餐次按完成本地时间归集，营养按份数估算）；
-    - POST  /v1/cooking/sessions/{id}/help：烹饪求助（优先命中本地关键词库返回针对性常识
-               要点（DEF-06），未命中回退当前步骤结构化信息，不调 LLM；
-               每会话限 3 次，question 过 RiskEngine input 闸门，回答过 output 闸门）。
+    - POST  /v1/cooking/sessions/{id}/help：烹饪求助（求助子智能体结合当前步骤与
+               用户档案经主 LLM 生成针对性回答；不可用时诚实提示「暂时不可用」，
+               不输出模板降级；每会话限 3 次，question 过 RiskEngine input 闸门，
+               回答过 output 闸门）。
 
     状态机（架构文档 §12.1 五态）：not_started → ongoing → rating → completed；
     abort 保存 abandoned_step_no 并回 not_started（表 CHECK 无 aborted 枚举）；
@@ -32,8 +33,7 @@ from app.api.v1.deps import (
     ERR_CONFLICT,
     ERR_NOT_FOUND,
     api_error,
-    get_or_create_user,
-    resolve_anonymous_id,
+    resolve_user,
 )
 from app.core.config import settings
 from app.core.db import get_db
@@ -67,6 +67,8 @@ _HELP_LIMIT_PER_SESSION = 3
 ERR_RATE_LIMITED = "RATE_LIMITED"
 # output 闸门命中时的兜底回答
 _FALLBACK_ANSWER = "这个问题我暂时换个说法：请按菜谱步骤操作，如有具体困难请描述当前现象。"
+# 求助子智能体不可用（开关关闭 / LLM 失败）时的诚实提示（产品决策：不输出模板降级）
+_HELP_UNAVAILABLE_ANSWER = "求助助手暂时不可用，请稍后再试一次；紧急情况请先按菜谱步骤保守操作。"
 
 
 class CookingHelpRequest(BaseModel):
@@ -172,8 +174,7 @@ def create_cooking_session(
     if recipe is None or recipe.status != "published":
         raise api_error(404, ERR_NOT_FOUND, "菜谱不存在或未发布", f"recipe_id={payload.recipe_id}")
 
-    anon_id = resolve_anonymous_id(payload.anonymous_id, request)
-    user = get_or_create_user(session, anon_id)
+    user = resolve_user(session, payload.anonymous_id, request)
 
     # 过敏原冲突检查（阶段一无档案：用户过敏原集合为空 → 恒无冲突）
     user_allergens: list[str] = []
@@ -424,149 +425,6 @@ def _safety_message(engine, verdict: RiskVerdict) -> str:
     return str(message.get("body") or "该内容涉及安全风险，请调整后再试。")
 
 
-# ── DEF-06 求助关键词库 ──
-# 用途：烹饪求助时按问题关键词返回「可立即执行的通用厨房常识要点」，修复回答与
-#       问题无关的缺陷（原实现固定返回当前步骤上下文，答非所问）。
-# 维护方式：新增话题时在 _HELP_TOPICS 追加一项 (关键词元组, 要点列表)：
-#       - 关键词：2~5 个子串，与既有话题避免重叠（命中按列表序先到先得）；
-#       - 要点：固定 2 条，每条一句话、可立即执行、不带品牌/医疗建议；
-#       - 回答总长度由端点控制 ≤3 条（第三条并入当前步骤提示），新增话题无需关心。
-_HELP_TOPICS: list[tuple[tuple[str, ...], list[str]]] = [
-    (
-        ("太咸", "咸了", "盐多", "盐放多", "齁"),
-        [
-            "太咸了先加水或没调味的食材同煮几分钟，稀释咸味。",
-            "放几块土豆或豆腐一起煮能吸盐，捞出来尝过味再出锅。",
-        ],
-    ),
-    (
-        ("太淡", "淡了", "不咸", "没味道", "没味"),
-        [
-            "少量多次补盐或生抽，每次加完搅匀尝一口再补。",
-            "加少许糖或蚝油提鲜，比一次补大量盐更稳。",
-        ],
-    ),
-    (
-        ("糊锅", "糊了", "烧糊", "烧焦"),
-        [
-            "立即关火离灶，把没糊的部分轻轻盛出，别刮糊底。",
-            "糊味重就换干净锅续做，糊锅泡水别硬刷。",
-        ],
-    ),
-    (
-        ("发苦", "苦了", "苦味"),
-        [
-            "糖色或酱油炒苦了救不回来，重新起锅小火重炒这一步。",
-            "食材本身发苦可加盐抓洗或焯水减轻，出锅前尝味。",
-        ],
-    ),
-    (
-        ("没调料", "缺调料", "调料没了", "没有料酒", "没有生抽", "没有盐"),
-        [
-            "料酒缺了可用姜汁或少量白酒替代，用量减半。",
-            "生抽缺了用少许盐加几滴醋和一点糖临时替代。",
-        ],
-    ),
-    (
-        ("火候", "大火", "小火", "几成热"),
-        [
-            "油面轻微波动约五六成热适合爆香，冒大量青烟就是过热了。",
-            "拿不准火候就用中小火，宁可慢一点也别烧糊。",
-        ],
-    ),
-    (
-        ("溅油", "油溅", "烫到", "烫伤"),
-        [
-            "烫伤立即用流动凉水冲 15 分钟以上，别涂牙膏或酱油。",
-            "起水泡别挑破，皮肤破了或面积大尽快就医。",
-        ],
-    ),
-    (
-        ("太辣", "辣了", "辣得很", "辣度"),
-        [
-            "加点牛奶、酸奶或少许糖，能有效中和辣味。",
-            "补些没调味的食材（土豆、豆腐）稀释辣度，盛出多余辣油。",
-        ],
-    ),
-    (
-        ("腥味", "去腥", "腥重", "鱼腥"),
-        [
-            "沿锅边烹一点料酒，或加姜片葱段爆香去腥。",
-            "出锅前滴几滴柠檬汁或白醋，也能压住腥味。",
-        ],
-    ),
-    (
-        ("粘锅", "粘底", "锅粘", "黏锅"),
-        [
-            "先离火晾一小会儿再轻晃锅，粘住的食材更容易分离，别急着硬铲。",
-            "下一锅记住热锅凉油：锅烧热再倒油润锅，再下食材。",
-        ],
-    ),
-]
-
-
-def _match_help_topic(question: str) -> list[str] | None:
-    """按关键词库匹配求助话题并返回针对性常识要点（函数）。
-
-    说明：
-        DEF-06：优先于当前步骤上下文回答，修复「求助答非所问」。
-        每类话题固定 2 条要点，第三条由端点并入当前步骤提示（保持总数 ≤3）。
-        命中优先级 = _HELP_TOPICS 列表序（先到先得），话题间关键词互不重叠。
-
-    参数：
-        question：用户求助问题原文（调用方已 trim）。
-
-    返回值：
-        list[str]：命中话题的要点列表（2 条）；未命中返回 None（端点回退步骤要点）。
-
-    异常：
-        无。
-    """
-    if not question:
-        return None
-    for keywords, points in _HELP_TOPICS:
-        if any(k in question for k in keywords):
-            return list(points)
-    return None
-
-
-def _build_step_answers(session: Session, row: CookingSession) -> list[str]:
-    """按会话当前步骤生成结构化求助回答（函数）。
-
-    说明：
-        不调 LLM：当前步骤描述 / 新手要点 / 失败补救（或计时建议），
-        共 1~3 条；步骤缺失时返回通用引导。
-
-    参数：
-        session：请求级数据库会话。
-        row：会话 ORM 实例。
-
-    返回值：
-        list[str]：回答列表（1~3 条）。
-
-    异常：
-        无。
-    """
-    step = session.execute(
-        select(RecipeStep).where(
-            RecipeStep.recipe_id == row.recipe_id,
-            RecipeStep.step_no == row.current_step_no,
-        )
-    ).scalar_one_or_none()
-    if step is None:
-        return [f"当前进行到第 {int(row.current_step_no)} 步，请按菜谱步骤继续操作，完成后可推进下一步。"]
-
-    answers = [f"当前第 {int(step.step_no)} 步：{step.description}"]
-    if step.key_point:
-        answers.append(f"要点：{step.key_point}")
-    if step.failure_tips:
-        answers.append(f"失败补救：{step.failure_tips}")
-    elif int(step.duration_seconds or 0) > 0:
-        seconds = int(step.duration_seconds)
-        answers.append(f"本步建议用时约 {seconds // 60} 分 {seconds % 60} 秒，可让我帮你起计时器。")
-    return answers
-
-
 def _build_help_agent_context(db: Session, row: CookingSession) -> dict:
     """组装求助子智能体上下文（函数）。
 
@@ -692,8 +550,8 @@ def help_cooking_session(
         - 求助次数按 cooking_help_log 按 session_id 计数，≥3 → 429（每次调用均写日志，
           含被风控拦截的调用）；
         - question 过 RiskEngine input 闸门：命中拦截 → 200 {blocked:true,...} 不生成回答；
-        - 正常路径优先命中关键词库（_HELP_TOPICS）返回针对性常识要点（2~3 条），
-          未命中回退当前步骤结构化信息（首条带「以下是本步要点：」前缀），不调 LLM；
+        - 正常路径由求助子智能体结合当前步骤与用户档案生成 2~3 条针对性建议；
+          开关关闭 / LLM 失败时返回单条「暂时不可用」诚实提示（不输出模板降级）；
           回答拼接后过 output 闸门，命中即整体替换为兜底话术。
 
     参数：
@@ -710,8 +568,7 @@ def help_cooking_session(
         HTTPException 404：会话不存在/非本人；429：求助次数达上限。
     """
     row = _load_session_or_404(session, session_id)
-    anon_id = resolve_anonymous_id(payload.anonymous_id, request)
-    user = get_or_create_user(session, anon_id)
+    user = resolve_user(session, payload.anonymous_id, request)
     session.commit()
     if int(row.user_id) != int(user.id):
         raise api_error(404, ERR_NOT_FOUND, "烹饪会话不存在", f"session_id={session_id}")
@@ -749,33 +606,19 @@ def help_cooking_session(
         return {"blocked": True, "rule_id": verdict.rule_code, "message": message, "answers": []}
 
     # 求助子智能体：结合当前步骤与用户档案经主 LLM 生成针对性回答；
-    # 开关关闭 / LLM 失败时回退既有模板（关键词库 → 步骤要点），绝不阻断求助
+    # 开关关闭 / LLM 失败时不再输出模板（模板答非所问，按产品决策移除），
+    # 改为诚实提示「暂时不可用」，绝不编造与问题无关的步骤要点
     answers: list[str] | None = None
     if (settings.COOKING_HELP_AGENT_ENABLED or "on").strip().lower() == "on":
         try:
             context = _build_help_agent_context(session, row)
             answers = generate_cooking_help(payload.question, context)
         except LLMError as exc:
-            logger.warning("cooking help agent failed, fallback to template: %s", exc)
+            logger.warning("cooking help agent failed: %s", exc)
             answers = None
 
     if answers is None:
-        # 模板回退（DEF-06：优先命中关键词库返回针对性要点；未命中回退当前步骤要点）
-        topic_answers = _match_help_topic(payload.question)
-        if topic_answers is not None:
-            answers = list(topic_answers)
-            # 附 1 条当前步骤相关的提示并入第三条（要点/失败补救优先，保持总数 ≤3）
-            if len(answers) < 3:
-                step_hint = next(
-                    (a for a in _build_step_answers(session, row) if a.startswith(("要点", "失败补救"))),
-                    None,
-                )
-                if step_hint:
-                    answers.append(step_hint)
-        else:
-            answers = _build_step_answers(session, row)
-            # 回退口径明示：首条加前缀，让用户知道这是步骤要点而非对问题的直接解答
-            answers[0] = f"以下是本步要点：{answers[0]}"
+        answers = [_HELP_UNAVAILABLE_ANSWER]
     out_verdict = engine.scan("output", " ".join(answers))
     if out_verdict.hit and out_verdict.block:
         answers = [_FALLBACK_ANSWER]

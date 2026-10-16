@@ -7,14 +7,20 @@
  *   失败不阻塞——本地兜底）+ localStorage 记忆 disclaimer_agreed_v1=1；
  * - 已同意（本地记忆命中）则不弹。
  */
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useSessionStore } from '@/stores/session'
+import { useAuthStore } from '@/stores/auth'
 
 /** 会话 store（disclaimerAgreed 状态与同意动作） */
 const session = useSessionStore()
+/** 账号 store（登录墙：免责弹窗在登录/注册之后再出现） */
+const authStore = useAuthStore()
 
 /** 勾选框状态（未勾选 → 按钮禁用） */
 const checked = ref(false)
+
+/** 是否展示弹窗：已登录且未同意过免责声明 */
+const visible = computed(() => authStore.isLoggedIn && !session.disclaimerAgreed)
 
 /** PRD 三条固定免责条款（与产品文档逐字一致，不得改写） */
 const CLAUSES: string[] = [
@@ -34,9 +40,9 @@ async function onEnter(): Promise<void> {
 </script>
 
 <template>
-  <!-- 全屏遮罩弹窗：已同意则不渲染 -->
+  <!-- 全屏遮罩弹窗：已同意或未登录（登录页）不渲染 -->
   <el-dialog
-    :model-value="!session.disclaimerAgreed"
+    :model-value="visible"
     fullscreen
     :show-close="false"
     :close-on-click-modal="false"

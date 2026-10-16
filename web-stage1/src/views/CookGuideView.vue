@@ -928,7 +928,10 @@ async function speakStep(stepNo: number, text: string): Promise<void> {
     }
   }
   playStepAudio(`/v1/speech/tts/stream?text=${encodeURIComponent(content)}`)
-  void prefetchStepAudio(recipeId, stepNo + 1)
+  // 预取错峰 2s：与当前朗读的百炼 TTS 请求错开，防触发上游 QPS 限流
+  window.setTimeout(() => {
+    if (seq === speakSeq) void prefetchStepAudio(recipeId, stepNo + 1)
+  }, 2000)
 }
 
 /**

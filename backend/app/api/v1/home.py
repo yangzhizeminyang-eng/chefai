@@ -30,9 +30,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.v1.config import get_switches
-from app.api.v1.deps import get_or_create_user, resolve_anonymous_id
+from app.api.v1.deps import resolve_anonymous_id, resolve_user
 from app.core.db import get_db
 from app.core.logging import get_logger
+from app.core.user_security import user_id_from_request
 from app.models import (
     CookingSession,
     Family,
@@ -235,13 +236,12 @@ def get_home(
     异常：
         不向外抛业务异常（子项级降级；身份创建等致命异常由全局处理器兜底）。
     """
-    anon_id = resolve_anonymous_id(None, request)
-    # 无请求头：匿名空态（不创建用户行，避免无头轮询膨胀）
-    if not anon_id:
+    # 无任何身份（无 JWT、无匿名头）：匿名空态（不创建用户行，避免无头轮询膨胀）
+    if user_id_from_request(request) is None and not resolve_anonymous_id(None, request):
         return HomeResponse(last_expiry_check=datetime.now(UTC).isoformat())
 
     try:
-        user = get_or_create_user(session, anon_id)
+        user = resolve_user(session, None, request)
         session.commit()
         user_id = int(user.id)
     except Exception as exc:  # noqa: BLE001 —— 身份解析失败按匿名空态降级

@@ -1,4 +1,4 @@
-Import-Module Pester -MinimumVersion 3.4.0
+﻿Import-Module Pester -MinimumVersion 3.4.0
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $manageScript = Join-Path $PSScriptRoot 'manage.ps1'
@@ -53,5 +53,22 @@ Describe 'AI Cook startup scripts' {
     It 'reuses a healthy frontend instead of reporting a port conflict' {
         $content = Get-Content -Raw $manageScript
         $content | Should Match '(?s)\$fePid\s*=\s*Get-ListenPid.*?\$feCode\s*=\s*Get-FrontendHttpCode.*?复用'
+    }
+
+    It 'identifies project-owned listeners by process command line, not by vite endpoint probing' {
+        $content = Get-Content -Raw $manageScript
+        $content | Should Match '(?s)function\s+Test-ProjectProcess\b'
+        # 其他项目的 Vite dev server 同样响应 /@vite/client，特征端点探测会误复用，必须淘汰
+        $content | Should Not Match 'function\s+Test-ViteAlive\b'
+        $content | Should Match '(?s)Test-ProjectProcess\s+-Port\s+\$FePort\s+-ProjectDir\s+\$WebDir'
+        $content | Should Match '(?s)Test-ProjectProcess\s+-Port\s+\$AdmPort\s+-ProjectDir\s+\$AdminDir'
+    }
+
+    It 'verifies the injected backend port before reusing a frontend and restarts it when stale' {
+        $content = Get-Content -Raw $manageScript
+        $content | Should Match '(?s)function\s+Test-ProxyStale\b'
+        $content | Should Match 'frontend\.bkport'
+        $content | Should Match 'admin\.bkport'
+        $content | Should Match '(?s)function\s+Remove-StaleVite\b'
     }
 }

@@ -10,8 +10,11 @@
  */
 import { computed } from 'vue'
 import { Mic as MicIcon } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
+import { useRouter } from 'vue-router'
 import { useDarkMode } from '@/composables/useDarkMode'
 import { useConfigStore } from '@/stores/config'
+import { useAuthStore } from '@/stores/auth'
 import { toggleVoiceAgent, voiceAgentEnabled } from '@/utils/voiceAgent'
 import FeedbackFab from '@/components/FeedbackFab.vue'
 
@@ -19,9 +22,19 @@ import FeedbackFab from '@/components/FeedbackFab.vue'
 const { isDark, toggle } = useDarkMode()
 /** 远程开关 store（控制推荐入口置灰） */
 const configStore = useConfigStore()
+/** 账号 store（头部昵称与退出登录） */
+const authStore = useAuthStore()
+const router = useRouter()
 
 /** 推荐入口是否可用（远程开关关闭 → 置灰） */
 const recommendEnabled = computed(() => configStore.switches.recommend)
+
+/** 退出登录（二次确认）：回到登录页，匿名会话换新避免残留上一账号数据 */
+function onLogout(): void {
+  ElMessage.success('已退出登录')
+  authStore.logout()
+  void router.replace('/login')
+}
 </script>
 
 <template>
@@ -59,8 +72,21 @@ const recommendEnabled = computed(() => configStore.switches.recommend)
       <router-link class="app-header__link" to="/trace">调度面板</router-link>
     </nav>
 
-    <!-- 右：语音助手开关（唤醒词「嗨，厨娘」；麦克风常开需用户主动开启）+ 深色模式切换 -->
+    <!-- 右：账号（昵称 + 退出）+ 语音助手开关 + 深色模式切换 -->
     <div class="app-header__actions">
+      <span v-if="authStore.isLoggedIn" class="app-header__user" title="当前登录账号">
+        👤 {{ authStore.displayName }}
+      </span>
+      <el-button
+        v-if="authStore.isLoggedIn"
+        class="app-header__logout-btn"
+        size="small"
+        text
+        type="info"
+        @click="onLogout"
+      >
+        退出
+      </el-button>
       <el-tooltip
         :content="voiceAgentEnabled ? '语音助手监听中：说「嗨，厨娘」唤醒' : '开启语音助手：说「嗨，厨娘」唤醒'" placement="bottom"
       >
@@ -100,6 +126,19 @@ const recommendEnabled = computed(() => configStore.switches.recommend)
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.app-header__user {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-sm);
+  color: var(--text-main);
+}
+
+.app-header__logout-btn {
+  padding: 4px 6px;
 }
 
 .app-header {

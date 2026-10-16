@@ -331,14 +331,13 @@ def test_help_answers_block_and_limit(client: TestClient, anon_id: str) -> None:
     assert created.status_code == 200
     sid = int(created.json()["id"])
 
-    # 1) 正常回答：未命中关键词库 → 回退当前步骤要点（首条带前缀，DEF-06），1~3 条
+    # 1) 正常回答：求助子智能体在测试中默认关闭（conftest 离线化）→ 诚实提示单条，
+    #    不再输出模板降级（产品决策：模板答非所问已移除）
     first = client.post(f"/v1/cooking/sessions/{sid}/help", json={"question": "这一步要翻炒多久"}, headers=_headers(anon_id))
     assert first.status_code == 200
     body = first.json()
     assert body["blocked"] is False
-    assert 1 <= len(body["answers"]) <= 3
-    assert body["answers"][0].startswith("以下是本步要点：")
-    assert "当前第 1 步" in body["answers"][0]
+    assert body["answers"] == ["求助助手暂时不可用，请稍后再试一次；紧急情况请先按菜谱步骤保守操作。"]
 
     # 2) 风控拦截：医疗/高危句式 → blocked，不生成回答
     blocked = client.post(

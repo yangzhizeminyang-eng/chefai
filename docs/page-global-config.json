@@ -1,0 +1,14 @@
+{
+  "slideStyle": "business",
+  "colorScheme": "Fresh Light (light gray base + deep cyan + warm orange)",
+  "primaryColor": "#0E7490",
+  "accentColor1": "#EA580C",
+  "accentColor2": "#4F46E5",
+  "neutralColor": "#475569",
+  "background": {
+    "type": "color",
+    "value": "#F3F6FA"
+  },
+  "fontTitle": "'Montserrat', 'Noto Sans SC', sans-serif",
+  "fontBody": "'Inter', 'Noto Sans SC', sans-serif"
+}

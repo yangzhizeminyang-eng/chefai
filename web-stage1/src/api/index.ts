@@ -40,6 +40,18 @@ function getAnonymousId(): string {
   }
 }
 
+/** 用户登录 token 持久化键（auth store 与本模块共用） */
+export const USER_TOKEN_KEY = 'aicook_user_token'
+
+/** 读取 localStorage 中的登录 token（未登录返回空串） */
+export function getUserToken(): string {
+  try {
+    return localStorage.getItem(USER_TOKEN_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
 /** 创建并配置 axios 实例（含拦截器装配） */
 function createApiClient(): AxiosInstance {
   const client = axios.create({
@@ -71,6 +83,11 @@ function createApiClient(): AxiosInstance {
     const anonId = getAnonymousId()
     if (anonId) {
       config.headers.set('X-Anonymous-Id', anonId)
+    }
+    // 登录态（JWT）：存在即携带，后端 JWT 优先于匿名头解析身份
+    const token = getUserToken()
+    if (token) {
+      config.headers.set('Authorization', `Bearer ${token}`)
     }
     return config
   })

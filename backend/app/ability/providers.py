@@ -502,7 +502,8 @@ class BailianTTSProvider(TTSProvider):
             携 X-DashScope-SSE: enable 头请求，逐行解析 SSE data JSON，
             增量音频 base64（audio.delta / audio.data 等形态容错）解码后
             即刻产出，前端可边收边播；请求格式 mp3（浏览器可渐进播放）。
-            流中任何异常在迭代期抛出，由路由层终止流（已播部分保留）。
+            🔴 迭代期任何异常（建连失败/限流 429/解析失败）就地记日志并
+            终止产出——流式响应已发出，异常穿透会打穿 ASGI 致进程异常。
 
         参数：
             text：待合成文本（🔴 仅内存处理，不落盘）。
@@ -511,8 +512,15 @@ class BailianTTSProvider(TTSProvider):
             Iterator[bytes]：音频字节分片迭代器。
 
         异常：
-            LLMError：建连/HTTP 状态失败时抛出（首字节前失败路由层降级）。
+            不抛出（流式响应无法变更状态码，错误就地降级为提前收流）。
         """
+        try:
+            yield from self._synthesize_stream_impl(text)
+        except Exception as exc:  # noqa: BLE001 —— 流式响应中异常只能优雅收流
+            logger.warning("tts stream aborted: %s", exc)
+
+    def _synthesize_stream_impl(self, text: str) -> Iterator[bytes]:
+        """流式合成实现（内部函数，异常由 synthesize_stream 捕获）。"""
         payload = {
             "model": self._model,
             "input": {"text": normalize_tts_text(text), "voice": self._voice, "format": "mp3"},

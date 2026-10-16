@@ -3,7 +3,7 @@
 /**
  * Agent 日志逻辑：四维筛选条件管理、分页检索、展开行 JSON 详情展示。
  */
-import { reactive } from 'vue'
+import { onMounted, reactive } from 'vue'
 
 import { listTraceLogs } from '@/api/admin'
 import type { TraceLogItem } from '@/api/admin'
@@ -76,6 +76,10 @@ function detailJson(row: TraceLogItem): string {
     return String(detail)
   }
 }
+
+onMounted(() => {
+  load()
+})
 </script>
 
 <template>

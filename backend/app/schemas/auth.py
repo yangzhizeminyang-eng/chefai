@@ -76,3 +76,72 @@ class ConsentResponse(BaseModel):
     """
 
     ok: bool
+
+
+class RegisterRequest(BaseModel):
+    """注册请求体（模型类）。
+
+    说明：
+        携带 anonymous_id（请求体或 X-Anonymous-Id 头）时将该匿名用户升级为
+        注册账号（回填 username/password_hash），匿名期间产生的档案/库存等
+        数据按 user_id 自然延续；未携带则新建注册用户。
+
+    属性：
+        username：登录用户名（3~30 字符，字母/数字/下划线）。
+        password：登录密码（6~64 字符）。
+        nickname：昵称（可缺省，默认取用户名）。
+        anonymous_id：待绑定的匿名会话 ID（可缺省读请求头）。
+    """
+
+    username: str = Field(min_length=3, max_length=30, pattern=r"^[A-Za-z0-9_\u4e00-\u9fa5]+$")
+    password: str = Field(min_length=6, max_length=64)
+    nickname: str | None = Field(default=None, max_length=50)
+    anonymous_id: str | None = Field(default=None, max_length=64)
+
+
+class LoginRequest(BaseModel):
+    """登录请求体（模型类）。
+
+    属性：
+        username：登录用户名。
+        password：登录密码。
+    """
+
+    username: str = Field(min_length=1, max_length=30)
+    password: str = Field(min_length=1, max_length=64)
+
+
+class AuthResponse(BaseModel):
+    """注册/登录响应体（模型类）。
+
+    属性：
+        user_id：用户表主键。
+        username：登录用户名。
+        nickname：昵称（可 None）。
+        anonymous_id：该账号对应的匿名会话 ID（前端持久化，匿名头继续携带）。
+        access_token：JWT（Authorization: Bearer 使用）。
+        token_type：固定 "bearer"。
+    """
+
+    user_id: int
+    username: str
+    nickname: str | None = None
+    anonymous_id: str
+    access_token: str
+    token_type: str = "bearer"
+
+
+class MeResponse(BaseModel):
+    """当前登录用户信息响应体（模型类）。
+
+    属性：
+        user_id：用户表主键。
+        username：登录用户名。
+        nickname：昵称（可 None）。
+        anonymous_id：匿名会话 ID。
+    """
+
+    user_id: int
+    username: str
+    nickname: str | None = None
+    anonymous_id: str

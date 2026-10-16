@@ -1,18 +1,23 @@
-﻿# =====================================================================
+﻿﻿# =====================================================================
 # 文件名: scripts/manage.ps1
 # 用途:   「AI 厨娘·智能烹饪助手」阶段一前后端一键管理脚本
-#         - 双击 scripts\start.bat 可启动前后端；失败时窗口保留并等待确认
-#         - setup : 初始化环境（创建 Python venv、安装后端依赖、npm install）
+#         - 双击 scripts\start.bat 可启动后端 + 用户端前端 + 管理后台；失败时窗口保留并等待确认
+#         - setup : 初始化环境（创建 Python venv、安装后端依赖、web-stage1/admin-web npm install）
 #         - start : 检查 PostgreSQL → 环境不完整时自动补跑 setup（PRD §5.1 一条命令启动）
-#                   → (可选 -InitDb 初始化数据库) → 启动后端(默认 8000) → 启动前端(默认 5173)；
+#                   → (可选 -InitDb 初始化数据库) → 启动后端(默认 8000) → 启动用户端前端(默认 5173)
+#                   → 启动管理后台 admin-web(默认 5174)；
 #                   后端/前端分别在独立弹出的 PowerShell 终端窗口中前台运行，
 #                   实时运行日志直接显示在各自窗口（替代隐藏窗口 + 日志文件重定向）；
 #                   端口被其他程序占用时自动顺延至下一个空闲端口（端口漂移，各服务独立决策），
-#                   实际端口写入 logs\backend.port / frontend.port 供 stop/status/smoke 复用；
-#                   前端启动时经环境变量 AICOOK_BACKEND_PORT 注入后端实际端口，
-#                   vite.config.ts 据此切换代理目标，保证端口漂移后前后端数据仍然联通
+#                   复用判定按监听进程命令行甄别是否本项目（Test-ViteAlive 式特征端点探测
+#                   无法区分项目，曾把其他项目的 Vite dev server 误判为本项目前端导致漂移失效），
+#                   实际端口写入 logs\backend.port / frontend.port / admin.port 供 stop/status/smoke 复用；
+#                   用户端与管理后台启动时均经环境变量 AICOOK_BACKEND_PORT 注入后端实际端口，
+#                   vite.config.ts 据此切换代理目标，保证端口漂移后前后端数据仍然联通；
+#                   注入的后端端口另记入 logs\frontend.bkport / admin.bkport，复用前端前校验该
+#                   记录与当前后端端口一致，不一致（后端漂移过）则终止旧前端并重启以联动新端口
 #         - stop  : 按 PID 文件终止进程树；PID 文件缺失或进程已死时按端口兜底清理
-#         - status: 查看 PostgreSQL / 后端 / 前端 运行状态
+#         - status: 查看 PostgreSQL / 后端 / 用户端前端 / 管理后台 运行状态
 #         - test  : 运行后端 pytest 与前端 vitest 并汇总退出码
 #         - smoke : 对运行中的服务执行阶段一冒烟断言（对齐 04-V1.1 §5.7 smoke-test.sh）：
 #                   ① GET /v1/healthz 返回 200 且 status=ok；
@@ -53,8 +58,8 @@
 #         powershell -ExecutionPolicy Bypass -File scripts\manage.ps1 -Action smoke
 # 健康口径: 后端健康探测统一走 GET /v1/healthz（05-V1.1 §9.5/§12.3 标准口径；
 #           与根级 /healthz、兼容端点 /api/health 同一 handler，200 含 {status,database,version}）。
-#           前端固定监听 5173（05-V1.1 §3.2 + vite.config.ts strictPort），启动命令显式
-#           附加 --port 5173 --strictPort 防止端口冲突时自增漂移。
+#           用户端前端固定监听 5173、管理后台 admin-web 固定监听 5174（各自 vite.config.ts
+#           strictPort），启动命令显式附加 --port <N> --strictPort 防止端口冲突时自增漂移。
 # 兼容:   Windows PowerShell 5.1 及以上（未使用 PS7 专属语法）；本文件须以 UTF-8 BOM 保存
 # =====================================================================
 
@@ -86,11 +91,13 @@ $ErrorActionPreference = 'Stop'
 $RootDir    = Split-Path -Parent $PSScriptRoot
 $BackendDir = Join-Path $RootDir 'backend'
 $WebDir     = Join-Path $RootDir 'web-stage1'
+$AdminDir   = Join-Path $RootDir 'admin-web'
 $LogsDir    = Join-Path $RootDir 'logs'
 $VenvPython = Join-Path $BackendDir '.venv\Scripts\python.exe'
 $PgPort     = 5432   # PostgreSQL 端口
 $BePort     = 8000   # 后端 Uvicorn 端口
-$FePort     = 5173   # 前端 Vite 端口
+$FePort     = 5173   # 用户端前端 Vite 端口
+$AdmPort    = 5174   # 管理后台 admin-web Vite 端口
 # 健康检查口径：05-V1.1 §9.5/§12.3 标准端点 /v1/healthz（start 就绪探测与 status 输出共用；
 #           端口漂移时按 logs\backend.port 记录的实际端口动态构造探测地址）
 $BeHealth   = 'http://127.0.0.1:8000/v1/healthz'
@@ -267,19 +274,99 @@ function Get-FrontendHttpCode {
     return Get-HttpStatusCode -Url ("http://localhost:{0}" -f $Port) -TimeoutSec $TimeoutSec
 }
 
-function Test-ViteAlive {
-    # 判断目标端口上运行的是否为本项目的 Vite dev server（端口漂移复用判定用）
-    # 原理：探测 Vite 开发模式独有的特征端点 /@vite/client（返回 200 即为 Vite dev server），
-    #       区分「本项目前端在跑（复用）」与「其他程序占用端口（端口漂移切换）」
-    # 参数 $Port - 待探测的前端端口号
-    # 返回值：$true 该端口运行着 Vite dev server / $false 其他程序占用或无服务
-    # 异常：网络异常由 Get-HttpStatusCode 内部捕获，本函数不抛出
-    param([int]$Port)
-    $code = Get-HttpStatusCode -Url ("http://127.0.0.1:{0}/@vite/client" -f $Port) -TimeoutSec 2
-    if ($code -eq 200) { return $true }
-    # 兜底探测 localhost（vite 可能仅绑定 IPv6 ::1）
-    $code = Get-HttpStatusCode -Url ("http://localhost:{0}/@vite/client" -f $Port) -TimeoutSec 2
-    return ($code -eq 200)
+function Get-ProcessCommandLine {
+    # 查询指定进程的完整命令行（端口占用甄别用）
+    # 参数 $ProcessId - 进程 PID
+    # 返回值：命令行字符串；CIM 查询失败或命令行为空时返回 $null
+    # 异常：Get-CimInstance 异常内部捕获，不向调用方抛出
+    param([int]$ProcessId)
+    try {
+        $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
+        if ($proc -and $proc.CommandLine) { return [string]$proc.CommandLine }
+    }
+    catch { }
+    return $null
+}
+
+function Test-ProjectProcess {
+    # 判定监听目标端口的进程是否属于本项目目录（按进程命令行甄别，复用判定用）
+    # 原理：本项目前端/后端的监听进程（node.exe / python.exe）命令行必然包含项目目录路径，
+    #       其他项目（如其他仓库的 Vite dev server）或无关程序不会命中，
+    #       从而把「本项目前端在跑（复用）」与「其他程序占用端口（端口漂移切换）」区分开。
+    #       旧实现 Test-ViteAlive 仅探测 /@vite/client 特征端点，任何 Vite 项目都返回 200，
+    #       曾导致同端口上其他项目的前端被误判为本项目前端而跳过启动。
+    # 参数 $Port - 待检测的监听端口号
+    # 参数 $ProjectDir - 项目目录绝对路径（命令行包含该路径即视为本项目进程）
+    # 返回值：$true 本项目进程 / $false 其他程序占用或无监听 / $null 无法判定（CIM 不可用）
+    # 异常：内部已捕获，不向调用方抛出
+    param(
+        [int]$Port,
+        [string]$ProjectDir
+    )
+    $listenPid = Get-ListenPid -Port $Port
+    if (-not $listenPid) { return $false }
+    $cmdline = Get-ProcessCommandLine -ProcessId $listenPid
+    if ($null -eq $cmdline) { return $null }
+    return ($cmdline -match [regex]::Escape($ProjectDir))
+}
+
+function Get-LaunchBackendPort {
+    # 读取前端/管理后台启动时记录的代理目标后端端口（logs\<Name>.bkport）
+    # （start 启动前端时写入当次注入的 AICOOK_BACKEND_PORT，复用前校验其与当前后端端口
+    #   一致；不一致说明后端发生过端口漂移，旧前端的代理目标已失效，须重启联动）
+    # 参数 $Name - 服务记录名（'frontend' / 'admin'）
+    # 返回值：记录的后端端口号（int）；文件缺失或内容无效时返回 $null
+    # 异常：文件读取异常静默处理并返回 $null
+    param([string]$Name)
+    $file = Join-Path $LogsDir ('{0}.bkport' -f $Name)
+    if (-not (Test-Path $file)) { return $null }
+    try {
+        $raw = (Get-Content $file -TotalCount 1 -ErrorAction SilentlyContinue)
+        if ($raw) { $raw = ($raw | Select-Object -First 1).ToString().Trim() }
+        if ($raw -match '^\d+$') { return [int]$raw }
+    }
+    catch { }
+    return $null
+}
+
+function Test-ProxyStale {
+    # 判断复用候选前端/管理后台的代理目标是否已与当前后端端口脱节（联动校验用）
+    # 记录缺失时的兜底口径：vite.config.ts 未注入 AICOOK_BACKEND_PORT 时回退默认 8000，
+    # 故仅当当前后端端口不是默认 8000 时才视为过期（宁多重启一次，不断联）
+    # 参数 $Name - 服务记录名（'frontend' / 'admin'）
+    # 参数 $CurrentBackendPort - 本次 start 决策出的后端实际端口
+    # 返回值：$true 代理目标过期须重启联动 / $false 一致可复用
+    # 异常：无
+    param(
+        [string]$Name,
+        [int]$CurrentBackendPort
+    )
+    $bkPort = Get-LaunchBackendPort -Name $Name
+    if ($null -eq $bkPort) { return ($CurrentBackendPort -ne $BePort) }
+    return ($bkPort -ne $CurrentBackendPort)
+}
+
+function Remove-StaleVite {
+    # 终止代理目标过期的本项目前端/管理后台进程树并等待端口释放（复用前联动重启用）
+    # 参数 $Port - 待释放的监听端口号
+    # 参数 $ProcessId - 进程树根 PID（powershell 外壳）
+    # 参数 $PidFile - PID 文件路径（终止后删除）
+    # 返回值：无（最长等待 10 秒端口释放）
+    # 异常：taskkill 失败仅告警不中断
+    param(
+        [int]$Port,
+        [int]$ProcessId,
+        [string]$PidFile
+    )
+    Write-Info ("终止旧实例 (PID {0}) 并等待端口 {1} 释放 ..." -f $ProcessId, $Port)
+    try { & taskkill.exe /PID $ProcessId /T /F 2>&1 | Out-Null }
+    catch { Write-Warn ("终止旧实例失败：{0}" -f $_.Exception.Message) }
+    Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
+    $waitedMs = 0
+    while ((Get-ListenPid -Port $Port) -and $waitedMs -lt 10000) {
+        Start-Sleep -Milliseconds 500
+        $waitedMs += 500
+    }
 }
 
 function Find-FreePort {
@@ -306,7 +393,7 @@ function Find-FreePort {
 function Get-RecordedPort {
     # 读取服务端口记录文件（logs\<Name>.port）中的端口号
     # （start 动作启动/复用服务时写入实际端口，供 stop/status/smoke 在端口漂移后定位服务）
-    # 参数 $Name - 服务记录名（'backend' 或 'frontend'）
+    # 参数 $Name - 服务记录名（'backend' / 'frontend' / 'admin'）
     # 返回值：记录的端口号（int）；文件缺失或内容无效时返回 $null
     # 异常：文件读取异常静默处理并返回 $null
     param([string]$Name)
@@ -380,7 +467,7 @@ function Invoke-Setup {
     # 初始化开发环境：创建 Python venv（缺失时）、安装后端依赖、npm install（node_modules 缺失时）。
     # 供 -Action setup 直接调用，也供 -Action start 在检测到环境不完整时自动补跑，
     # 实现 PRD §5.1「一条命令启动」。
-    # 参数：无（依赖脚本级 $BackendDir / $WebDir / $VenvPython 常量）
+    # 参数：无（依赖脚本级 $BackendDir / $WebDir / $AdminDir / $VenvPython 常量）
     # 返回值：无（成功时静默返回；失败时输出 [FAIL] 并 exit 1 终止脚本）
     # 异常：venv 创建 / pip install / npm install 非零退出码时直接终止脚本；
     #       Push-Location/Pop-Location 保证工作目录还原，不额外抛出
@@ -415,6 +502,21 @@ function Invoke-Setup {
         }
         finally { Pop-Location }
         Write-Ok "前端依赖安装完成"
+    }
+
+    # 管理后台 admin-web：无 node_modules 则 npm install（与用户端同策略，缺失时才装）
+    if (Test-Path (Join-Path $AdminDir 'node_modules')) {
+        Write-Ok "admin-web\node_modules 已存在，跳过 npm install"
+    }
+    else {
+        Write-Info "执行 admin-web npm install ..."
+        Push-Location $AdminDir
+        try {
+            & cmd.exe /c "npm install"
+            if ($LASTEXITCODE -ne 0) { Write-Fail "admin-web npm install 失败"; exit 1 }
+        }
+        finally { Pop-Location }
+        Write-Ok "管理后台依赖安装完成"
     }
 }
 
@@ -603,10 +705,12 @@ switch ($Action) {
         Invoke-Setup
     }
 
-    # ============ start：启动 PostgreSQL 检查 + 后端 + 前端 ============
+    # ============ start：启动 PostgreSQL 检查 + 后端 + 用户端前端 + 管理后台 ============
     'start' {
         # 0) 环境自动补全：venv 或 node_modules 缺失时先自动执行 setup（PRD §5.1 一条命令启动）
-        if (-not (Test-Path $VenvPython) -or -not (Test-Path (Join-Path $WebDir 'node_modules'))) {
+        if (-not (Test-Path $VenvPython) -or
+            -not (Test-Path (Join-Path $WebDir 'node_modules')) -or
+            -not (Test-Path (Join-Path $AdminDir 'node_modules'))) {
             Write-Info "检测到环境不完整，自动执行 setup ..."
             Invoke-Setup
         }
@@ -637,17 +741,21 @@ switch ($Action) {
 
         $bePidActual = $null
         $fePidActual = $null
+        $admPidActual = $null
         $bePortActual = $null
         $fePortActual = $null
+        $admPortActual = $null
 
         # 3) 启动后端 Uvicorn（默认 8000；被其他程序占用时自动顺延至下一个空闲端口，端口漂移）
         # 3a) 复用优先：上次记录端口（可能已漂移）仍在监听且健康 → 直接复用，避免重复拉起
+        #     （健康 200 之外还须按命令行甄别监听进程属于本项目，防止其他程序误复用）
         $beRecPort = Get-RecordedPort -Name 'backend'
         if ($beRecPort -and $beRecPort -ne $BePort) {
             $bePid = Get-ListenPid -Port $beRecPort
             if ($bePid) {
                 $beCode = Get-HttpStatusCode -Url ("http://127.0.0.1:{0}/v1/healthz" -f $beRecPort) -TimeoutSec 3
-                if ($beCode -eq 200) {
+                $beOurs = Test-ProjectProcess -Port $beRecPort -ProjectDir $BackendDir
+                if ($beCode -eq 200 -and $beOurs -ne $false) {
                     Write-Ok ("后端已在运行（漂移端口 {0}），复用现有服务（PID {1}，health=200）" -f $beRecPort, $bePid)
                     $bePortActual = $beRecPort
                     $bePidActual = $bePid
@@ -656,19 +764,20 @@ switch ($Action) {
             }
         }
 
-        # 3b) 默认端口决策：空闲则用默认端口；被占用时健康即复用、不健康则端口漂移
+        # 3b) 默认端口决策：空闲则用默认端口；被本项目健康后端占用即复用、否则端口漂移
         if (-not $bePortActual) {
             $bePid = Get-ListenPid -Port $BePort
             if ($bePid) {
                 $beCode = Get-HttpStatusCode -Url $BeHealth -TimeoutSec 3
-                if ($beCode -eq 200) {
+                $beOurs = Test-ProjectProcess -Port $BePort -ProjectDir $BackendDir
+                if ($beCode -eq 200 -and $beOurs -ne $false) {
                     Write-Ok ("后端已在运行，复用现有服务（PID {0}，health=200）" -f $bePid)
                     $bePortActual = $BePort
                     $bePidActual = $bePid
                     Set-Content -Path (Join-Path $LogsDir 'backend.pid') -Value $bePid -Encoding ascii
                 }
                 else {
-                    # 端口被其他程序占用且非健康后端 → 不再报错终止，自动顺延空闲端口
+                    # 端口被其他程序占用（或非本项目进程）→ 不再报错终止，自动顺延空闲端口
                     $bePortActual = Find-FreePort -StartPort ($BePort + 1)
                     if (-not $bePortActual) {
                         Write-Fail ("端口 {0} 被其他进程占用 (PID {1})，且 {2} 起连续 20 个端口均无空闲；请先关闭占用进程。" -f `
@@ -739,34 +848,53 @@ switch ($Action) {
 
         # 4) 启动前端 Vite（默认 5173；被其他程序占用时自动顺延至下一个空闲端口，端口漂移）
         # 4a) 复用优先：上次记录端口（可能已漂移）仍是本项目的 Vite dev server → 直接复用，避免重复拉起
+        #     （复用双重校验：①按命令行甄别监听进程属于本项目；②代理目标后端端口与当前一致，
+        #       后端漂移过则终止旧实例重启联动，绝不复用代理已断联的旧前端）
         $feRecPort = Get-RecordedPort -Name 'frontend'
         $feAlreadyRunning = $false
         if ($feRecPort -and $feRecPort -ne $FePort) {
             $fePid = Get-ListenPid -Port $feRecPort
             if ($fePid) {
                 $feCode = Get-FrontendHttpCode -Port $feRecPort -TimeoutSec 3
-                if ($null -ne $feCode -and $feCode -lt 500 -and (Test-ViteAlive -Port $feRecPort)) {
-                    Write-Ok ("前端已在运行（漂移端口 {0}），复用现有服务（PID {1}，HTTP={2}）" -f $feRecPort, $fePid, $feCode)
-                    $fePortActual = $feRecPort
-                    $fePidActual = $fePid
-                    Set-Content -Path (Join-Path $LogsDir 'frontend.pid') -Value $fePid -Encoding ascii
-                    $feAlreadyRunning = $true
+                if ($null -ne $feCode -and $feCode -lt 500 -and
+                    (Test-ProjectProcess -Port $feRecPort -ProjectDir $WebDir) -eq $true) {
+                    if (Test-ProxyStale -Name 'frontend' -CurrentBackendPort $bePortActual) {
+                        Write-Warn ("前端（漂移端口 {0}）的代理目标指向旧后端端口，与当前后端端口 {1} 不一致，重启以联动 ..." -f `
+                            $feRecPort, $bePortActual)
+                        Remove-StaleVite -Port $feRecPort -ProcessId $fePid -PidFile (Join-Path $LogsDir 'frontend.pid')
+                    }
+                    else {
+                        Write-Ok ("前端已在运行（漂移端口 {0}），复用现有服务（PID {1}，HTTP={2}）" -f $feRecPort, $fePid, $feCode)
+                        $fePortActual = $feRecPort
+                        $fePidActual = $fePid
+                        Set-Content -Path (Join-Path $LogsDir 'frontend.pid') -Value $fePid -Encoding ascii
+                        $feAlreadyRunning = $true
+                    }
                 }
             }
         }
 
         # 4b) 默认端口决策：空闲则用默认端口；被本项目 Vite 占用即复用、被其他程序占用则端口漂移
-        #     （Test-ViteAlive 探测 /@vite/client 特征端点，避免把其他程序占用的 4xx 响应误判为前端在跑）
+        #     （复用双重校验：①命令行甄别属于本项目——/v1 特征端点无法区分项目，其他项目的
+        #       Vite 占用 5173 时必须走端口漂移；②代理目标后端端口与当前一致，脱节则重启联动）
         if (-not $feAlreadyRunning) {
             $fePid = Get-ListenPid -Port $FePort
             if ($fePid) {
                 $feCode = Get-FrontendHttpCode -Port $FePort -TimeoutSec 3
-                if ($null -ne $feCode -and $feCode -lt 500 -and (Test-ViteAlive -Port $FePort)) {
-                    Write-Ok ("前端已在运行，复用现有服务（PID {0}，HTTP={1}）" -f $fePid, $feCode)
-                    $fePortActual = $FePort
-                    $fePidActual = $fePid
-                    Set-Content -Path (Join-Path $LogsDir 'frontend.pid') -Value $fePid -Encoding ascii
-                    $feAlreadyRunning = $true
+                if ($null -ne $feCode -and $feCode -lt 500 -and
+                    (Test-ProjectProcess -Port $FePort -ProjectDir $WebDir) -eq $true) {
+                    if (Test-ProxyStale -Name 'frontend' -CurrentBackendPort $bePortActual) {
+                        Write-Warn ("前端（端口 {0}）的代理目标指向旧后端端口，与当前后端端口 {1} 不一致，重启以联动 ..." -f `
+                            $FePort, $bePortActual)
+                        Remove-StaleVite -Port $FePort -ProcessId $fePid -PidFile (Join-Path $LogsDir 'frontend.pid')
+                    }
+                    else {
+                        Write-Ok ("前端已在运行，复用现有服务（PID {0}，HTTP={1}）" -f $fePid, $feCode)
+                        $fePortActual = $FePort
+                        $fePidActual = $fePid
+                        Set-Content -Path (Join-Path $LogsDir 'frontend.pid') -Value $fePid -Encoding ascii
+                        $feAlreadyRunning = $true
+                    }
                 }
                 else {
                     # 端口被其他程序占用（非本项目 Vite）→ 不再报错终止，自动顺延空闲端口
@@ -781,11 +909,20 @@ switch ($Action) {
             }
             elseif (Test-PortOpen -TargetHost 'localhost' -Port $FePort -TimeoutMs 1000) {
                 $feCode = Get-FrontendHttpCode -Port $FePort -TimeoutSec 3
-                if ($null -ne $feCode -and $feCode -lt 500 -and (Test-ViteAlive -Port $FePort)) {
-                    Write-Ok ("前端已在运行，复用现有服务（HTTP={0}，监听 PID 未识别）" -f $feCode)
-                    $fePortActual = $FePort
-                    $fePidActual = 'unknown'
-                    $feAlreadyRunning = $true
+                if ($null -ne $feCode -and $feCode -lt 500 -and
+                    (Test-ProjectProcess -Port $FePort -ProjectDir $WebDir) -eq $true) {
+                    $fePidKill = Get-ListenPid -Port $FePort
+                    if ((Test-ProxyStale -Name 'frontend' -CurrentBackendPort $bePortActual) -and $fePidKill) {
+                        Write-Warn ("前端（端口 {0}）的代理目标指向旧后端端口，与当前后端端口 {1} 不一致，重启以联动 ..." -f `
+                            $FePort, $bePortActual)
+                        Remove-StaleVite -Port $FePort -ProcessId $fePidKill -PidFile (Join-Path $LogsDir 'frontend.pid')
+                    }
+                    else {
+                        Write-Ok ("前端已在运行，复用现有服务（HTTP={0}，监听 PID 未识别）" -f $feCode)
+                        $fePortActual = $FePort
+                        $fePidActual = 'unknown'
+                        $feAlreadyRunning = $true
+                    }
                 }
                 else {
                     $fePortActual = Find-FreePort -StartPort ($FePort + 1)
@@ -818,6 +955,7 @@ switch ($Action) {
             # native loader 避免 Windows 下 Vite 8 bundle 配置加载器调用子进程时触发 spawn EPERM。
             # 联通保障：$env:AICOOK_BACKEND_PORT 注入后端实际端口（含漂移后端口），
             # vite.config.ts 读取该变量切换 /v1、/api 代理目标，保证前后端数据联通。
+            # 同时记录注入的后端端口，供下次 start 复用前校验代理目标是否脱节（Test-ProxyStale）。
             # 弹出独立 PowerShell 窗口前台运行 Vite：实时运行日志直接显示在窗口中；
             # -NoExit 保证进程异常退出后窗口保留，可查看错误现场。
             # PID 文件记录 powershell.exe 外壳进程，stop 动作经 taskkill /T /F 连带终止 node 子进程树。
@@ -830,6 +968,7 @@ switch ($Action) {
                 -ArgumentList @('-NoProfile', '-NoExit', '-ExecutionPolicy', 'Bypass', '-Command', $feWindowCmd) `
                 -WorkingDirectory $WebDir -PassThru
             Set-Content -Path (Join-Path $LogsDir 'frontend.pid') -Value $proc.Id -Encoding ascii
+            Set-Content -Path (Join-Path $LogsDir 'frontend.bkport') -Value $bePortActual -Encoding ascii
             $fePidActual = $proc.Id
             Write-Info ("前端进程 PID={0}（powershell 外壳，实际为 powershell→npm→node 进程树），运行日志见弹出的前端终端窗口" -f $proc.Id)
 
@@ -845,27 +984,162 @@ switch ($Action) {
             Write-Ok ("前端就绪: http://localhost:{0}" -f $fePortActual)
         }
 
-        # 5) 可选：打开浏览器（使用前端实际端口，含漂移后端口）
+        # 5) 启动管理后台 admin-web Vite（默认 5174；端口决策与用户端同策略：复用优先/漂移兜底）
+        # 5a) 复用优先：上次记录端口（可能已漂移）仍是本项目的 Vite dev server → 直接复用，避免重复拉起
+        #     （复用双重校验与用户端一致：①命令行甄别本项目；②代理目标与当前后端端口一致）
+        $admRecPort = Get-RecordedPort -Name 'admin'
+        $admAlreadyRunning = $false
+        if ($admRecPort -and $admRecPort -ne $AdmPort) {
+            $admPid = Get-ListenPid -Port $admRecPort
+            if ($admPid) {
+                $admCode = Get-FrontendHttpCode -Port $admRecPort -TimeoutSec 3
+                if ($null -ne $admCode -and $admCode -lt 500 -and
+                    (Test-ProjectProcess -Port $admRecPort -ProjectDir $AdminDir) -eq $true) {
+                    if (Test-ProxyStale -Name 'admin' -CurrentBackendPort $bePortActual) {
+                        Write-Warn ("管理后台（漂移端口 {0}）的代理目标指向旧后端端口，与当前后端端口 {1} 不一致，重启以联动 ..." -f `
+                            $admRecPort, $bePortActual)
+                        Remove-StaleVite -Port $admRecPort -ProcessId $admPid -PidFile (Join-Path $LogsDir 'admin.pid')
+                    }
+                    else {
+                        Write-Ok ("管理后台已在运行（漂移端口 {0}），复用现有服务（PID {1}，HTTP={2}）" -f $admRecPort, $admPid, $admCode)
+                        $admPortActual = $admRecPort
+                        $admPidActual = $admPid
+                        Set-Content -Path (Join-Path $LogsDir 'admin.pid') -Value $admPid -Encoding ascii
+                        $admAlreadyRunning = $true
+                    }
+                }
+            }
+        }
+
+        # 5b) 默认端口决策：空闲则用默认端口；被本项目 Vite 占用即复用、被其他程序占用则端口漂移
+        #     （复用双重校验与用户端一致：①命令行甄别本项目；②代理目标与当前后端端口一致）
+        if (-not $admAlreadyRunning) {
+            $admPid = Get-ListenPid -Port $AdmPort
+            if ($admPid) {
+                $admCode = Get-FrontendHttpCode -Port $AdmPort -TimeoutSec 3
+                if ($null -ne $admCode -and $admCode -lt 500 -and
+                    (Test-ProjectProcess -Port $AdmPort -ProjectDir $AdminDir) -eq $true) {
+                    if (Test-ProxyStale -Name 'admin' -CurrentBackendPort $bePortActual) {
+                        Write-Warn ("管理后台（端口 {0}）的代理目标指向旧后端端口，与当前后端端口 {1} 不一致，重启以联动 ..." -f `
+                            $AdmPort, $bePortActual)
+                        Remove-StaleVite -Port $AdmPort -ProcessId $admPid -PidFile (Join-Path $LogsDir 'admin.pid')
+                    }
+                    else {
+                        Write-Ok ("管理后台已在运行，复用现有服务（PID {0}，HTTP={1}）" -f $admPid, $admCode)
+                        $admPortActual = $AdmPort
+                        $admPidActual = $admPid
+                        Set-Content -Path (Join-Path $LogsDir 'admin.pid') -Value $admPid -Encoding ascii
+                        $admAlreadyRunning = $true
+                    }
+                }
+                else {
+                    # 端口被其他程序占用（非本项目 Vite）→ 自动顺延空闲端口
+                    $admPortActual = Find-FreePort -StartPort ($AdmPort + 1)
+                    if (-not $admPortActual) {
+                        Write-Fail ("端口 {0} 被其他进程占用 (PID {1})，且 {2} 起连续 20 个端口均无空闲；请先关闭占用进程。" -f `
+                            $AdmPort, $admPid, ($AdmPort + 1))
+                        exit 1
+                    }
+                    Write-Warn ("端口 {0} 被其他进程占用 (PID {1})，管理后台自动切换至空闲端口 {2}" -f $AdmPort, $admPid, $admPortActual)
+                }
+            }
+            elseif (Test-PortOpen -TargetHost 'localhost' -Port $AdmPort -TimeoutMs 1000) {
+                $admCode = Get-FrontendHttpCode -Port $AdmPort -TimeoutSec 3
+                if ($null -ne $admCode -and $admCode -lt 500 -and
+                    (Test-ProjectProcess -Port $AdmPort -ProjectDir $AdminDir) -eq $true) {
+                    $admPidKill = Get-ListenPid -Port $AdmPort
+                    if ((Test-ProxyStale -Name 'admin' -CurrentBackendPort $bePortActual) -and $admPidKill) {
+                        Write-Warn ("管理后台（端口 {0}）的代理目标指向旧后端端口，与当前后端端口 {1} 不一致，重启以联动 ..." -f `
+                            $AdmPort, $bePortActual)
+                        Remove-StaleVite -Port $AdmPort -ProcessId $admPidKill -PidFile (Join-Path $LogsDir 'admin.pid')
+                    }
+                    else {
+                        Write-Ok ("管理后台已在运行，复用现有服务（HTTP={0}，监听 PID 未识别）" -f $admCode)
+                        $admPortActual = $AdmPort
+                        $admPidActual = 'unknown'
+                        $admAlreadyRunning = $true
+                    }
+                }
+                else {
+                    $admPortActual = Find-FreePort -StartPort ($AdmPort + 1)
+                    if (-not $admPortActual) {
+                        Write-Fail ("端口 {0} 已被占用但非本项目管理后台，且 {1} 起连续 20 个端口均无空闲；请先关闭占用进程。" -f `
+                            $AdmPort, ($AdmPort + 1))
+                        exit 1
+                    }
+                    Write-Warn ("端口 {0} 已被占用但非本项目管理后台，管理后台自动切换至空闲端口 {1}" -f $AdmPort, $admPortActual)
+                }
+            }
+            else {
+                $admPortActual = $AdmPort
+            }
+        }
+
+        # 记录实际端口（stop 兜底清理 / status 定位服务依赖；默认端口也记录，幂等）
+        Set-Content -Path (Join-Path $LogsDir 'admin.port') -Value $admPortActual -Encoding ascii
+
+        if (-not $admAlreadyRunning) {
+            if (-not (Test-Path (Join-Path $AdminDir 'node_modules'))) {
+                Write-Fail "admin-web\node_modules 不存在，请先执行 -Action setup"
+                exit 1
+            }
+            Write-Info ("启动管理后台 Vite dev server (端口 {0})，将弹出独立终端窗口 ..." -f $admPortActual)
+            # 端口策略：默认 5174（admin-web/vite.config.ts strictPort=true），命令行 --port 覆盖配置文件，
+            # 默认端口被其他程序占用时由上方决策顺延至空闲端口；被占用时 vite 启动失败退出，
+            # 脚本就绪探测超时报错，绝不静默漂移。native loader 避免 Vite 8 bundle 配置加载器 spawn EPERM。
+            # 联通保障：$env:AICOOK_BACKEND_PORT 注入后端实际端口（含漂移后端口），
+            # admin-web/vite.config.ts 读取该变量切换 /admin/v1 代理目标，保证后端漂移后管理后台数据仍联通。
+            # 同时记录注入的后端端口，供下次 start 复用前校验代理目标是否脱节（Test-ProxyStale）。
+            # 弹出独立 PowerShell 窗口前台运行 Vite：实时运行日志直接显示在窗口中；
+            # -NoExit 保证进程异常退出后窗口保留，可查看错误现场。
+            # PID 文件记录 powershell.exe 外壳进程，stop 动作经 taskkill /T /F 连带终止 node 子进程树。
+            $admWindowCmd = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; " +
+                "`$env:AICOOK_BACKEND_PORT='$bePortActual'; " +
+                "`$host.UI.RawUI.WindowTitle='AI Cook Admin (vite :$admPortActual)'; " +
+                "Set-Location -LiteralPath '$AdminDir'; " +
+                "npm run dev -- --port $admPortActual --strictPort --configLoader native"
+            $proc = Start-Process -FilePath 'powershell.exe' `
+                -ArgumentList @('-NoProfile', '-NoExit', '-ExecutionPolicy', 'Bypass', '-Command', $admWindowCmd) `
+                -WorkingDirectory $AdminDir -PassThru
+            Set-Content -Path (Join-Path $LogsDir 'admin.pid') -Value $proc.Id -Encoding ascii
+            Set-Content -Path (Join-Path $LogsDir 'admin.bkport') -Value $bePortActual -Encoding ascii
+            $admPidActual = $proc.Id
+            Write-Info ("管理后台进程 PID={0}（powershell 外壳，实际为 powershell→npm→node 进程树），运行日志见弹出的管理后台终端窗口" -f $proc.Id)
+
+            Write-Info ("等待管理后台就绪（最多 60 秒，双栈探测 127.0.0.1 / localhost 端口 {0}）..." -f $admPortActual)
+            $ok = Wait-HttpReady -Url @(("http://127.0.0.1:{0}" -f $admPortActual), ("http://localhost:{0}" -f $admPortActual)) `
+                -TimeoutSec 60 -Require200 $false
+            if (-not $ok) {
+                Write-Fail "管理后台启动失败（60 秒内未就绪），错误输出见弹出的管理后台终端窗口。"
+                try { & taskkill.exe /PID $proc.Id /T /F 2>&1 | Out-Null }
+                catch { Write-Warn ("清理管理后台进程失败：{0}" -f $_.Exception.Message) }
+                exit 1
+            }
+            Write-Ok ("管理后台就绪: http://localhost:{0}" -f $admPortActual)
+        }
+
+        # 6) 可选：打开浏览器（使用用户端实际端口，含漂移后端口）
         if ($OpenBrowser) {
             Write-Info ("打开浏览器访问 http://localhost:{0} ..." -f $fePortActual)
             Start-Process ("http://localhost:{0}" -f $fePortActual)
         }
 
-        # 6) 汇总输出（展示实际生效端口，端口漂移时与默认端口不同）
+        # 7) 汇总输出（展示实际生效端口，端口漂移时与默认端口不同）
         Write-Host "==========================================================" -ForegroundColor Cyan
         Write-Host "  服务已全部启动" -ForegroundColor Cyan
         Write-Host ("  后端 API : http://127.0.0.1:{0}/v1/healthz （PID {1}）" -f $bePortActual, $bePidActual) -ForegroundColor Cyan
         Write-Host ("  前端页面 : http://localhost:{0}                 （PID {1}）" -f $fePortActual, $fePidActual) -ForegroundColor Cyan
-        if ($bePortActual -ne $BePort -or $fePortActual -ne $FePort) {
-            Write-Host ("  端口漂移 : 默认 {0}/{1} 被占用，已自动切换为 {2}/{3}（前后端代理已联动）" -f `
-                $BePort, $FePort, $bePortActual, $fePortActual) -ForegroundColor Yellow
+        Write-Host ("  管理后台 : http://localhost:{0}                 （PID {1}）" -f $admPortActual, $admPidActual) -ForegroundColor Cyan
+        if ($bePortActual -ne $BePort -or $fePortActual -ne $FePort -or $admPortActual -ne $AdmPort) {
+            Write-Host ("  端口漂移 : 默认 {0}/{1}/{2} 被占用，已自动切换为 {3}/{4}/{5}（代理已联动）" -f `
+                $BePort, $FePort, $AdmPort, $bePortActual, $fePortActual, $admPortActual) -ForegroundColor Yellow
         }
         Write-Host "==========================================================" -ForegroundColor Cyan
     }
 
     # ============ stop：停止服务 ============
     'stop' {
-        Write-Info "停止后端与前端服务 ..."
+        Write-Info "停止后端、前端与管理后台服务 ..."
         # 兜底端口清单 = 上次记录端口（可能已漂移）+ 默认端口（去重），确保漂移后的服务也能按端口清理
         $beStopPorts = @($BePort)
         $beRecStop = Get-RecordedPort -Name 'backend'
@@ -873,23 +1147,30 @@ switch ($Action) {
         $feStopPorts = @($FePort)
         $feRecStop = Get-RecordedPort -Name 'frontend'
         if ($feRecStop -and $feRecStop -notin $feStopPorts) { $feStopPorts += $feRecStop }
+        $admStopPorts = @($AdmPort)
+        $admRecStop = Get-RecordedPort -Name 'admin'
+        if ($admRecStop -and $admRecStop -notin $admStopPorts) { $admStopPorts += $admRecStop }
 
         Stop-Target -Name '后端 Uvicorn' -PidFile (Join-Path $LogsDir 'backend.pid') -Ports $beStopPorts | Out-Null
         Stop-Target -Name '前端 Vite' -PidFile (Join-Path $LogsDir 'frontend.pid') -Ports $feStopPorts | Out-Null
+        Stop-Target -Name '管理后台 Vite' -PidFile (Join-Path $LogsDir 'admin.pid') -Ports $admStopPorts | Out-Null
 
         # 清理端口记录文件（服务已停止，端口记录失效；下次 start 重新从默认端口决策）
         Remove-Item (Join-Path $LogsDir 'backend.port') -Force -ErrorAction SilentlyContinue
         Remove-Item (Join-Path $LogsDir 'frontend.port') -Force -ErrorAction SilentlyContinue
+        Remove-Item (Join-Path $LogsDir 'admin.port') -Force -ErrorAction SilentlyContinue
+        Remove-Item (Join-Path $LogsDir 'frontend.bkport') -Force -ErrorAction SilentlyContinue
+        Remove-Item (Join-Path $LogsDir 'admin.bkport') -Force -ErrorAction SilentlyContinue
 
         # 复检端口确认无监听（覆盖记录端口与默认端口的全集）
         Start-Sleep -Seconds 1
         $left = @()
-        foreach ($p in ($beStopPorts + $feStopPorts | Select-Object -Unique)) {
+        foreach ($p in ($beStopPorts + $feStopPorts + $admStopPorts | Select-Object -Unique)) {
             $l = Get-ListenPid -Port $p
             if ($l) { $left += ("{0}(PID {1})" -f $p, $l) }
         }
         if ($left.Count -eq 0) {
-            Write-Ok ("停止完成：候选端口 {0} 均已无监听，无残留进程" -f (($beStopPorts + $feStopPorts | Select-Object -Unique) -join '/'))
+            Write-Ok ("停止完成：候选端口 {0} 均已无监听，无残留进程" -f (($beStopPorts + $feStopPorts + $admStopPorts | Select-Object -Unique) -join '/'))
         }
         else {
             Write-Fail ("停止后仍有端口占用：{0}，请手动检查" -f ($left -join ', '))
@@ -920,10 +1201,14 @@ switch ($Action) {
         }
         $bePidAlive = ($bePidTxt -match '^\d+$') -and (Get-Process -Id ([int]$bePidTxt) -ErrorAction SilentlyContinue)
         $beListen = Get-ListenPid -Port $bePortEff
-        if ($code -eq 200) {
+        $beOurs = Test-ProjectProcess -Port $bePortEff -ProjectDir $BackendDir
+        if ($code -eq 200 -and $beOurs -ne $false) {
             Write-Ok ("后端 Uvicorn : 运行中（health=200，PID 文件={0}，PID 存活={1}，端口 {2} 监听={3}）" -f `
                     ($(if ($bePidTxt) { $bePidTxt } else { '无' })), $(if ($bePidAlive) { '是' } else { '否' }), $bePortEff, `
                     ($(if ($beListen) { "PID $beListen" } else { '无' })))
+        }
+        elseif ($beListen -and $beOurs -eq $false) {
+            Write-Warn ("后端 Uvicorn : 端口 {0} 被其他程序占用（PID {1}，非本项目后端），本项目后端未运行" -f $bePortEff, $beListen)
         }
         elseif ($beListen) {
             Write-Warn ("后端 Uvicorn : 异常（端口 {0} 监听中(PID {1})，但 health 未返回 200，实际={2}）" -f $bePortEff, $beListen, $code)
@@ -942,16 +1227,46 @@ switch ($Action) {
             $fePidTxt = (Get-Content $fePidFile -TotalCount 1 -ErrorAction SilentlyContinue).ToString().Trim()
         }
         $feListen = Get-ListenPid -Port $fePortEff
-        if ($null -ne $fcode -and $fcode -lt 500) {
+        $feOurs = Test-ProjectProcess -Port $fePortEff -ProjectDir $WebDir
+        if ($null -ne $fcode -and $fcode -lt 500 -and $feOurs -ne $false) {
             Write-Ok ("前端 Vite    : 运行中（HTTP={0}，PID 文件={1}，端口 {2} 监听={3}）" -f `
                     $fcode, $(if ($fePidTxt) { $fePidTxt } else { '无' }), $fePortEff, `
                     ($(if ($feListen) { "PID $feListen" } else { '无' })))
+        }
+        elseif ($feListen -and $feOurs -eq $false) {
+            Write-Warn ("前端 Vite    : 端口 {0} 被其他程序占用（PID {1}，非本项目 Vite），本项目前端未运行" -f $fePortEff, $feListen)
         }
         elseif ($feListen) {
             Write-Warn ("前端 Vite    : 异常（端口 {0} 监听中(PID {1})，HTTP 无正常响应）" -f $fePortEff, $feListen)
         }
         else {
             Write-Warn ("前端 Vite    : 已停止（端口 {0} 无监听）" -f $fePortEff)
+        }
+
+        # 管理后台：探测方式与用户端前端一致（双栈 HTTP + 端口监听）
+        $admPortEff = Get-RecordedPort -Name 'admin'
+        if (-not $admPortEff) { $admPortEff = $AdmPort }
+        $acode = Get-FrontendHttpCode -Port $admPortEff -TimeoutSec 2
+        $admPidFile = Join-Path $LogsDir 'admin.pid'
+        $admPidTxt = ''
+        if (Test-Path $admPidFile) {
+            $admPidTxt = (Get-Content $admPidFile -TotalCount 1 -ErrorAction SilentlyContinue).ToString().Trim()
+        }
+        $admListen = Get-ListenPid -Port $admPortEff
+        $admOurs = Test-ProjectProcess -Port $admPortEff -ProjectDir $AdminDir
+        if ($null -ne $acode -and $acode -lt 500 -and $admOurs -ne $false) {
+            Write-Ok ("管理后台 Vite : 运行中（HTTP={0}，PID 文件={1}，端口 {2} 监听={3}）" -f `
+                    $acode, $(if ($admPidTxt) { $admPidTxt } else { '无' }), $admPortEff, `
+                    ($(if ($admListen) { "PID $admListen" } else { '无' })))
+        }
+        elseif ($admListen -and $admOurs -eq $false) {
+            Write-Warn ("管理后台 Vite : 端口 {0} 被其他程序占用（PID {1}，非本项目 Vite），本项目管理后台未运行" -f $admPortEff, $admListen)
+        }
+        elseif ($admListen) {
+            Write-Warn ("管理后台 Vite : 异常（端口 {0} 监听中(PID {1})，HTTP 无正常响应）" -f $admPortEff, $admListen)
+        }
+        else {
+            Write-Warn ("管理后台 Vite : 已停止（端口 {0} 无监听）" -f $admPortEff)
         }
     }
 

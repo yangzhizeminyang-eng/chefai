@@ -170,7 +170,15 @@ def get_speech_tts_stream(text: str) -> StreamingResponse:
     except Exception as exc:  # noqa: BLE001 —— 建连失败直接报错，前端静默
         logger.warning("tts stream provider failed: %s", exc)
         raise api_error(502, "TTS_UPSTREAM_FAILED", "语音合成暂不可用") from exc
-    return StreamingResponse(iterator, media_type="audio/mpeg")
+
+    def _safe_iter() -> Iterator[bytes]:
+        """兜底包裹：迭代期异常就地收流（流式响应无法改状态码，防打穿 ASGI）。"""
+        try:
+            yield from iterator
+        except Exception as exc:  # noqa: BLE001 —— 限流/网络中断按提前结束处理
+            logger.warning("tts stream error mid-flight: %s", exc)
+
+    return StreamingResponse(_safe_iter(), media_type="audio/mpeg")
 
 
 class VoiceIntentRequest(BaseModel):

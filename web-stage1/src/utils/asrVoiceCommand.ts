@@ -44,7 +44,7 @@ export interface AsrVoiceController {
 /* ── VAD 分段参数（厨房环境：略长静音切句，防炒菜噪声误切） ── */
 
 /** 语句结束静音时长（毫秒）：低于它视为还在说一句话（唤醒响应速度与切句准确性的折中） */
-const SILENCE_END_MS = 700
+const SILENCE_END_MS = 600
 /** 语句最短有效时长（毫秒）：短于此的「爆发声」（锅铲/碰撞）丢弃 */
 const MIN_UTTERANCE_MS = 350
 /** 单条语句最长时长（毫秒）：超长强制切分上传，防止无限增长 */
@@ -62,41 +62,61 @@ const ERROR_MESSAGES: Readonly<Record<string, string>> = {
   network: '语音识别服务网络异常',
 }
 
+/** 上传重采样目标采样率（Hz）：16kHz 为 ASR 常用率，上传体积约为 48kHz 的 1/3 */
+const TARGET_SAMPLE_RATE = 16000
+
 /**
  * Float32 PCM 片段编码为 16bit 单声道 WAV Blob（纯函数）。
+ * 重采样：简单均值抽取（语音场景足够；上传体积降至 16kHz）。
  * @param chunks 语音片段（多帧顺序拼接）
  * @param sampleRate 采样率（AudioContext.sampleRate，通常 44100/48000）
+ * @param targetRate 目标采样率（缺省 16000；目标高于原始时原样透传不插值）
  * @returns WAV Blob（audio/wav，44 字节头 + 16bit PCM）
  */
-export function encodeWav(chunks: Float32Array[], sampleRate: number): Blob {
-  let total = 0
-  for (const chunk of chunks) total += chunk.length
-  const buffer = new ArrayBuffer(44 + total * 2)
+export function encodeWav(chunks: Float32Array[], sampleRate: number, targetRate = TARGET_SAMPLE_RATE): Blob {
+  // 均值抽取重采样：每 step 个原始样本平均为 1 个输出样本
+  const step = Math.max(1, Math.round(sampleRate / targetRate))
+  const rate = step > 1 ? Math.round(sampleRate / step) : sampleRate
+  let totalOut = 0
+  const counts: number[] = []
+  for (const chunk of chunks) {
+    const n = Math.ceil(chunk.length / step)
+    counts.push(n)
+    totalOut += n
+  }
+  const buffer = new ArrayBuffer(44 + totalOut * 2)
   const view = new DataView(buffer)
   const writeString = (offset: number, text: string): void => {
     for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i))
   }
   writeString(0, 'RIFF')
-  view.setUint32(4, 36 + total * 2, true)
+  view.setUint32(4, 36 + totalOut * 2, true)
   writeString(8, 'WAVE')
   writeString(12, 'fmt ')
   view.setUint32(16, 16, true)
   view.setUint16(20, 1, true) // PCM
   view.setUint16(22, 1, true) // 单声道
-  view.setUint32(24, sampleRate, true)
-  view.setUint32(28, sampleRate * 2, true) // 字节率 = 采样率 × 2 字节
+  view.setUint32(24, rate, true)
+  view.setUint32(28, rate * 2, true) // 字节率 = 采样率 × 2 字节
   view.setUint16(32, 2, true) // 块对齐
   view.setUint16(34, 16, true) // 位深
   writeString(36, 'data')
-  view.setUint32(40, total * 2, true)
+  view.setUint32(40, totalOut * 2, true)
   let offset = 44
-  for (const chunk of chunks) {
-    for (let i = 0; i < chunk.length; i++) {
-      const s = Math.max(-1, Math.min(1, chunk[i] ?? 0))
+  chunks.forEach((chunk, ci) => {
+    const n = counts[ci] ?? 0
+    for (let i = 0; i < n; i++) {
+      let sum = 0
+      let used = 0
+      for (let j = i * step; j < (i + 1) * step && j < chunk.length; j++) {
+        sum += chunk[j] ?? 0
+        used++
+      }
+      const s = used > 0 ? Math.max(-1, Math.min(1, sum / used)) : 0
       view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true)
       offset += 2
     }
-  }
+  })
   return new Blob([buffer], { type: 'audio/wav' })
 }
 

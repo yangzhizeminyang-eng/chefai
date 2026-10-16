@@ -128,6 +128,7 @@ class LLMClient:
                 base_url=settings.LLM_BASE_URL,
                 api_key=settings.LLM_API_KEY,
                 timeout=settings.LLM_TIMEOUT_SECONDS,
+                max_retries=0,
             )
         except Exception as exc:  # noqa: BLE001 —— 统一包装为 LLMError
             raise LLMError(f"LLM client init failed: {exc}") from exc
@@ -215,6 +216,7 @@ class LLMClient:
                     base_url=settings.VISION_BASE_URL,
                     api_key=settings.VISION_API_KEY,
                     timeout=settings.VISION_TIMEOUT_SECONDS,
+                    max_retries=0,
                 )
             # 图片字节 → base64 data URL（OpenAI 多模态 image_url 约定格式）
             b64 = base64.b64encode(image_bytes).decode("ascii")
