@@ -274,7 +274,9 @@ def on_startup() -> None:
     说明：
         打印配置摘要（脱敏，不输出 API Key），便于排查部署环境；
         并触发嵌入提供方后台预热（仅 bailian + warmup 开启时生效，
-        daemon 线程执行，失败仅 WARNING，不阻断启动）。
+        daemon 线程执行，失败仅 WARNING，不阻断启动）；同时恢复遗留的
+        创新异步任务（innovation_job 表 pending/running → failed 终态，
+        进程重启后轮询方可拿到明确失败文案而非悬挂/404）。
 
     参数：
         无。
@@ -283,8 +285,15 @@ def on_startup() -> None:
         None。
 
     异常：
-        无。
+        无（预热/恢复失败均为内部告警，不阻断启动）。
     """
+    # 创新任务恢复：DB 可达时把重启遗留的 pending/running 置 failed（尽力而为）
+    try:
+        from app.api.v1.innovation import recover_stale_innovation_jobs
+
+        recover_stale_innovation_jobs()
+    except Exception as exc:  # noqa: BLE001 —— 恢复失败不阻断启动
+        logger.warning("innovation job recovery skipped: %s", exc)
     _warmup_embedding_provider()
     logger.info(
         "startup",

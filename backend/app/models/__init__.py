@@ -20,6 +20,7 @@ from app.models.ingredient import Ingredient, IngredientAlias, IngredientNutriti
 from app.models.innovation import (
     FlavorPairingRule,
     IngredientProperty,
+    InnovationJob,
     InnovationRecipe,
     TechniqueLibrary,
 )
@@ -81,4 +82,5 @@ __all__ = [
     "FlavorPairingRule",
     "TechniqueLibrary",
     "InnovationRecipe",
+    "InnovationJob",
 ]

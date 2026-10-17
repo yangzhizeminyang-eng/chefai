@@ -180,3 +180,42 @@ class InnovationRecipe(Base):
     rating: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), **_TS, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), **_TS, nullable=False)
+
+
+class InnovationJob(Base):
+    """AI 创新异步任务持久化表（模块 O job 落库，最小兼容升级）。
+
+    说明：
+        承载内存 job store（_INNOVATION_JOBS）的写穿副本，解决进程重启后
+        pending/running 任务"凭空消失"问题：
+        - 提交/转 running/终态变更时同步写穿（失败仅告警，不阻断 job 链路）；
+        - 应用启动恢复：把遗留的 pending/running 行置为 failed（终态明确，
+          轮询方经 DB fallback 拿到失败文案而非 404）；
+        - 终态即冻结语义与内存 store 一致（succeeded/failed/blocked 不可逆）；
+        - recipe/issues 以 JSONB 存储（结构同内存记录）；user_id 无外键约束
+          （与内存 store 的 user_db_id 语义一致，用户注销后行保留供审计）。
+        由迁移 9c3e1f7a52b8 建表（down_revision=d8f2b7c91e43）。
+    """
+
+    __tablename__ = "innovation_job"
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending','running','succeeded','failed','blocked')",
+            name="chk_job_status",
+        ),
+        Index("idx_innovation_job_user", "user_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", server_default="pending"
+    )
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    recipe: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    issues: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    error: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), **_TS, nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

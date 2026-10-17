@@ -34,10 +34,11 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.ability.embedding import upsert_embedding
@@ -48,10 +49,16 @@ from app.api.v1.deps import (
     get_current_user,
     resolve_request_id,
 )
-from app.core.db import get_db
+from app.core.db import SessionLocal, get_db
 from app.core.logging import get_logger
 from app.graph.subgraphs.innovation import run_innovation_generate, run_innovation_precheck
-from app.models import FlavorPairingRule, InnovationRecipe, RemoteConfig, User
+from app.models import (
+    FlavorPairingRule,
+    InnovationJob,
+    InnovationRecipe,
+    RemoteConfig,
+    User,
+)
 from app.schemas.innovation import (
     DISCLAIMER_TEXT,
     InnovationFeedbackRequest,
@@ -562,9 +569,10 @@ def post_innovation_feedback(
 
 # 阶段一内存 job store：dict + 锁（🔴 读写一律持 _JOBS_LOCK，worker 与路由分属不同
 # 线程）。job 记录结构：{job_id, user_db_id, status, recipe, issues, error,
-# request_id, created_at, finished_at}。设计取舍：演示环境单进程部署，进程重启后
-# job 丢失（客户端轮询 404 按失败重试即可恢复）；阶段二多副本部署再迁 DB 表 + 状态机
-# （改进方案 M-01「job 表 + 状态机」），端点契约与跨用户隔离口径不变。
+# request_id, created_at, finished_at}。设计取舍：演示环境单进程部署；为满足进程
+# 重启后的状态可恢复性，job 状态变更同步写穿 innovation_job 表（_persist_job_record，
+# 失败仅告警不阻断链路），启动时遗留 pending/running 行统一置 failed
+# （recover_stale_innovation_jobs），轮询方经 DB fallback 拿到明确终态而非 404。
 _INNOVATION_JOBS: dict[str, dict] = {}
 _JOBS_LOCK = threading.Lock()
 
@@ -578,6 +586,92 @@ _INNOVATION_JOB_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix=
 
 # job 执行失败兜底文案（failed 终态面向用户话术，不透出内部异常细节）
 _JOB_FAILED_MESSAGE = "AI 创新生成失败，请稍后重试"
+
+# 服务重启恢复时写入 failed 终态的文案（面向轮询方，指引重新提交）
+_JOB_RECOVER_MESSAGE = "服务已重启，任务被中断，请重新提交"
+
+
+def _persist_job_record(record: dict) -> None:
+    """把内存 job 记录写穿到 innovation_job 表（函数，独立短会话）。
+
+    说明：
+        在提交（pending）/转 running/终态变更三个时机同步调用，保证进程
+        重启后 DB 中留有任务状态的最新快照；使用独立 SessionLocal 短会话
+        （调用方持 _JOBS_LOCK，不与请求会话/worker 会话共享）；任何写穿
+        失败仅记 WARNING——落库是尽力而为的增强，绝不阻断 job 主链路。
+
+    参数：
+        record：内存 job 记录 dict（结构见 _INNOVATION_JOBS 注释）。
+
+    返回值：
+        None。
+
+    异常：
+        不抛出（数据库异常捕获告警后返回）。
+    """
+    try:
+        with SessionLocal() as session:
+            row = session.query(InnovationJob).filter(
+                InnovationJob.job_id == str(record.get("job_id"))
+            ).one_or_none()
+            finished_ts = record.get("finished_at")
+            values = {
+                "user_id": int(record.get("user_db_id") or 0),
+                "status": str(record.get("status") or "pending"),
+                "request_id": record.get("request_id"),
+                "recipe": record.get("recipe"),
+                "issues": list(record.get("issues") or []) or None,
+                "error": record.get("error"),
+                "finished_at": (
+                    datetime.fromtimestamp(float(finished_ts), tz=datetime.UTC)
+                    if finished_ts is not None else None
+                ),
+            }
+            if row is None:
+                session.add(InnovationJob(job_id=str(record.get("job_id")), **values))
+            else:
+                for key, val in values.items():
+                    setattr(row, key, val)
+            session.commit()
+    except Exception as exc:  # noqa: BLE001 —— 写穿失败不阻断 job 主链路
+        logger.warning("innovation job persist failed (job_id=%s): %s", record.get("job_id"), exc)
+
+
+def recover_stale_innovation_jobs() -> int:
+    """应用启动时恢复遗留的创新异步任务（函数）。
+
+    说明：
+        把 innovation_job 表中遗留的 pending/running 行统一置为 failed
+        （error=_JOB_RECOVER_MESSAGE，finished_at=now）——进程重启后这些
+        任务的 worker 线程已不存在，永不自行到终态；置为明确终态后轮询方
+        经 get_innovation_job 的 DB fallback 可拿到失败文案。终态行不动
+        （终态即冻结）。在 FastAPI startup 钩子调用（main.py on_startup）。
+
+    返回值：
+        int：被恢复（置 failed）的行数。
+
+    异常：
+        不抛出（数据库异常告警后返回 0——恢复失败不阻断应用启动）。
+    """
+    try:
+        with SessionLocal() as session:
+            stale_rows = session.query(InnovationJob).filter(
+                InnovationJob.status.in_(("pending", "running"))
+            ).all()
+            for row in stale_rows:
+                row.status = "failed"
+                row.error = _JOB_RECOVER_MESSAGE
+                row.finished_at = func.now()
+            session.commit()
+            if stale_rows:
+                logger.warning(
+                    "recovered %s stale innovation jobs (pending/running -> failed)",
+                    len(stale_rows),
+                )
+            return len(stale_rows)
+    except Exception as exc:  # noqa: BLE001 —— 恢复失败不阻断启动
+        logger.warning("recover stale innovation jobs failed: %s", exc)
+        return 0
 
 
 def _cleanup_finished_jobs_locked(now_ts: float) -> None:
@@ -641,6 +735,8 @@ def _finish_job_locked(job_id: str, status: str, *, recipe: dict | None = None,
     record["error"] = error
     record["request_id"] = request_id or record.get("request_id")
     record["finished_at"] = time.time()
+    # 终态写穿（独立短会话，失败仅告警）：进程重启后轮询方经 DB fallback 拿终态
+    _persist_job_record(record)
 
 
 def _run_innovation_job(job_id: str, user_db_id: int, ingredients: list[str],
@@ -674,6 +770,8 @@ def _run_innovation_job(job_id: str, user_db_id: int, ingredients: list[str],
         record = _INNOVATION_JOBS.get(job_id)
         if record is not None:
             record["status"] = "running"
+            # 转 running 写穿（同上，尽力而为）
+            _persist_job_record(record)
     try:
         outcome = run_innovation_generate(
             user_db_id=int(user_db_id),
@@ -771,6 +869,9 @@ def post_innovation_job(
             "created_at": now_ts,
             "finished_at": None,
         }
+        # 提交即写穿 pending 快照（独立短会话，失败仅告警）：
+        # 保证重启恢复扫描能看到本任务（终态前任何时刻重启都可恢复）
+        _persist_job_record(_INNOVATION_JOBS[job_id])
     # 提交线程池（fire-and-forget）：worker 全捕获必达终态，future 无需消费；
     # 用户标识在请求线程提取（worker 不触碰已关闭请求会话的 ORM 实例）
     _INNOVATION_JOB_EXECUTOR.submit(
@@ -824,6 +925,25 @@ def get_innovation_job(
         # 持锁内浅拷贝快照（worker 终态为整块引用替换，快照无写撕裂）
         record = _INNOVATION_JOBS.get(job_id)
         snapshot = dict(record) if record is not None else None
+    if snapshot is None:
+        # 内存 miss → DB fallback（进程重启后内存 store 清空，持久化行兜底）：
+        # 同用户的任务返回 DB 快照（重启遗留任务已被启动恢复置 failed 终态），
+        # 未知/他人 job 仍统一 404（跨用户隔离口径不变）
+        row = session.query(InnovationJob).filter(
+            InnovationJob.job_id == job_id
+        ).one_or_none()
+        if row is not None and int(row.user_id) == int(user.id):
+            snapshot = {
+                "job_id": row.job_id,
+                "user_db_id": int(row.user_id),
+                "status": str(row.status),
+                "recipe": row.recipe,
+                "issues": list(row.issues or []),
+                "error": row.error,
+                "request_id": row.request_id,
+                "created_at": None,
+                "finished_at": None,
+            }
     if snapshot is None or int(snapshot.get("user_db_id") or 0) != int(user.id):
         # 🔴 不存在与他人的 job 统一 404（跨用户隔离，不泄露存在性）
         raise api_error(404, ERR_NOT_FOUND, "任务不存在", f"job_id={job_id}")
