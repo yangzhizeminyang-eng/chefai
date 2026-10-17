@@ -18,9 +18,11 @@ backend/
 │   ├── api/v1/                # /v1 路由：ask+search / recommend / recipes / ingredients / cooking / trace / config / auth / consent
 │   ├── safety/                # 风控引擎（DB 规则 + 内存注入规则）/ 敏感词兜底 / 风控日志
 │   ├── ability/               # 检索 / 硬过滤 / 排序 / 营养估算 / LLM 客户端
-│   ├── graph/                 # LangGraph 编排（supervisor / guards / qa / compose / finalize）
+│   ├── graph/                 # LangGraph 编排（supervisor / guards / qa / tool_loop / compose / finalize）
 │   └── schemas/               # Pydantic v2 请求/响应模型
-└── tests/                     # pytest（74 条：风控 / 硬过滤 / 排序 / 营养 / API 集成 / 质量补强）
+├── mcp_server/                # 本地 stdio MCP Server（JSON-RPC 2.0 只读工具；AICOOK_MCP_STUB=1 进入零依赖 stub 模式）
+├── eval/                      # Agent Eval 评测框架（datasets 人工合成数据集 / reports 报告 / run_eval CLI）
+└── tests/                     # pytest（369+ 条：风控 / 硬过滤 / 排序 / 营养 / API 集成 / eval / 工具与 MCP / 创新恢复 / 质量补强）
 ```
 
 ## 2. 环境准备
@@ -132,7 +134,8 @@ Windows 下也可以直接双击 `scripts\start.bat` 一键启动；启动失败
 ## 8. 测试与质量命令
 
 ```powershell
-# 全量测试（74 条，连真实本地库 aicook，需先完成 seed）
+# 全量测试（369+ 条，连真实本地库 aicook，需先完成 seed；
+# test_performance 2 项在 HowToCook 语料未导入时 error——其需 ≥300 篇候选池）
 .venv\Scripts\python.exe -m pytest tests -q
 
 # 静态检查（质量门：0 error）
@@ -169,7 +172,7 @@ Windows 下也可以直接双击 `scripts\start.bat` 一键启动；启动失败
 
 ## 10. 已知限制
 
-1. **bge-m3 本地向量检索未引入**：保留 `EMBEDDING_MODE` 配置语义与适配器接口（`recipe_embedding` 预留表已建）；数百篇语料规模下「关键词 + 别名 + 覆盖率」混合召回满足阶段一演示，引入 2GB+ 权重与 torch 依赖收益不匹配（05-V1.1 §12.2 将其定义为可切换项）。
+1. **bge-m3 本地向量检索未引入**：保留 `EMBEDDING_MODE` 配置语义与适配器接口（`recipe_embedding` 预留表已建）；数百篇语料规模下「关键词 + 别名 + 覆盖率」混合召回满足阶段一演示，引入 2GB+ 权重与 torch 依赖收益不匹配（05-V1.1 §12.2 将其定义为可切换项）。阶段二升级已新增**智谱 embedding-3 远程语义嵌入路径**（见 §15，`EMBEDDING_PROVIDER='zhipu'` 启用）；`hash` 仍为缺省兜底提供方，未配置 Key 时行为与阶段一完全一致。
 2. **模块 O「AI 菜品创新」不纳入阶段一**：变更单 CR-20261008-01 未签字生效（其 §五约定未生效前不得开发）；阶段一仅落地第 5 个远程开关 `switch.innovation` 的配置，不实现 subgraph / 新表 / 页面。
 3. **mypy 未引入**：存量代码类型注解不全，全仓改造范围不可控；静态检查暂由 ruff（E/F/W/I/B/UP）承担，mypy 列为后续改进项。
 4. **`app/ability/retrieval.py` 覆盖率 55%**：文本召回分支（ILIKE/别名匹配）暂无独立单测，整体由 API 集成测试间接覆盖；不在质量门硬指标内（硬指标为 `app/safety` 全模块与 `ranking.py`），列为后续补测项。
@@ -299,3 +302,152 @@ powershell -ExecutionPolicy Bypass -File scripts\manage.ps1 -Action docker -Dock
 - 配置注入：api 经 `env_file: backend/.env` 透传 LLM 配置，`environment` 覆盖 `DB_HOST=db`；`ADMIN_PASSWORD`/`ADMIN_JWT_SECRET` 生产部署必须更换强值。
 - 镜像源：基础镜像走 `docker.m.daocloud.io` 加速前缀、pip 走阿里云镜像（当前网络直连 Docker Hub / PyPI 官方源不可用或极慢）；网络环境允许时删除前缀即可切回官方源。
 - 管理后台子路径适配：容器构建时以 `npm run build-only -- --base=/admin/` 打包（`build` 脚本的 run-p 包装不透传附加参数），配套 `admin-web/src/router` 的 `createWebHistory(import.meta.env.BASE_URL)` 一行调整；dev 与根路径部署行为不变。
+
+## 13. Agent 工具调用与 MCP（阶段二升级）
+
+> 演示链全程可复制命令见 `docs/demo-walkthrough.md`。接口契约以 `http://127.0.0.1:8000/docs`（OpenAPI）为准。
+
+### 13.1 工具层（app/ability/tools.py）
+
+`AgentTool` 抽象基类 + 4 个**只读**内置工具（只复用既有业务函数，不重写业务逻辑；检索走 `use_vector=False`，不触发嵌入惰性回填写库）：
+
+| 工具名 | 能力 | 只读 |
+| --- | --- | --- |
+| `recipe_search` | 按自然语言查询文本检索已发布菜谱候选（`query` 必填 / `top_k` 1~20 缺省 5） | 是 |
+| `recipe_detail` | 按菜谱 ID 查详情 | 是 |
+| `nutrition_estimate` | 菜谱营养估算 | 是 |
+| `inventory_query` | 库存查询 | 是 |
+
+`execute_tool` 统一执行入口：pydantic 参数校验（失败返回 `invalid_params`，不向编排层抛异常）→ 只读工具 LRU 幂等缓存（容量 128）→ 线程池超时控制 → tenacity 重试（仅 `unavailable`/`timeout`，最多 2 次重试共 3 次尝试）→ 结构化错误码（`invalid_params`/`timeout`/`permission_denied`/`unavailable`/`internal`）→ 审计友好的 `ToolResult`（`params_summary` 截断 200 字符并掩码 `api_key`/`password`/`token`/`secret` 等敏感字段）。
+
+### 13.2 工具循环节点（app/graph/nodes/tool_loop.py）
+
+- **硬限制**：`MAX_TOOL_ROUNDS=3`（轮数上限）、`TOOL_LOOP_BUDGET_SECONDS=25.0`（总耗时预算）、单次工具执行超时按剩余预算收紧（上限 10s、保底 0.5s）；触限置 `state.tool_loop_limit_hit=True` 并立即返回（state 新增 `tool_results` / `tool_loop_limit_hit`）。
+- **决策方式**：LLM 按工具清单输出严格 JSON——选 `{tool, params}` 或 `{done: true}`；每轮经 `make_span` 记录 trace。
+- **降级红线**：LLM 失败 / 输出解析失败 / 选择未知工具 → 视为 `done` 正常收敛（不触限、不抛异常）；最终回答仍由 `node_free_qa` 生成并经 compose → output_guard **出口闸门**（工具结果只作回答素材，不绕过风控）。
+- **主图接入**：main_graph 中 `photo_recognize` / `free_qa` / `smalltalk_or_out_of_scope` 三意图路由 `tool_loop → node_free_qa`（无条件边）；`MCP_ENABLED='off'`（缺省）时仅挂内置 4 工具。
+
+### 13.3 本地 MCP Server / Client
+
+- `backend/mcp_server/`：stdio **JSON-RPC 2.0**（`protocolVersion="2024-11-05"`）最小实现，支持 `initialize` / `notifications/initialized` / `tools/list` / `tools/call` / `ping`；协议级错误码 -32700/-32601/-32602/-32603。工具白名单 `recipe_search` / `recipe_detail`，白名单外工具名返回结果级错误（`isError=true` + "permission denied"）；DB 不可用时转结构化错误消息，进程不崩溃。
+- **stub 模式**：环境变量 `AICOOK_MCP_STUB=1` 时不导入 app 模块、不连 DB，返回固定演示数据（测试与前端联调用）。
+- `app/ability/mcp_client.py`：子进程拉起 + initialize 握手 + `list_tools`/`call_tool`/`close`；客户端不做重试，不可用时由 tool_loop 节点降级（连接失败 → 构建期静默剔除 MCP 工具；执行返回 `unavailable`/`timeout`/`permission_denied` → 该工具本轮起剔除，均不阻断主链路）。
+
+本地运行（cwd = backend，PowerShell）：
+
+```powershell
+$env:AICOOK_MCP_STUB = "1"                    # stub 演示模式（零 DB 依赖）；删除该变量则为真实模式
+.venv\Scripts\python.exe -m mcp_server        # 阻塞运行，stdin EOF（Ctrl+C / 关闭管道）正常退出
+```
+
+### 13.4 配置项（backend/.env）
+
+| 变量 | 取值 | 说明 |
+| --- | --- | --- |
+| `MCP_ENABLED` | `off`（缺省）/ `on` | `on` 时 tool_loop 节点经 MCPClient 挂载 MCP 只读工具 |
+| `MCP_SERVER_COMMAND` | 空串（缺省）/ 命令串 | stdio MCP Server 启动命令（JSON 数组字符串或空格分隔，如 `["python", "-m", "mcp_server"]`） |
+
+测试覆盖：`tests/test_agent_tools.py`（工具框架）、`tests/test_tool_node.py`（工具循环）、`tests/test_mcp_client.py`（stub server 覆盖 8 路径）。
+
+## 14. Agent Eval（可重复评测）
+
+离线评测框架（`backend/eval/`），对三条核心链路做可重复的确定性评测。
+
+### 14.1 运行命令（cwd = backend，需先 `python -m app.seed` 完成迁移与种子）
+
+```powershell
+.venv\Scripts\python.exe -m eval.run_eval --baseline   # 生成 baseline_ 前缀基线报告
+.venv\Scripts\python.exe -m eval.run_eval              # 常规报告（report_ 前缀）
+.venv\Scripts\python.exe -m eval.run_eval --offline    # --offline 模式不连库（retrieval 指标标注 unavailable）
+```
+
+报告输出至 `eval/reports/`（`report_YYYYmmdd_HHMMSS.json` + 同名 `.md` 摘要表）；基线对比记录见 `eval/reports/COMPARISON.md`。
+
+### 14.2 数据集（eval/datasets/*.jsonl，人工合成、不含真实用户隐私）
+
+| 数据集 | 条数 | 评测对象 |
+| --- | --- | --- |
+| `intent_cases.jsonl` | 24 | supervisor 关键词兜底意图分类（确定性路径） |
+| `retrieval_cases.jsonl` | 17 | 检索候选命中（空食材 + 文本查询） |
+| `safety_cases.jsonl` | 17 | 风控规则引擎高危拦截 / 正常问题误拦 |
+
+### 14.3 指标口径
+
+| 维度 | 指标 | 说明 |
+| --- | --- | --- |
+| 意图 | 准确率、延迟 P50/P95 | 关键词兜底路径（离线可测） |
+| 风控 | 高危拦截召回率、误拦截率 | 引擎异常内部消化为 UNKNOWN=不拦截，按 D9 语义如实统计 |
+| 检索 | Hit@3 / Hit@5 / Recall@5 / MRR、延迟 P50/P95 | `--offline` 时整组标注 unavailable |
+| 引用 | 覆盖率 | **恒为 unavailable**：当前回答链路未产出可校验的引用来源字段 |
+| 费用 | Token / 成本 | **恒为 unavailable**：评测路径为确定性兜底（关键词/规则/SQL），无模型调用与计费数据 |
+
+诚实性约定：无可靠来源的指标一律输出 `unavailable` 并注明原因，绝不编造数字；单条用例失败记 `error` 不中断整体评测。
+
+### 14.4 基线与对比结论（详见 eval/reports/COMPARISON.md）
+
+| 指标 | 基线（语料未导入，候选池 45 篇） | 升级后（FS-001 补丁 + 候选池 390 篇） | 结论 |
+| --- | --- | --- | --- |
+| 意图准确率 | 1.000 | 1.000 | 持平（24 条） |
+| 风控高危拦截召回率 | 0.9231 | **1.000** | Eval 发现 FS-001「木耳久泡」规则变体漏拦（"木耳泡了三天" 绕过原关键词组），补 `app/seed/safety.py` 第三组时长词后达标，11 类高危样本全拦截红线恢复 |
+| 风控误拦截率 | 0.000 | 0.000 | 持平 |
+| Hit@3 / Hit@5 / MRR | 0.8235 | 0.8235 | 持平（17 条） |
+| Recall@5 | 0.7059 | 0.3334 | **口径偏移，不可直接比较**：基线候选池 45 篇 vs 升级后 390 篇（HowToCook 语料导入后分母语义变化） |
+
+### 14.5 CI 原则
+
+评测全程确定性 Stub（关键词兜底 + 本地规则风控 + SQL 检索），**不依赖任何付费 API**，可在 CI 无密钥环境重复运行；配套测试 `tests/test_eval_runner.py`。
+
+## 15. 智谱 Embedding 与向量空间切换
+
+新增智谱 `embedding-3` 远程语义嵌入提供方（OpenAI 兼容协议），与既有 `hash`（确定性哈希兜底）/ `bailian`（百炼）并存。
+
+### 15.1 配置项（backend/.env）
+
+| 变量 | 缺省值 | 说明 |
+| --- | --- | --- |
+| `EMBEDDING_PROVIDER` | `hash` | 改为 `zhipu` 启用智谱嵌入 |
+| `ZHIPU_BASE_URL` | `https://open.bigmodel.cn/api/paas/v4/` | 智谱 OpenAI 兼容端点 |
+| `ZHIPU_API_KEY` | 空串 | **空串时工厂降级 hash**，绝不以 hash 向量冒充智谱空间 |
+| `ZHIPU_MODEL` | `embedding-3` | 智谱嵌入模型名 |
+| `EMBEDDING_DIMENSIONS` | `2048` | 智谱空间向量维度，与 `embedding_zhipu halfvec(2048)` 列对齐 |
+
+### 15.2 空间隔离机制
+
+- 智谱空间标识 `space_name = f"{ZHIPU_MODEL}-{EMBEDDING_DIMENSIONS}"`（即 `embedding-3-2048`），写入 `recipe_embedding.embedding_model` 列；**检索与回填均按当前 provider.space_name 过滤**——不同空间的向量绝不混算余弦相似度（维度/语义均不可比）。
+- 远程响应三重校验：返回条数、向量维度、数值有限性（`math.isfinite`），任一不满足即报错，不落脏数据。
+- 旧 1024 维 `embedding` vector(1024) 列与 ivfflat 索引**原样保留**，新旧空间靠 `embedding_model` 列过滤隔离。
+
+### 15.3 迁移与回滚（revision `d8f2b7c91e43`）
+
+按 `pg_extension.extversion` 分支（幂等 DDL，全部 `IF [NOT] EXISTS`，可 downgrade）：
+
+| 库内 pgvector 状态 | 动作 |
+| --- | --- |
+| 扩展不存在 | 记 WARNING 跳过建列与索引，**迁移不失败**（embedding_json 便携列不受影响） |
+| extversion ≥ 0.7.0 | `embedding_zhipu` **halfvec(2048)** 列 + hnsw `halfvec_cosine_ops` 索引 `idx_emb_zhipu`（近似检索） |
+| extversion < 0.7.0 | `embedding_zhipu` vector(2048) 列，无近似索引（顺序扫描） |
+
+### 15.4 回填与切流（cwd = backend）
+
+```powershell
+.venv\Scripts\python.exe -m app.embedding_backfill --provider zhipu          # 全量回填（幂等，已存在目标空间 verified 行的菜谱自动跳过）
+.venv\Scripts\python.exe -m app.embedding_backfill --provider zhipu --limit 5 # 小样预演
+.venv\Scripts\python.exe -m app.embedding_backfill --provider zhipu --force   # 忽略既有行强制重算
+```
+
+- 回填含自检（目标空间 verified 行数 vs published 菜谱数、抽样校验维度与有限值），失败以非 0 退出码结束（供切流流水线判定）。
+- **回退路径**：把 `EMBEDDING_PROVIDER` 改回旧提供方（`hash` / `bailian`）并重启即可回到旧空间——验证期**绝不删除旧空间向量行与索引**。
+- 检索分流：`app/ability/retrieval.py` 的 `_vector_search_pgvector` 按向量维度分流列（1024 维 → 旧 `embedding` 列；非 1024 维 → `embedding_zhipu` 列，halfvec/vector 类型经 `probe_zhipu_column` 实测）。
+
+### 15.5 本地无 pgvector 时的行为
+
+本地开发库（PostgreSQL 16 未装 pgvector 扩展）下：迁移跳过建列，向量检索自动降级 **`embedding_json` 便携列 Python 点积**回退路径（≤800 行规模、无 numpy），2048 维向量可正常存储与计算；容器部署镜像 `pgvector/pgvector:pg16` 为正式口径（扩展 ≥0.7 走 halfvec + hnsw 索引）。
+
+## 16. 创新异步任务持久化与重启恢复
+
+AI 创新生成任务（`POST /v1/innovation/generate` 异步链路）原为纯内存 job store，进程重启后轮询方将 404。本轮升级（改进方案 M-01 最小落地）补齐持久化：
+
+- **写穿（write-through）**：`app/models/innovation.py` 的 `InnovationJob` 表（迁移 `9c3e1f7a52b8` 新建 `innovation_job` 表，`status` CHECK 五态 `pending/running/succeeded/failed/blocked` 与内存状态机一致，索引 `idx_innovation_job_user` 支撑按用户查询与恢复扫描）在**提交 / running / 终态**三个时机写穿内存 store。
+- **启动恢复**：`app/main.py` startup 调用 `recover_stale_innovation_jobs()`，把遗留 `pending/running` 任务置为 `failed`（错误文案「服务已重启，任务被中断，请重新提交」），轮询方拿到明确终态而非永久 pending。
+- **DB fallback**：`get_innovation_job` 内存 miss 时回读 DB（**同用户**可取回终态副本；他人任务仍 404，跨用户隔离口径不变）。
+- 测试覆盖：`tests/test_innovation_job_recovery.py`、`tests/test_innovation_jobs.py`。
