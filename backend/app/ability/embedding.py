@@ -1,31 +1,44 @@
 """菜谱向量嵌入模块（Task 8：pgvector 混合检索 R-1 收敛；向量模型升级扩展）。
 
 职责：
-    - EmbeddingProvider 抽象：统一 embed(texts) 接口（1024 维、L2 归一化，点积即余弦）；
+    - EmbeddingProvider 抽象：统一 embed(texts) 接口（维度由提供方决定：
+      hash/百炼 1024 维、智谱 2048 维，均 L2 归一化，点积即余弦）；
     - HashEmbeddingProvider：确定性哈希嵌入（阶段一默认，纯标准库，无模型下载）；
     - BGEM3Provider：bge-m3 本地部署占位（阶段二启用，实例化即抛 NotImplementedError）；
     - BailianEmbeddingProvider：阿里云百炼 qwen3.7-text-embedding 远程嵌入提供方
       （OpenAI 兼容协议，EMBEDDING_PROVIDER='bailian' 时启用，失败回落 hash）；
-    - EmbeddingUnavailableError：百炼嵌入调用失败的统一包装异常（检索层捕获降级）；
-    - get_embedding_provider 工厂：按 EMBEDDING_PROVIDER（'hash' 缺省 | 'bailian' | 'bgem3'）
-      选择实现（进程内单例）；
+    - ZhipuEmbeddingProvider：智谱 embedding-3 远程嵌入提供方（2048 维，
+      EMBEDDING_PROVIDER='zhipu' 时启用，KEY 缺失回落 hash 绝不冒充智谱空间）；
+    - _embed_remote_batches：OpenAI 兼容嵌入请求共用批量逻辑（分批/响应校验/
+      L2 归一化），Bailian 与 Zhipu 提供方复用（行为一致）；
+    - EmbeddingUnavailableError：远程嵌入调用失败的统一包装异常（检索层捕获降级）；
+    - get_embedding_provider 工厂：按 EMBEDDING_PROVIDER（'hash' 缺省 | 'bailian' |
+      'zhipu' | 'bgem3'）选择实现（进程内单例）；
     - 查询嵌入 LRU 缓存（模块级，_cache_get/_cache_put，容量 512，启动预热与工厂
       单例共享同一缓存）；
     - probe_pgvector：pgvector 扩展 + recipe_embedding.embedding 向量列双重探测（模块级缓存）；
+    - probe_zhipu_column：recipe_embedding.embedding_zhipu 智谱 2048 维向量列探测
+      （'halfvec' | 'vector' | None，按 udt_name + 扩展版本判定，模块级缓存）；
+    - _sync_vector_columns：按嵌入空间把向量双写到对应物理列（1024 空间写
+      embedding vector(1024)；智谱 2048 空间写 embedding_zhipu，列未建仅保留
+      embedding_json 便携列）；
     - ensure_embeddings：published 官方菜谱向量回填（幂等，embedding_json 便携列存储，
       pgvector 可用时同步双写向量列；按嵌入空间 embedding_model 列过滤，GAP-4）；
     - upsert_embedding：单条向量 upsert（供 Task 7 创新链路写入 source='ai_private' 行）。
 
 嵌入空间标识说明（GAP-4）：
-    EmbeddingProvider.space_name 是嵌入空间标识（如 'hash-v1'、'qwen3.7-text-embedding'），
-    写入 recipe_embedding.embedding_model 列；检索与回填都按当前 provider.space_name
-    过滤——不同空间的向量绝不允许混用余弦相似度（维度/语义均不可比），模型升级后
-    旧空间行自然失效，回填按新空间幂等重建。
+    EmbeddingProvider.space_name 是嵌入空间标识（如 'hash-v1'、'qwen3.7-text-embedding'、
+    'embedding-3-2048'），写入 recipe_embedding.embedding_model 列；检索与回填都按
+    当前 provider.space_name 过滤——不同空间的向量绝不允许混用余弦相似度（维度/语义
+    均不可比），模型升级后旧空间行自然失效，回填按新空间幂等重建。智谱 2048 维向量
+    超出 pgvector ivfflat/hnsw 索引 2000 维上限，物理上存独立 embedding_zhipu 列
+    （迁移 d8f2b7c91e43：pgvector ≥0.7.0 为 halfvec(2048)+hnsw 索引，旧版为
+    vector(2048) 无近似索引），与 1024 维 embedding 列隔离。
 
 确定性说明：
     HashEmbeddingProvider 基于字符 bigram + 单字 TF 哈希（md5 → 桶索引），同文本
     永远产出同一向量、纯 Python 计算（390 菜谱 × ~30 特征毫秒级完成），满足演示
-    与回归测试的稳定性要求；语义质量由百炼/ bge-m3 替换（接口不变，调用方无感）。
+    与回归测试的稳定性要求；语义质量由百炼/智谱/ bge-m3 替换（接口不变，调用方无感）。
 """
 
 from __future__ import annotations
@@ -50,9 +63,17 @@ logger = get_logger(__name__)
 # 嵌入向量维度（与迁移 b8d3f5a21c60 的 embedding vector(1024) 列对齐）
 EMBEDDING_DIMENSION = 1024
 
+# 智谱 OpenAI 兼容端点缺省值（外部事实：智谱 embedding-3 维度 256-2048 可自定义）
+ZHIPU_DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/paas/v4/"
+
 # pgvector 探测结果模块级缓存（None=未探测；进程内只探一次，迁移后重启生效）
 _probe_cache: bool | None = None
 _probe_lock = threading.Lock()
+
+# 智谱 2048 维向量列探测结果缓存（None=未探测或列不可用；'halfvec'|'vector' 为可用类型；
+# 探测完成标记与结果分离，避免「列不存在(None)」与「未探测(None)」混淆）
+_zhipu_probe_cache: str | None = None
+_zhipu_probed: bool = False
 
 # 惰性回填进程锁：防止并发请求在 verified 计数=0 时重复回填
 _BACKFILL_LOCK = threading.Lock()
@@ -174,6 +195,88 @@ def _to_vector_literal(vector: list[float]) -> str:
         无。
     """
     return "[" + ",".join(f"{x:.6f}" for x in vector) + "]"
+
+
+def _embed_remote_batches(
+    client: openai.OpenAI,
+    model: str,
+    texts: list[str],
+    dimensions: int,
+    batch_size: int | None = None,
+) -> list[list[float]]:
+    """分批调用 OpenAI 兼容 embeddings 接口并逐条校验、L2 归一化（模块私有函数）。
+
+    说明：
+        BailianEmbeddingProvider 与 ZhipuEmbeddingProvider 共用的远程请求内核：
+        按 batch_size 分批调用 client.embeddings.create（dimensions 显式传入，
+        encoding_format="float"），响应按 index 对齐回输入顺序；响应校验三重
+        守卫——条数与输入等长、每条维度 == dimensions、数值 math.isfinite
+        （NaN/Inf 等非法值拒绝写库）；每条 L2 归一化后返回。任何网络/超时/
+        鉴权/校验失败统一包装为 EmbeddingUnavailableError。
+
+    参数：
+        client：OpenAI 兼容客户端（仅使用 client.embeddings.create）。
+        model：嵌入模型名（与 provider.space_name 一致，作为请求 model 参数）。
+        texts：待嵌入文本列表（调用方已去重，本函数不再去重）。
+        dimensions：请求向量维度（百炼 1024 / 智谱 2048）。
+        batch_size：单批文本条数上限；None 时取 settings.EMBEDDING_BATCH_SIZE。
+
+    返回值：
+        list[list[float]]：与 texts 等长、顺序一致的 L2 归一化向量列表。
+
+    异常：
+        EmbeddingUnavailableError：请求失败（网络/超时/鉴权）或响应校验不通过
+        （条数缺失/维度不符/含非有限数值）。
+    """
+    if batch_size is None:
+        batch_size = max(1, int(settings.EMBEDDING_BATCH_SIZE))
+    vectors: list[list[float]] = []
+    try:
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start : start + batch_size]
+            resp = client.embeddings.create(
+                model=model,
+                input=batch,
+                dimensions=dimensions,
+                encoding_format="float",
+            )
+            if len(resp.data) != len(batch):
+                # 服务端必须回满本批输入条数，缺失视为不可用（防御性兜底）
+                raise EmbeddingUnavailableError(
+                    f"嵌入响应条数 {len(resp.data)} != 输入 {len(batch)}（model={model}），拒绝写库"
+                )
+            # 响应 data 顺序不保证与输入一致，按 index 对齐回本批文本
+            aligned: dict[int, list[float]] = {}
+            for item in sorted(resp.data, key=lambda d: d.index):
+                vec = [float(x) for x in item.embedding]
+                if len(vec) != dimensions:
+                    # 防错维度向量写库（与向量列尺寸不对齐即失败）
+                    raise EmbeddingUnavailableError(
+                        f"嵌入响应维度 {len(vec)} != {dimensions}（model={model}），拒绝写库"
+                    )
+                if not all(math.isfinite(x) for x in vec):
+                    # NaN/Inf 会使余弦计算失真，拒绝写库
+                    raise EmbeddingUnavailableError(
+                        f"嵌入响应含 NaN/Inf 非有限数值（model={model}），拒绝写库"
+                    )
+                # L2 归一化：保证「点积即余弦」
+                norm = math.sqrt(sum(x * x for x in vec))
+                if norm > 0:
+                    vec = [x / norm for x in vec]
+                aligned[int(item.index)] = vec
+            for offset in range(len(batch)):
+                vec = aligned.get(offset)
+                if vec is None:
+                    # index 缺失/错乱时按缺失条目处理
+                    raise EmbeddingUnavailableError(
+                        f"嵌入响应缺失条目 index={offset}（model={model}），拒绝写库"
+                    )
+                vectors.append(vec)
+    except EmbeddingUnavailableError:
+        raise
+    except Exception as exc:  # noqa: BLE001 —— 网络等异常统一包装为不可用
+        raise EmbeddingUnavailableError(f"嵌入调用失败（model={model}）: {exc}") from exc
+    return vectors
 
 
 class EmbeddingProvider(ABC):
@@ -334,9 +437,9 @@ class BailianEmbeddingProvider(EmbeddingProvider):
 
         说明：
             缓存键 = 空间名 + 归一化空白后的文本（' '.join(t.split())），
-            命中的条目不重复请求；未命中者去重后按 EMBEDDING_BATCH_SIZE 分批
-            调用 OpenAI 兼容 embeddings 接口（dimensions=1024），响应按 index
-            对齐回原输入顺序；任何网络/超时/鉴权异常统一包装为
+            命中的条目不重复请求；未命中者去重后经共用内核 _embed_remote_batches
+            按批次调用 OpenAI 兼容 embeddings 接口（dimensions=self.dimension=1024），
+            响应按 index 对齐回原输入顺序；任何网络/超时/鉴权/校验异常统一包装为
             EmbeddingUnavailableError（缓存命中部分不受影响）。
 
         参数：
@@ -362,38 +465,14 @@ class BailianEmbeddingProvider(EmbeddingProvider):
                 miss_keys.append(key)
         if miss_keys:
             try:
-                fetched: dict[str, list[float]] = {}  # 缓存键 → 归一化向量
-                # 分批请求：每批 ≤ EMBEDDING_BATCH_SIZE 条（防单请求超限）
-                for start in range(0, len(miss_keys), self._batch):
-                    batch_keys = miss_keys[start : start + self._batch]
-                    # 缓存键含 '\x00' 分隔符，取其后的归一化文本作为请求 input
-                    batch_texts = [key.split("\x00", 1)[1] for key in batch_keys]
-                    resp = self._client.embeddings.create(
-                        model=self.space_name,
-                        input=batch_texts,
-                        dimensions=1024,
-                        encoding_format="float",
-                    )
-                    # 响应 data 顺序不保证与输入一致，按 index 对齐回本批文本
-                    for item in sorted(resp.data, key=lambda d: d.index):
-                        vec = [float(x) for x in item.embedding]
-                        if len(vec) != 1024:
-                            # 防错维度向量写库（与 vector(1024) 列不对齐即失败）
-                            raise EmbeddingUnavailableError(
-                                f"百炼嵌入返回维度 {len(vec)} != 1024，拒绝写库"
-                            )
-                        # L2 归一化：保证「点积即余弦」
-                        norm = math.sqrt(sum(x * x for x in vec))
-                        if norm > 0:
-                            vec = [x / norm for x in vec]
-                        fetched[batch_keys[item.index]] = vec
-                for key in miss_keys:
-                    vec = fetched.get(key)
-                    if vec is None:
-                        # 服务端必须回满输入条数，缺失视为不可用（防御性兜底）
-                        raise EmbeddingUnavailableError(
-                            f"百炼嵌入响应缺失条目: {key.split(chr(0), 1)[-1][:50]}"
-                        )
+                # 缓存键含 '\x00' 分隔符，取其后的归一化文本作为请求 input；
+                # 分批请求/响应校验/归一化由共用内核完成（与智谱提供方行为一致）
+                miss_texts = [key.split("\x00", 1)[1] for key in miss_keys]
+                fetched_list = _embed_remote_batches(
+                    self._client, self.space_name, miss_texts, self.dimension, self._batch
+                )
+                fetched: dict[str, list[float]] = dict(zip(miss_keys, fetched_list, strict=True))
+                for key, vec in fetched.items():
                     _cache_put(key, vec)
                 # 按原输入顺序组装返回（缓存命中与本次请求合并）
                 for idx, item in enumerate(texts):
@@ -407,13 +486,127 @@ class BailianEmbeddingProvider(EmbeddingProvider):
         return [vec for vec in results if vec is not None]
 
 
+class ZhipuEmbeddingProvider(EmbeddingProvider):
+    """智谱 embedding-3 嵌入提供方（模型类，OpenAI 兼容协议远程调用，2048 维）。
+
+    说明：
+        - 经 OpenAI 兼容协议调用智谱开放平台 embeddings 端点
+          （ZHIPU_BASE_URL 缺省 https://open.bigmodel.cn/api/paas/v4/，已核实
+          embedding-3 维度 256-2048 可自定义，本项目固定 2048 维）；
+        - space_name = f"{ZHIPU_MODEL}-{EMBEDDING_DIMENSIONS}"（如
+          'embedding-3-2048'），写入 recipe_embedding.embedding_model 列，
+          检索/回填按其过滤（GAP-4）；2048 维向量另写入独立 embedding_zhipu
+          列（halfvec/vector 由迁移 d8f2b7c91e43 按 pgvector 版本分支创建），
+          与 1024 维 embedding vector(1024) 列物理隔离，跨空间绝不通算余弦；
+        - embed 经共用内核 _embed_remote_batches（条数/维度/有限值三重校验 +
+          L2 归一化），维度不符立即抛 EmbeddingUnavailableError 拒绝写库；
+        - ZHIPU_API_KEY 为空视为配置缺失直接抛 EmbeddingUnavailableError
+          （工厂捕获后回落 hash，绝不以 hash 伪向量冒充智谱空间）；
+        - 查询文本经模块级 LRU 缓存（与 Bailian/Hash 提供方共享同一缓存）。
+    """
+
+    def __init__(self) -> None:
+        """构造函数：装配智谱 OpenAI 兼容客户端（函数）。
+
+        说明：
+            ZHIPU_API_KEY 为空串即配置缺失（BASE_URL 有缺省值不判空）；
+            dimension 取 settings.EMBEDDING_DIMENSIONS（2048），
+            space_name 由模型名与维度拼出（'embedding-3-2048'）。
+
+        参数：
+            无。
+
+        返回值：
+            None。
+
+        异常：
+            EmbeddingUnavailableError：ZHIPU_API_KEY 为空（配置缺失）。
+        """
+        api_key = settings.ZHIPU_API_KEY.strip()
+        if not api_key:
+            raise EmbeddingUnavailableError(
+                "智谱嵌入配置缺失：ZHIPU_API_KEY 为空（EMBEDDING_PROVIDER=zhipu 需配置真实 Key）"
+            )
+        self._client = openai.OpenAI(
+            base_url=settings.ZHIPU_BASE_URL.strip() or ZHIPU_DEFAULT_BASE_URL,
+            api_key=api_key,
+            timeout=settings.EMBEDDING_TIMEOUT_SECONDS,
+        )
+        # 向量维度：与迁移 d8f2b7c91e43 的 embedding_zhipu 列（2048）对齐
+        self.dimension = max(1, int(settings.EMBEDDING_DIMENSIONS))
+        # 单批请求文本条数上限（max(1,..) 防止错误配置出 0 导致 range 异常）
+        self._batch = max(1, int(settings.EMBEDDING_BATCH_SIZE))
+        # 嵌入空间标识：同值写入 embedding_model 列并作为嵌入请求的 model 参数
+        self.space_name = (
+            settings.ZHIPU_MODEL.strip() or "embedding-3"
+        ) + f"-{self.dimension}"
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        """批量远程嵌入（函数，LRU 缓存 + 分批请求 + L2 归一化，2048 维）。
+
+        说明：
+            缓存键 = 空间名 + 归一化空白后的文本，命中不重复请求；未命中者
+            去重后经共用内核 _embed_remote_batches 分批调用智谱 embeddings
+            接口（model=ZHIPU_MODEL，dimensions=2048），响应条数/维度/数值
+            合法性校验失败即抛 EmbeddingUnavailableError（拒绝写库）。
+
+        参数：
+            texts：待嵌入文本列表（可为空列表）。
+
+        返回值：
+            list[list[float]]：与 texts 等长、顺序一致的 2048 维 L2 归一化向量列表。
+
+        异常：
+            EmbeddingUnavailableError：智谱调用失败（网络/超时/鉴权）或响应
+            校验不通过（条数缺失/维度 != 2048/含 NaN/Inf）。
+        """
+        if not texts:
+            return []
+        # 逐条查缓存：命中直接取用；未命中的按「空间名\x00归一化文本」去重收集
+        results: list[list[float] | None] = [None] * len(texts)
+        miss_keys: list[str] = []   # 未命中条目的缓存键（保序、去重）
+        for idx, item in enumerate(texts):
+            key = f"{self.space_name}\x00{' '.join(item.split())}"
+            cached = _cache_get(key)
+            if cached is not None:
+                results[idx] = cached
+            elif key not in miss_keys:
+                miss_keys.append(key)
+        if miss_keys:
+            try:
+                # 缓存键含 '\x00' 分隔符，取其后的归一化文本作为请求 input；
+                # 分批请求/响应三重校验/归一化由共用内核完成（与百炼行为一致）
+                miss_texts = [key.split("\x00", 1)[1] for key in miss_keys]
+                fetched_list = _embed_remote_batches(
+                    self._client, settings.ZHIPU_MODEL.strip() or "embedding-3",
+                    miss_texts, self.dimension, self._batch,
+                )
+                fetched: dict[str, list[float]] = dict(zip(miss_keys, fetched_list, strict=True))
+                for key, vec in fetched.items():
+                    _cache_put(key, vec)
+                # 按原输入顺序组装返回（缓存命中与本次请求合并）
+                for idx, item in enumerate(texts):
+                    if results[idx] is None:
+                        key = f"{self.space_name}\x00{' '.join(item.split())}"
+                        results[idx] = fetched[key]
+            except EmbeddingUnavailableError:
+                raise
+            except Exception as exc:  # noqa: BLE001 —— 网络等异常统一包装为不可用
+                raise EmbeddingUnavailableError(f"智谱嵌入调用失败: {exc}") from exc
+        return [vec for vec in results if vec is not None]
+
+
 def get_embedding_provider() -> EmbeddingProvider:
     """嵌入提供方工厂（函数，进程内单例）。
 
     说明：
-        读取 settings.EMBEDDING_PROVIDER（取值 'hash'（缺省）| 'bailian' | 'bgem3'）：
+        读取 settings.EMBEDDING_PROVIDER（取值 'hash'（缺省）| 'bailian' | 'bgem3' | 'zhipu'）：
         - 'bailian'：构造 BailianEmbeddingProvider，失败（配置缺失等）记 WARNING
           回落 HashEmbeddingProvider，保证检索主链路不因远程配置问题中断；
+        - 'zhipu'：构造 ZhipuEmbeddingProvider（embedding-3，2048 维），失败
+          （ZHIPU_API_KEY 缺失等）记 WARNING 回落 HashEmbeddingProvider——
+          回落空间的 space_name 仍为 'hash-v1'，绝不以 hash 伪向量冒充智谱空间
+          （检索/回填按 space_name 过滤，跨空间向量不可比）；
         - 'bgem3'：BGEM3Provider 阶段二占位，实例化即抛 NotImplementedError 原样向上；
         回填与查询必须共享同一嵌入空间，故进程内缓存单例。
 
@@ -439,6 +632,12 @@ def get_embedding_provider() -> EmbeddingProvider:
                 provider = BailianEmbeddingProvider()
             except Exception as exc:  # noqa: BLE001 —— 百炼配置缺失/异常回落 hash
                 logger.warning("bailian provider init failed, fallback to hash: %s", exc)
+                provider = HashEmbeddingProvider()
+        elif name == "zhipu":
+            try:
+                provider = ZhipuEmbeddingProvider()
+            except Exception as exc:  # noqa: BLE001 —— 智谱配置缺失/异常回落 hash
+                logger.warning("zhipu provider init failed, fallback to hash: %s", exc)
                 provider = HashEmbeddingProvider()
         else:
             provider = HashEmbeddingProvider()  # 缺省（含 'hash'）
@@ -486,6 +685,104 @@ def probe_pgvector(db_engine=engine) -> bool:
             logger.warning("probe pgvector failed, fallback to json dot-product: %s", exc)
             _probe_cache = False
     return _probe_cache
+
+
+# 智谱 2048 维向量列探测结果缓存（None=未探测；'halfvec'/'vector'=列类型；'missing'=列不存在）
+_zhipu_column_cache: str | None = None
+_zhipu_probe_lock = threading.Lock()
+
+
+def probe_zhipu_column(db_engine=engine) -> str:
+    """探测智谱 2048 维向量列 embedding_zhipu 的可用性与实际类型（函数，模块级缓存）。
+
+    说明：
+        embedding_zhipu 列由迁移 d8f2b7c91e43 按 pgvector 版本分支创建：
+        ≥0.7 → halfvec(2048)（可建 hnsw 索引）；<0.7 → vector(2048)（仅顺序
+        扫描）；扩展缺失 → 列不存在。本函数经 udt_name 判别实际类型
+        （halfvec → 'halfvec'，vector → 'vector'，无列 → 'missing'），
+        供写入路径（智谱空间双写）与检索路径（2048 空间 SQL 方言）分支；
+        探测异常统一按 'missing' 处理（降级，不阻断主链路）。
+
+    参数：
+        db_engine：SQLAlchemy Engine（默认 app.core.db.engine）。
+
+    返回值：
+        str：'halfvec' | 'vector' | 'missing'（含探测异常情形）。
+
+    异常：
+        不抛出（数据库异常捕获后返回 'missing'）。
+    """
+    global _zhipu_column_cache
+    if _zhipu_column_cache is not None:
+        return _zhipu_column_cache
+    with _zhipu_probe_lock:
+        if _zhipu_column_cache is not None:
+            return _zhipu_column_cache
+        try:
+            with db_engine.connect() as conn:
+                udt = conn.execute(
+                    text(
+                        "SELECT c.udt_name FROM information_schema.columns c "
+                        "WHERE c.table_name = 'recipe_embedding' "
+                        "AND c.column_name = 'embedding_zhipu'"
+                    )
+                ).scalar()
+                if udt == "halfvec":
+                    _zhipu_column_cache = "halfvec"
+                elif udt == "vector":
+                    _zhipu_column_cache = "vector"
+                else:
+                    _zhipu_column_cache = "missing"
+        except Exception as exc:  # noqa: BLE001 —— 探测失败按列缺失降级
+            logger.warning("probe zhipu column failed: %s", exc)
+            _zhipu_column_cache = "missing"
+    return _zhipu_column_cache
+
+
+def _sync_vector_columns(session: Session, row_id: int, vec: list[float]) -> None:
+    """按向量维度把向量双写进对应的 pgvector 物理列（模块私有函数）。
+
+    说明：
+        - 1024 维（hash/bailian 空间）：写原 embedding vector(1024) 列
+          （CAST(:v AS vector)，与 b8d3f5a21c60 迁移及 ivfflat 索引对齐）；
+        - 非 1024 维（智谱 2048 空间）：写独立 embedding_zhipu 列，CAST 目标
+          类型按 probe_zhipu_column 实测（halfvec/vector）；列缺失（扩展不可用
+          环境）时跳过——embedding_json 便携列已承载向量，检索自动降级；
+        - 该函数绝不跨列混写（维度即物理列的唯一判据），防止 2048 维向量
+          写进 vector(1024) 列被截断或报错。
+
+    参数：
+        session：数据库会话（调用方负责事务提交）。
+        row_id：recipe_embedding 行 ID。
+        vec：已 L2 归一化的向量（维度决定目标列）。
+
+    返回值：
+        None。
+
+    异常：
+        数据库执行异常向上抛出（由调用方决定回滚或降级）。
+    """
+    if len(vec) == EMBEDDING_DIMENSION:
+        # 1024 维：与原 embedding vector(1024) 列及 ivfflat 索引对齐（现有行为）
+        if probe_pgvector(engine):
+            session.execute(
+                text("UPDATE recipe_embedding SET embedding = CAST(:v AS vector) WHERE id = :id"),
+                {"v": _to_vector_literal(vec), "id": int(row_id)},
+            )
+        return
+    # 非 1024 维（智谱 2048 空间）：写独立 embedding_zhipu 列（类型按实测分支）
+    column_kind = probe_zhipu_column(engine)
+    if column_kind == "missing":
+        # 扩展不可用环境未建列：仅保留 embedding_json 便携列（检索层自动降级）
+        logger.warning("embedding_zhipu column missing, skip pgvector sync (row_id=%s)", row_id)
+        return
+    session.execute(
+        text(
+            f"UPDATE recipe_embedding SET embedding_zhipu = CAST(:v AS {column_kind}) "
+            "WHERE id = :id"
+        ),
+        {"v": _to_vector_literal(vec), "id": int(row_id)},
+    )
 
 
 def _recipe_embed_text(session: Session, recipe_id: int, title: str) -> str:
@@ -561,7 +858,6 @@ def ensure_embeddings(
 
         texts = [_recipe_embed_text(session, rid, title) for rid, title in targets]
         vectors = provider.embed(texts)
-        use_pgvector = probe_pgvector(engine)
 
         new_rows: list[tuple[RecipeEmbedding, list[float]]] = []
         for (rid, _title), vec in zip(targets, vectors, strict=True):
@@ -572,12 +868,10 @@ def ensure_embeddings(
             new_rows.append((row, vec))
         session.flush()
 
-        # pgvector 可用时双写向量列（ORM 不映射该列，仅 raw SQL 访问）
-        if use_pgvector and new_rows:
-            session.execute(
-                text("UPDATE recipe_embedding SET embedding = CAST(:v AS vector) WHERE id = :id"),
-                [{"v": _to_vector_literal(vec), "id": int(row.id)} for row, vec in new_rows],
-            )
+        # 双写物理向量列（维度分流：1024 → embedding 列，2048 → embedding_zhipu 列；
+        # 列缺失环境自动跳过，仅保留 embedding_json 便携列）
+        for row, vec in new_rows:
+            _sync_vector_columns(session, int(row.id), vec)
         session.commit()
         written = len(new_rows)
         logger.info("ensure_embeddings backfilled %s verified vectors", written)
@@ -726,11 +1020,7 @@ def upsert_embedding(
         row.embedding_model = provider.space_name
         session.flush()
 
-    # pgvector 可用时双写向量列（ORM 不映射该列，仅 raw SQL 访问）
-    if probe_pgvector(engine):
-        session.execute(
-            text("UPDATE recipe_embedding SET embedding = CAST(:v AS vector) WHERE id = :id"),
-            {"v": _to_vector_literal(vec), "id": int(row.id)},
-        )
+    # 双写物理向量列（维度分流：1024 → embedding 列，2048 → embedding_zhipu 列）
+    _sync_vector_columns(session, int(row.id), vec)
     session.commit()
     return int(row.id)

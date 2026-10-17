@@ -21,6 +21,15 @@
     EMBEDDING_API_BASE / EMBEDDING_API_KEY 为空串时回落复用
     VISION_BASE_URL / VISION_API_KEY（百炼同一凭证）；
     EMBEDDING_WARMUP 控制启动期预热（仅 bailian 生效）。
+    ZHIPU_BASE_URL / ZHIPU_API_KEY / ZHIPU_MODEL / EMBEDDING_DIMENSIONS：
+    智谱嵌入参数（OpenAI 兼容协议，端点缺省 https://open.bigmodel.cn/api/paas/v4/）——
+    EMBEDDING_PROVIDER='zhipu' 时启用智谱 embedding-3（维度 256-2048 可自定义，
+    本项目缺省 EMBEDDING_DIMENSIONS=2048，与 embedding_zhipu halfvec(2048) 列对齐）；
+    ZHIPU_API_KEY 为空时工厂降级 hash，绝不以 hash 向量冒充智谱空间。
+    MCP_ENABLED / MCP_SERVER_COMMAND：MCP 接入开关与 Server 启动命令——
+    MCP_ENABLED 取 'off'（缺省）或 'on'（tool_loop 节点挂载 MCP 只读工具）；
+    MCP_SERVER_COMMAND 为 stdio MCP Server 启动命令（JSON 数组字符串或空格
+    分隔，如 '["python", "-m", "mcp_server"]'，空串表示未配置）。
     RETRIEVAL_VECTOR / RETRIEVAL_VECTOR_FOR_INGREDIENTS / RETRIEVAL_FUSION：
     检索开关——RETRIEVAL_VECTOR 为向量路径总开关（'on'/'off'）；
     RETRIEVAL_VECTOR_FOR_INGREDIENTS 控制手选食材合成查询（默认 'off'）；
@@ -78,13 +87,17 @@ class Settings(BaseSettings):
     求助回答是否结合当前步骤与用户档案经主 LLM 生成；off 或 LLM 失败时
     回退关键词库/步骤要点模板。
     EMBEDDING_PROVIDER：嵌入提供方取值（'hash' 缺省确定性哈希兜底 /
-        'bailian' 百炼远程语义嵌入 / 'bgem3' 阶段二占位）。
+        'bailian' 百炼远程语义嵌入 / 'zhipu' 智谱远程语义嵌入 / 'bgem3' 阶段二占位）。
         EMBEDDING_MODEL_NAME：嵌入模型名称（如 qwen3.7-text-embedding）。
         EMBEDDING_BATCH_SIZE：嵌入请求单批文本条数上限。
         EMBEDDING_API_BASE：嵌入服务 OpenAI 兼容地址（空串回落 VISION_BASE_URL）。
         EMBEDDING_API_KEY：嵌入服务 API Key（空串回落 VISION_API_KEY）。
         EMBEDDING_TIMEOUT_SECONDS：嵌入请求超时秒数。
         EMBEDDING_WARMUP：启动期预热开关（'on'/'off'，仅 bailian 生效）。
+        ZHIPU_BASE_URL：智谱 OpenAI 兼容服务地址（缺省 https://open.bigmodel.cn/api/paas/v4/）。
+        ZHIPU_API_KEY：智谱 API Key（空串时 EMBEDDING_PROVIDER='zhipu' 降级 hash）。
+        ZHIPU_MODEL：智谱嵌入模型名（缺省 embedding-3）。
+        EMBEDDING_DIMENSIONS：嵌入向量维度（缺省 2048，智谱空间向量与 halfvec(2048) 列尺寸）。
         RETRIEVAL_VECTOR：向量检索路径总开关（'on' 缺省 / 'off'）。
         RETRIEVAL_VECTOR_FOR_INGREDIENTS：手选食材合成查询向量开关（默认 'off'）。
         RETRIEVAL_FUSION：三路融合策略取值（'fixed' 缺省 / 'rrf'）。
@@ -154,9 +167,20 @@ class Settings(BaseSettings):
     EMBEDDING_API_KEY: str = ""
     EMBEDDING_TIMEOUT_SECONDS: int = 10
     EMBEDDING_WARMUP: str = "on"
+    # 智谱嵌入（OpenAI 兼容协议 https://open.bigmodel.cn/api/paas/v4/；EMBEDDING_PROVIDER='zhipu' 时启用；
+    # ZHIPU_API_KEY 为空时工厂降级 hash；EMBEDDING_DIMENSIONS 决定智谱空间向量维度，与 halfvec(2048) 列对齐）
+    ZHIPU_BASE_URL: str = "https://open.bigmodel.cn/api/paas/v4/"
+    ZHIPU_API_KEY: str = ""
+    ZHIPU_MODEL: str = "embedding-3"
+    EMBEDDING_DIMENSIONS: int = 2048
     RETRIEVAL_VECTOR: str = "on"
     RETRIEVAL_VECTOR_FOR_INGREDIENTS: str = "off"
     RETRIEVAL_FUSION: str = "fixed"
+
+    # MCP（阶段二：stdio JSON-RPC 2.0 最小实现；MCP_ENABLED='on' 时 tool_loop
+    # 节点经 MCPClient 挂载 MCP 只读工具，off/未配置命令时完全不走 MCP 路径）
+    MCP_ENABLED: str = "off"
+    MCP_SERVER_COMMAND: str = ""
 
     # 应用
     APP_HOST: str = "0.0.0.0"

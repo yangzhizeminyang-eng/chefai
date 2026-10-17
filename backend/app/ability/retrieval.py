@@ -37,6 +37,7 @@ from app.ability.embedding import (
     get_embedding_provider,
     lazy_backfill,
     probe_pgvector,
+    probe_zhipu_column,
 )
 from app.ability.ranking import is_valid_ingredient_name
 from app.core.config import settings
@@ -204,15 +205,19 @@ def _vector_search_pgvector(
     """pgvector raw SQL 余弦检索分支（函数）。
 
     说明：
-        向量列 embedding(vector(1024)) 仅存在于迁移中，raw SQL 以 `<=>` 余弦距离
-        排序取 Top-20；使用独立 engine 连接，失败不污染调用方事务。
-        空间过滤（GAP-4）：每个分支都限定 embedding_model = 当前嵌入空间，
-        不同空间向量绝不通算余弦。
+        向量列按查询维度分流（GAP-4 空间隔离的物理延伸）：
+        - 1024 维（hash/bailian 空间）：查原 embedding vector(1024) 列；
+        - 非 1024 维（智谱 2048 空间）：查独立 embedding_zhipu 列
+          （halfvec/vector 类型按 probe_zhipu_column 实测；列缺失时抛出
+          运行时错误由 _vector_search 统一捕获降级关键词路径）。
+        raw SQL 以 `<=>` 余弦距离排序取 Top-20；使用独立 engine 连接，
+        失败不污染调用方事务。空间过滤（GAP-4）：每个分支都限定
+        embedding_model = 当前嵌入空间，不同空间向量绝不通算余弦。
         分区红线：默认仅 source='verified'；include_private_owner 时追加该用户
         source='ai_private' 行（代码断言，AI 私有菜谱不进默认推荐）。
 
     参数：
-        query_vector：查询向量（1024 维，已归一化）。
+        query_vector：查询向量（已归一化；维度决定目标物理列）。
         include_private_owner：创新链路归属用户 ID；None 仅查 verified。
         space_name：当前嵌入空间标识（与 embedding_model 列匹配）。
 
@@ -223,9 +228,19 @@ def _vector_search_pgvector(
         SQL 异常向上抛出（由 _vector_search 统一捕获降级）。
     """
     q_literal = "[" + ",".join(f"{x:.6f}" for x in query_vector) + "]"
+    # 维度分流：1024 维走原 embedding 列；2048 维走智谱独立列（类型按实测）
+    if len(query_vector) == 1024:
+        column, cast_type = "embedding", "vector"
+    else:
+        kind = probe_zhipu_column(engine)
+        if kind == "missing":
+            # 智谱向量列不存在（扩展缺失环境）：2048 空间无 pgvector 路径，
+            # 抛错交由 retrieve_candidates 统一降级 JSON/关键词路径
+            raise RuntimeError("embedding_zhipu column missing (pgvector unavailable)")
+        column, cast_type = "embedding_zhipu", kind
     # 🔴 OR 分支必须括号包裹：空间过滤 AND 进每个分支（否则 verified 行会绕过空间过滤）
     sql = (
-        "SELECT recipe_id, 1 - (embedding <=> CAST(:q AS vector)) AS sim "
+        f"SELECT recipe_id, 1 - ({column} <=> CAST(:q AS {cast_type})) AS sim "
         "FROM recipe_embedding "
         "WHERE (source = 'verified' AND embedding_model = :m)"
     )
@@ -233,7 +248,7 @@ def _vector_search_pgvector(
     if include_private_owner is not None:
         sql += " OR (source = 'ai_private' AND owner_user_id = :owner AND embedding_model = :m)"
         params["owner"] = int(include_private_owner)
-    sql += " ORDER BY embedding <=> CAST(:q AS vector) LIMIT :n"
+    sql += f" ORDER BY {column} <=> CAST(:q AS {cast_type}) LIMIT :n"
     params["n"] = VECTOR_TOP_N
     with engine.connect() as conn:
         rows = conn.execute(text(sql), params).all()
