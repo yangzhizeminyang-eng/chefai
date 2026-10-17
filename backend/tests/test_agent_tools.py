@@ -5,7 +5,9 @@
     2. timeout：stub 工具 sleep 超过 ctx.max_timeout_seconds → error_code=timeout
        （重试耗尽后仍为 timeout）；
     3. 幂等缓存：只读工具同参数二次调用 cached=True 且 attempts=0；
-    4. permission_denied：InventoryQueryTool 无 user_id → permission_denied。
+    4. permission_denied：InventoryQueryTool 无 user_id → permission_denied；
+    5. 用户作用域缓存：user_scoped 工具跨用户隔离、permission_denied 不入缓存、
+       非 user_scoped 工具跨用户共享缓存。
 
 测试全部离线确定性（不依赖 DB——DB 不可用路径不在本文件覆盖范围）。
 """
@@ -13,9 +15,13 @@
 from __future__ import annotations
 
 import time
+from datetime import date
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
+import app.ability.tools as tools
 from app.ability.tools import (
     AgentTool,
     InventoryQueryTool,
@@ -77,11 +83,13 @@ class StubCountTool(AgentTool):
         name：stub_count。
         description：测试用计数工具。
         read_only：True。
+        user_scoped：False（非用户作用域，缓存跨用户共享）。
     """
 
     name = "stub_count"
     description = "测试用计数工具（验证幂等缓存）"
     read_only = True
+    user_scoped = False
 
     def __init__(self) -> None:
         """构造（函数）：执行计数初始化为 0。
@@ -249,3 +257,241 @@ class TestPermissionDenied:
         with pytest.raises(ToolError) as excinfo:
             InventoryQueryTool().execute({}, ToolContext(user_id=None))
         assert excinfo.value.code == "permission_denied"
+
+
+def _inv_row(ingredient_id: int, name: str, *, status: str = "normal") -> tuple[Any, str]:
+    """构造一行 fake 库存数据 (库存条目替身, 食材名)（函数）。
+
+    参数：
+        ingredient_id：食材 ID。
+        name：食材名。
+        status：库存状态（normal/expiring）。
+
+    返回值：
+        tuple[Any, str]：(SimpleNamespace 库存条目替身, 食材名)。
+
+    异常：
+        无。
+    """
+    expiry = date(2026, 1, 1) if status == "normal" else date(2026, 2, 1)
+    item = SimpleNamespace(
+        ingredient_id=ingredient_id,
+        quantity_level="half",
+        storage="fridge",
+        expiry_date=expiry,
+        status=status,
+    )
+    return (item, name)
+
+
+def _user_id_from_stmt(stmt: Any) -> int | None:
+    """从 SQLAlchemy 语句 where 条件提取 InventoryItem.user_id 过滤值（函数）。
+
+    说明：
+        测试替身用：fake session 据此模拟按 owner 过滤，返回各用户自己的库存行。
+
+    参数：
+        stmt：select/text 等 SQLAlchemy 语句对象。
+
+    返回值：
+        int | None：user_id 比较值；语句无该条件（如 text 探针）返回 None。
+
+    异常：
+        无。
+    """
+    clause = getattr(stmt, "whereclause", None)
+    if clause is None:
+        return None
+    conds = list(clause) if hasattr(clause, "__iter__") else [clause]
+    for cond in conds:
+        left = getattr(cond, "left", None)
+        right = getattr(cond, "right", None)
+        if getattr(left, "key", None) == "user_id" and getattr(right, "value", None) is not None:
+            return int(right.value)
+    return None
+
+
+class _FakeExecuteResult:
+    """fake session.execute 的结果替身（模型类）。
+
+    说明：
+        仅实现 InventoryQueryTool 消费的 .all()。
+
+    参数（构造）：
+        rows：预置的 (库存条目, 食材名) 元组列表。
+
+    异常：
+        无。
+    """
+
+    def __init__(self, rows: list[tuple[Any, str]]) -> None:
+        """构造（函数）：保存预置行。
+
+        参数：
+            rows：预置行列表。
+
+        返回值：
+            None。
+
+        异常：
+            无。
+        """
+        self._rows = rows
+
+    def all(self) -> list[tuple[Any, str]]:
+        """返回预置行（函数）。
+
+        返回值：
+            list[tuple[Any, str]]：(库存条目, 食材名) 行列表副本。
+
+        异常：
+            无。
+        """
+        return list(self._rows)
+
+
+class _FakeInventorySession:
+    """InventoryQueryTool 的 DB 会话替身（模型类）。
+
+    说明：
+        按语句 where 条件中的 InventoryItem.user_id 过滤值返回预置库存行，
+        模拟不同用户持有不同库存；probe_db 的 SELECT 1 探针（无 where 条件）
+        返回空行直接放行。
+
+    参数（构造）：
+        data_by_user：user_id -> [(库存条目, 食材名), ...] 的预置数据表。
+
+    异常：
+        无。
+    """
+
+    def __init__(self, data_by_user: dict[int, list[tuple[Any, str]]]) -> None:
+        """构造（函数）：保存按用户预置的数据表。
+
+        参数：
+            data_by_user：user_id -> 行列表的映射。
+
+        返回值：
+            None。
+
+        异常：
+            无。
+        """
+        self._data_by_user = data_by_user
+
+    def __enter__(self) -> _FakeInventorySession:
+        """进入 with 上下文（函数）。
+
+        返回值：
+            _FakeInventorySession：自身。
+
+        异常：
+            无。
+        """
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        """退出 with 上下文（函数）。
+
+        参数：
+            exc_type：异常类型（未使用）。
+            exc：异常实例（未使用）。
+            tb：回溯对象（未使用）。
+
+        返回值：
+            bool：False（不吞异常）。
+
+        异常：
+            无。
+        """
+        return False
+
+    def execute(self, stmt: Any) -> _FakeExecuteResult:
+        """执行语句替身（函数）。
+
+        说明：
+            从语句 where 条件提取 user_id 并返回该用户预置库存行；
+            无 user_id 条件（text 探针）返回空行。
+
+        参数：
+            stmt：SQLAlchemy 语句对象。
+
+        返回值：
+            _FakeExecuteResult：可 .all() 的结果替身。
+
+        异常：
+            无。
+        """
+        user_id = _user_id_from_stmt(stmt)
+        return _FakeExecuteResult(self._data_by_user.get(user_id, []))
+
+
+class TestUserScopedCache:
+    """用户作用域缓存路径（user_scoped 工具的跨用户缓存隔离契约）。"""
+
+    def test_inventory_cache_isolated_per_user(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """user_scoped 工具：用户 2 同参数不命中用户 1 的缓存（函数）。
+
+        说明：
+            用户 1 查询结果入缓存后，用户 2 相同空参数必须真实执行并返回
+            自己的库存（修复前命中用户 1 缓存：cached=True 且结果相同）。
+
+        参数：
+            monkeypatch：pytest 替身（替换 tools.SessionLocal 为 fake 会话工厂）。
+
+        异常：
+            断言失败即测试失败。
+        """
+        data = {1: [_inv_row(3, "鸡蛋")], 2: [_inv_row(7, "牛奶", status="expiring")]}
+        monkeypatch.setattr(tools, "SessionLocal", lambda: _FakeInventorySession(data))
+        tool = InventoryQueryTool()
+        first = execute_tool(tool, {}, ToolContext(user_id=1, request_id="u1"))
+        assert first.status == "ok"
+        assert first.cached is False
+        assert first.result["count"] == 1
+        assert first.result["items"][0]["name"] == "鸡蛋"
+
+        second = execute_tool(tool, {}, ToolContext(user_id=2, request_id="u2"))
+        assert second.status == "ok"
+        assert second.cached is False, "用户 2 不应命中用户 1 的缓存"
+        assert second.result["items"][0]["name"] == "牛奶"
+        assert second.result != first.result
+
+    def test_inventory_permission_denied_not_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """permission_denied 不写缓存：匿名两次均 denied，实名调用仍真实执行（函数）。
+
+        说明：
+            denied 结果绝不能进入幂等缓存污染后续调用（即便键相同）。
+
+        参数：
+            monkeypatch：pytest 替身（替换 tools.SessionLocal 为 fake 会话工厂）。
+
+        异常：
+            断言失败即测试失败。
+        """
+        data = {1: [_inv_row(3, "鸡蛋")]}
+        monkeypatch.setattr(tools, "SessionLocal", lambda: _FakeInventorySession(data))
+        tool = InventoryQueryTool()
+        first = execute_tool(tool, {}, ToolContext(user_id=None, request_id="anon1"))
+        second = execute_tool(tool, {}, ToolContext(user_id=None, request_id="anon2"))
+        assert first.status == "error"
+        assert first.error_code == "permission_denied"
+        assert second.status == "error"
+        assert second.error_code == "permission_denied"
+
+        third = execute_tool(tool, {}, ToolContext(user_id=1, request_id="real"))
+        assert third.status == "ok"
+        assert third.cached is False, "denied 结果不应污染缓存，实名调用必须真实执行"
+
+    def test_non_user_scoped_tools_share_cache(self) -> None:
+        """user_scoped=False 工具跨用户共享缓存（防过度隔离回归）（函数）。
+
+        异常：
+            断言失败即测试失败。
+        """
+        tool = StubCountTool()
+        first = execute_tool(tool, {"q": "番茄"}, ToolContext(user_id=1, request_id="u1"))
+        second = execute_tool(tool, {"q": "番茄"}, ToolContext(user_id=2, request_id="u2"))
+        assert first.cached is False
+        assert second.cached is True, "非用户作用域工具不应因 user_id 不同而缓存未命中"
+        assert tool.exec_count == 1

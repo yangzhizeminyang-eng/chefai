@@ -16,6 +16,11 @@
 复用红线：
     工具只读且只复用既有业务函数（retrieval/nutrition），不重写业务逻辑；
     检索走 use_vector=False（避免触发 embedding 惰性回填写库，保持只读语义）。
+
+用户作用域：
+    内置四工具中仅 inventory_query 依赖 ctx.user_id（user_scoped=True，缓存键
+    纳入用户前缀，防止跨用户命中泄露私有库存）；recipe_search/recipe_detail/
+    nutrition_estimate 查询公开菜谱与营养数据，无用户维度，跨用户共享缓存。
 """
 
 from __future__ import annotations
@@ -148,11 +153,15 @@ class AgentTool(ABC):
         name：工具名（注册键，全局唯一）。
         description：用途描述（进入 LLM 工具选择提示词）。
         read_only：是否只读（True 才可缓存 / 进 MCP 白名单）。
+        user_scoped：结果是否依赖 ctx.user_id 等请求上下文（True 时缓存键纳入
+            用户作用域前缀，防止跨用户命中泄露私有数据；仅数字 ID 进键，
+            不含 token/密钥等敏感值）。
     """
 
     name: str = ""
     description: str = ""
     read_only: bool = True
+    user_scoped: bool = False
 
     @abstractmethod
     def parameters_schema(self) -> dict:
@@ -211,16 +220,21 @@ def clear_tool_cache() -> None:
         _tool_cache.clear()
 
 
-def _cache_key(tool_name: str, params: dict) -> str:
+def _cache_key(tool: AgentTool, params: dict, ctx: ToolContext) -> str:
     """构造幂等缓存键（函数）。
 
     说明：
-        键 = tool_name + 规范化参数 JSON（sort_keys 确保键序无关；ensure_ascii=False
-        保持中文可读）；规范化失败的极端情况退化为 str(params)。
+        键 = [用户作用域前缀] + tool_name + 规范化参数 JSON（sort_keys 确保键序
+        无关；ensure_ascii=False 保持中文可读）；user_scoped 工具且 ctx.user_id
+        非空时前缀 "u{int(user_id)}\\x00"（键中只有数字 user_id，禁止任何
+        token/Key/密码进键）。user_scoped 工具在 user_id=None 时按设计到不了
+        缓存——此类工具 execute 会先抛 permission_denied 永不成功写缓存，故
+        此时退化为无前缀键也不会产生跨用户泄露（双保险防御层）。
 
     参数：
-        tool_name：工具名。
+        tool：工具实例（user_scoped 决定是否纳入用户作用域）。
         params：校验后的参数字典。
+        ctx：执行上下文（提供 user_id）。
 
     返回值：
         str：缓存键。
@@ -232,7 +246,10 @@ def _cache_key(tool_name: str, params: dict) -> str:
         canonical = json.dumps(params, sort_keys=True, ensure_ascii=False, default=str)
     except Exception:  # noqa: BLE001 —— 不可序列化参数退化为字符串表示
         canonical = str(params)
-    return f"{tool_name}::{canonical}"
+    prefix = ""
+    if tool.user_scoped and ctx.user_id is not None:
+        prefix = f"u{int(ctx.user_id)}\x00"
+    return f"{prefix}{tool.name}::{canonical}"
 
 
 def _cache_get(key: str) -> dict | None:
@@ -533,7 +550,8 @@ def execute_tool(tool: AgentTool, params: dict, ctx: ToolContext) -> ToolResult:
 
     说明：
         流程：参数校验（失败返回 invalid_params 结构化结果，不抛异常）→
-        幂等缓存查询（仅 read_only 工具，命中直接返回 cached=True）→
+        幂等缓存查询（仅 read_only 工具，命中直接返回 cached=True；user_scoped
+        工具缓存键含 ctx.user_id 前缀，跨用户不共享）→
         线程池超时执行 + tenacity 重试（unavailable/timeout，最多 3 次尝试）→
         成功结果写入缓存；任何分支都不向调用方抛异常。
 
@@ -565,9 +583,9 @@ def execute_tool(tool: AgentTool, params: dict, ctx: ToolContext) -> ToolResult:
             ToolResult(tool_name=tool.name, status="error", error_code=exc.code, message=exc.message, attempts=0)
         )
 
-    # 2) 幂等缓存（仅只读工具）
+    # 2) 幂等缓存（仅只读工具；user_scoped 工具键含用户前缀，跨用户天然隔离）
     if tool.read_only:
-        key = _cache_key(tool.name, validated)
+        key = _cache_key(tool, validated, ctx)
         hit = _cache_get(key)
         if hit is not None:
             return _finish(
@@ -842,11 +860,13 @@ class InventoryQueryTool(AgentTool):
         name：inventory_query。
         description：查询当前用户的在库食材列表（数量档/储存位/临期日期）。
         read_only：True。
+        user_scoped：True（结果按 ctx.user_id 过滤，缓存键须纳入用户作用域）。
     """
 
     name = "inventory_query"
     description = "查询当前用户冰箱/储藏的在库食材列表（需要用户身份，只读）。"
     read_only = True
+    user_scoped = True
 
     def parameters_schema(self) -> dict:
         """返回参数 Schema（函数）。

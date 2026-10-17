@@ -397,7 +397,25 @@ $env:AICOOK_MCP_STUB = "1"                    # stub 演示模式（零 DB 依�
 
 **真实链路验证记录（2026-10-17）**：智谱 embedding-3 连通冒烟（2048 维/归一化 ✓）→ `embedding_backfill` 回填 390/390（自检 PASS）→ Eval 真实语义检索对比（上表第 4 列）。测试进程经 `tests/conftest.py` 强制 `EMBEDDING_PROVIDER=hash`，绝不真实调用嵌入 API。
 
-### 14.5 CI 原则
+### 14.5 回归门禁与退出码
+
+`python -m eval.run_eval` 默认启用回归门禁，报告（JSON+MD）含 `gate` 段（阈值/实际值/pass-fail-skipped 状态/失败用例 ID/最终结果），**报告始终落盘**：
+
+| 指标 | 默认阈值 | 维度 |
+| --- | --- | --- |
+| 意图准确率 | >= 0.80 | intent |
+| 高危拦截召回率 | >= 1.00 | safety |
+| 误拦截率 | <= 0.10 | safety |
+| Hit@3 | >= 0.70 | retrieval |
+| Hit@5 | >= 0.70 | retrieval |
+| Recall@5 | >= 0.30 | retrieval |
+
+- 门禁 FAIL（指标不达标 / 可执行用例 error / 关键数据集执行错误）-> 退出码 **1**；全部 pass -> 0；数据集加载失败 -> 2。
+- `--offline`：检索维度标记 `skipped`，不参与失败判定（未执行不等于通过，报告可区分）。
+- `--gate-file PATH`：JSON 覆盖阈值；`--no-gate`：关闭门禁（退出码恒 0，兼容旧行为）。
+- 门禁设计为自动化回归门禁；真实模型指标（依赖外部 API）与离线回归指标在报告中分开呈现，前者不参与门禁判定。
+
+### 14.6 CI 原则
 
 评测与测试全程确定性 Stub（关键词兜底 + 本地规则风控 + SQL 检索 + hash 嵌入），**不依赖任何付费 API**，可在 CI 无密钥环境重复运行；配套测试 `tests/test_eval_runner.py`。真实模型指标仅在用户显式配置 Key 的环境产生，报告文件单独留存于 `eval/reports/`。
 
@@ -435,19 +453,35 @@ $env:AICOOK_MCP_STUB = "1"                    # stub 演示模式（零 DB 依�
 
 ```powershell
 .venv\Scripts\python.exe -m app.embedding_backfill --provider zhipu          # 全量回填（幂等，已存在目标空间 verified 行的菜谱自动跳过）
-.venv\Scripts\python.exe -m app.embedding_backfill --provider zhipu --limit 5 # 小样预演
-.venv\Scripts\python.exe -m app.embedding_backfill --provider zhipu --force   # 忽略既有行强制重算
+.venv\Scripts\python.exe -m app.embedding_backfill --provider zhipu --limit 5 # 限量回填：最多处理 5 条待回填记录（真实调用远程 API 并写入，非 dry-run 预演）
+.venv\Scripts\python.exe -m app.embedding_backfill --provider zhipu --force   # 忽略既有行强制重算（新向量全部生成成功后才在事务内覆盖，失败自动回滚旧行无损）
 ```
 
-- 回填含自检（目标空间 verified 行数 vs published 菜谱数、抽样校验维度与有限值），失败以非 0 退出码结束（供切流流水线判定）。
+- **限量模式（--limit N）**：实际写入 ≤N 条，输出 `planned/written/remaining`；自检为 `partial_check`（仅对已写入行校验维度与有限值，不报告全量覆盖完成）。
+- **全量模式**：自检为 `self_check`（目标空间 verified 行数 vs published 菜谱数 coverage ≥0.999、抽样校验维度与有限值），失败以非 0 退出码结束（供切流流水线判定）。
 - **回退路径**：把 `EMBEDDING_PROVIDER` 改回旧提供方（`hash` / `bailian`）并重启即可回到旧空间——验证期**绝不删除旧空间向量行与索引**。
 - 检索分流：`app/ability/retrieval.py` 的 `_vector_search_pgvector` 按向量维度分流列（1024 维 → 旧 `embedding` 列；非 1024 维 → `embedding_zhipu` 列，halfvec/vector 类型经 `probe_zhipu_column` 实测）。
 
-### 15.5 本地无 pgvector 时的行为
+### 15.5 pgvector 后装场景的收敛
+
+迁移 `d8f2b7c91e43` 在扩展缺失时跳过建列（Alembic 仍记录 revision），**之后安装 pgvector 需运行幂等收敛命令补齐**（不重放历史迁移）：
+
+```powershell
+.venv\Scripts\python.exe -m app.vector_schema_reconcile
+```
+
+| 场景 | 行为 |
+| --- | --- |
+| 首次迁移前已装扩展 | 迁移本身建列建索引，无需 reconcile |
+| 首次迁移时缺失、之后安装 | 运行 reconcile：按 extversion 建 `halfvec(2048)`+hnsw 索引（≥0.7）或 `vector(2048)`（<0.7），幂等可重复执行 |
+| 扩展缺失时运行 reconcile | 退出码 1 并提示先安装扩展；应用侧不受影响（JSON 便携列点积降级路径照常工作） |
+| 结构部分存在 / 重复执行 | `IF [NOT] EXISTS` 保证幂等，输出当前 schema 状态摘要 |
+
+### 15.6 本地无 pgvector 时的行为
 
 本地开发库（PostgreSQL 16 未装 pgvector 扩展）下：迁移跳过建列，向量检索自动降级 **`embedding_json` 便携列 Python 点积**回退路径（≤800 行规模、无 numpy），2048 维向量可正常存储与计算；容器部署镜像 `pgvector/pgvector:pg16` 为正式口径（扩展 ≥0.7 走 halfvec + hnsw 索引）。
 
-### 15.6 halfvec 分支容器实测记录（2026-10-17）
+### 15.7 halfvec 分支容器实测记录（2026-10-17）
 
 `docker compose -f docker-compose.yml up -d db` 拉起镜像后容器内实测（`docker exec aicook-db psql`）：
 

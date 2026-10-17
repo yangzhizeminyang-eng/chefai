@@ -23,7 +23,9 @@
       embedding vector(1024)；智谱 2048 空间写 embedding_zhipu，列未建仅保留
       embedding_json 便携列）；
     - ensure_embeddings：published 官方菜谱向量回填（幂等，embedding_json 便携列存储，
-      pgvector 可用时同步双写向量列；按嵌入空间 embedding_model 列过滤，GAP-4）；
+      pgvector 可用时同步双写向量列；按嵌入空间 embedding_model 列过滤，GAP-4；
+      支持 limit 限量回填（embed 前截断）与 force 事务内 upsert 覆盖（失败先
+      回滚再上抛，旧行无损））；
     - upsert_embedding：单条向量 upsert（供 Task 7 创新链路写入 source='ai_private' 行）。
 
 嵌入空间标识说明（GAP-4）：
@@ -812,28 +814,45 @@ def _recipe_embed_text(session: Session, recipe_id: int, title: str) -> str:
 
 
 def ensure_embeddings(
-    session: Session, provider: EmbeddingProvider | None = None, *, space_name: str | None = None
+    session: Session,
+    provider: EmbeddingProvider | None = None,
+    *,
+    space_name: str | None = None,
+    limit: int | None = None,
+    force: bool = False,
 ) -> int:
-    """为全部已发布官方菜谱回填向量（幂等，函数）。
+    """为已发布官方菜谱回填向量（幂等，函数，支持限量与 force 事务内安全覆盖）。
 
     说明：
         目标集 = recipe.status='published' 的菜谱；为每个尚无「目标嵌入空间」
-        verified 向量行的菜谱生成 1024 维向量，写入 recipe_embedding（source='verified'，
+        verified 向量行的菜谱生成向量，写入 recipe_embedding（source='verified'，
         embedding_json 便携列，embedding_model=目标空间；pgvector 可用时经 raw SQL
         同步双写向量列）。幂等：已存在目标空间 verified 行（按 recipe_id 判定）
         的菜谱跳过，重复调用不增行；模型升级后旧空间行不被复用、不冲突（GAP-4）。
+        limit：给定时在 embed 之前对目标集切片（最多回填 N 条待处理记录）——
+        限量部分真实调用远程 API 并写入，非 dry-run 预演；<=0 视为不写入。
+        force=True：目标集改为全部 published（不跳过已有行），写入分支改为
+        事务内 upsert——按 verified+recipe_id 查已有行，有则覆盖更新
+        （embedding_json/embedding_model + 双写向量列），无则插入；embed/写库
+        任一失败先 rollback 再上抛原异常，旧行完整无损——以此替代调用方
+        「先删后填」的预删模式，消除远程嵌入失败导致空空间不可恢复的风险。
 
     参数：
-        session：数据库会话（写入并 commit）。
+        session：数据库会话（写入并 commit；失败时 rollback）。
         provider：嵌入提供方；None 时用 get_embedding_provider() 单例。
         space_name：目标嵌入空间标识；None 时取 provider.space_name
           （供 CLI --model 显式覆盖，如指定旧空间补数）。
+        limit：本次最多回填的目标条数；None 表示不限量。
+        force：是否强制事务内覆盖重算（upsert 已有行；失败回滚并上抛）。
 
     返回值：
-        int：本次新回填的向量行数（0 表示无可回填项）。
+        int：本次写入/更新的向量行数（0 表示无可回填项；force 模式为本次
+          处理的目标总数）。
 
     异常：
-        不抛出（任何失败记 WARNING 并返回已写入计数，绝不阻断检索主链路）。
+        force=True 时任何失败在回滚后原样向上抛出（EmbeddingUnavailableError
+        等，由调用方决定退出码）；force=False 时不抛出（任何失败记 WARNING
+        并返回已写入计数，绝不阻断检索主链路）。
     """
     written = 0
     try:
@@ -843,28 +862,54 @@ def ensure_embeddings(
         published = session.execute(
             select(Recipe.id, Recipe.title).where(Recipe.status == "published")
         ).all()
-        existing = {
-            int(rid)
-            for (rid,) in session.execute(
-                select(RecipeEmbedding.recipe_id)
-                .where(RecipeEmbedding.source == "verified")
-                .where(RecipeEmbedding.embedding_model == space)
-                .where(RecipeEmbedding.recipe_id.is_not(None))
-            ).all()
-        }
-        targets = [(int(rid), title) for rid, title in published if int(rid) not in existing]
+        if force:
+            # force：目标 = 全部 published（事务内 upsert 覆盖，绝不预删——embed 失败旧行无损）
+            targets = [(int(rid), title) for rid, title in published]
+        else:
+            existing = {
+                int(rid)
+                for (rid,) in session.execute(
+                    select(RecipeEmbedding.recipe_id)
+                    .where(RecipeEmbedding.source == "verified")
+                    .where(RecipeEmbedding.embedding_model == space)
+                    .where(RecipeEmbedding.recipe_id.is_not(None))
+                ).all()
+            }
+            targets = [(int(rid), title) for rid, title in published if int(rid) not in existing]
+        if limit is not None:
+            # 限量：embed 前截断（max(0,..) 防负数切片误回退语义；真实写入而非 dry-run）
+            targets = targets[: max(0, int(limit))]
         if not targets:
             return 0
 
         texts = [_recipe_embed_text(session, rid, title) for rid, title in targets]
         vectors = provider.embed(texts)
 
+        # force upsert：一次性查出目标空间既有行（按 recipe_id 复用，避免逐行查询）
+        upsert_rows: dict[int, RecipeEmbedding] = {}
+        if force:
+            upsert_rows = {
+                int(row.recipe_id): row
+                for row in session.execute(
+                    select(RecipeEmbedding)
+                    .where(RecipeEmbedding.source == "verified")
+                    .where(RecipeEmbedding.embedding_model == space)
+                    .where(RecipeEmbedding.recipe_id.is_not(None))
+                ).scalars().all()
+            }
+
         new_rows: list[tuple[RecipeEmbedding, list[float]]] = []
         for (rid, _title), vec in zip(targets, vectors, strict=True):
-            row = RecipeEmbedding(
-                recipe_id=rid, source="verified", embedding_json=vec, embedding_model=space
-            )
-            session.add(row)
+            row = upsert_rows.get(rid)
+            if row is not None:
+                # force 覆盖：更新原行（不删除重建），向量随目标空间归属
+                row.embedding_json = vec
+                row.embedding_model = space
+            else:
+                row = RecipeEmbedding(
+                    recipe_id=rid, source="verified", embedding_json=vec, embedding_model=space
+                )
+                session.add(row)
             new_rows.append((row, vec))
         session.flush()
 
@@ -876,12 +921,16 @@ def ensure_embeddings(
         written = len(new_rows)
         logger.info("ensure_embeddings backfilled %s verified vectors", written)
         return written
-    except Exception as exc:  # noqa: BLE001 —— 回填失败不阻断检索（惰性下次重试）
-        logger.warning("ensure_embeddings failed: %s", exc)
+    except Exception as exc:  # noqa: BLE001 —— 统一先回滚，再按模式决定吞掉或上抛
         try:
             session.rollback()
         except Exception:  # noqa: BLE001
             pass
+        if force:
+            # force 为显式 CLI 操作：失败必须上抛（此时事务已回滚，旧行无损），
+            # 吞掉会掩盖「覆盖失败」事实，调用方（CLI）据此非 0 退出
+            raise
+        logger.warning("ensure_embeddings failed: %s", exc)
         return written
 
 

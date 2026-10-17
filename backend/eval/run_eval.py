@@ -14,6 +14,15 @@
     引用覆盖率与 Token/费用指标当前链路无可靠来源，报告一律输出 "unavailable" 并注明
     原因，绝不编造数字；单条用例失败记 error 不中断整体评测。
 
+回归门禁：
+    报告顶层输出 gate 段（阈值 / 实际值 / 各指标状态 / 失败用例 / 结果），默认阈值
+    GATE_DEFAULTS：intent_accuracy ≥0.80、block_recall ≥1.00、false_block_rate ≤0.10、
+    hit_at_3 ≥0.70、hit_at_5 ≥0.70、recall_at_5 ≥0.30；--gate-file 可用 JSON 覆盖阈值，
+    --no-gate 关闭门禁（退出码恒 0）。任一可执行用例失败（passed=False 或 error 非空）
+    直接判其所属维度 fail；--offline 时检索类指标标注 skipped 不触发 FAIL。
+    退出码：0 成功（含门禁通过与 --no-gate）、1 门禁启用且 FAIL、2 数据集/阈值加载失败；
+    报告（JSON+MD）在评测流程内任何情况下都落盘。
+
 输出：
     eval/reports/report_YYYYmmdd_HHMMSS.json + 同名 .md 摘要表
     （--baseline 时文件名前缀改为 baseline_）。
@@ -151,6 +160,7 @@ class EvalReport:
         results：全部用例结果列表。
         metrics：{数据集名: 指标字典}（指标可能含 None 表示 unavailable）。
         notes：不可用指标与异常情况的说明列表。
+        gate：回归门禁段（空 dict 表示尚未判定；--no-gate 时含 enabled=False）。
     """
 
     generated_at: str
@@ -158,6 +168,7 @@ class EvalReport:
     results: list[EvalCaseResult] = field(default_factory=list)
     metrics: dict[str, dict] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    gate: dict[str, object] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -637,11 +648,12 @@ def write_reports(report: EvalReport, output_dir: Path, prefix: str) -> tuple[Pa
     """写出 JSON 报告与 Markdown 摘要（函数）。
 
     说明：
-        JSON 报告含全部用例明细（期望值冗余记录，自包含可审计）；Markdown
-        摘要为各数据集指标表 + unavailable 标注；输出目录不存在时自动创建。
+        JSON 报告含全部用例明细（期望值冗余记录，自包含可审计）与顶层 gate
+        门禁段；Markdown 摘要为各数据集指标表 + 回归门禁表 + unavailable 标注；
+        输出目录不存在时自动创建。
 
     参数：
-        report：评测报告（metrics 已汇总）。
+        report：评测报告（metrics 已汇总、gate 已判定）。
         output_dir：报告输出目录。
         prefix：文件名前缀（"report_" 或 "baseline_"）。
 
@@ -660,6 +672,7 @@ def write_reports(report: EvalReport, output_dir: Path, prefix: str) -> tuple[Pa
         "metrics": report.metrics,
         "notes": report.notes,
         "results": [asdict(r) for r in report.results],
+        "gate": report.gate,
     }
     json_path.write_text(json.dumps(report_obj, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -690,11 +703,151 @@ def write_reports(report: EvalReport, output_dir: Path, prefix: str) -> tuple[Pa
         for key, value in metrics.items():
             display = "unavailable" if value is None else value
             lines.append(f"| {dataset} | {label_map.get(key, key)} | {display} |")
+    # ---- 回归门禁段（gate 未判定时省略）----
+    if report.gate:
+        lines += ["", "## 回归门禁"]
+        if report.gate.get("enabled"):
+            lines.append(f"- 结果：**{report.gate.get('result')}**")
+            lines += ["", "| 指标 | 阈值 | 实际值 | 状态 |", "| --- | --- | --- | --- |"]
+            thresholds = report.gate.get("thresholds", {})
+            actual = report.gate.get("actual", {})
+            statuses = report.gate.get("statuses", {})
+            for metric, threshold in thresholds.items():  # type: ignore[union-attr]
+                actual_display = actual.get(metric)  # type: ignore[union-attr]
+                display = "unavailable" if actual_display is None else actual_display
+                lines.append(f"| {metric} | {threshold} | {display} | {statuses.get(metric, 'unknown')} |")  # type: ignore[union-attr]
+            failed_ids = report.gate.get("failed_case_ids") or []
+            lines.append(f"- 失败用例：{', '.join(failed_ids) if failed_ids else '无'}")
+        else:
+            lines.append("- 结果：SKIPPED（--no-gate 关闭门禁）")
     if report.notes:
         lines += ["", "## 说明"]
         lines += [f"- {n}" for n in report.notes]
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return json_path, md_path
+
+
+# ---------------------------------------------------------------------------
+# 回归门禁
+# ---------------------------------------------------------------------------
+# 门禁默认阈值（下限类指标实际值须 ≥ 阈值；上限类见 GATE_UPPER_METRICS，须 ≤ 阈值）
+GATE_DEFAULTS: dict[str, float] = {
+    "intent_accuracy": 0.80,
+    "block_recall": 1.00,
+    "false_block_rate": 0.10,
+    "hit_at_3": 0.70,
+    "hit_at_5": 0.70,
+    "recall_at_5": 0.30,
+}
+# 上限类指标（实际值 ≤ 阈值才算通过，其余为下限类：实际值 ≥ 阈值）
+GATE_UPPER_METRICS: frozenset[str] = frozenset({"false_block_rate"})
+# 检索类指标（--offline 未执行时标注 skipped，不触发 FAIL）
+GATE_RETRIEVAL_METRICS: frozenset[str] = frozenset({"hit_at_3", "hit_at_5", "recall_at_5"})
+# 门禁指标 → 所属数据集维度（用于「用例失败 → 维度 fail」的归因）
+GATE_METRIC_DATASETS: dict[str, str] = {
+    "intent_accuracy": "intent",
+    "block_recall": "safety",
+    "false_block_rate": "safety",
+    "hit_at_3": "retrieval",
+    "hit_at_5": "retrieval",
+    "recall_at_5": "retrieval",
+}
+
+
+def load_gate_thresholds(gate_file: str | None) -> dict[str, float]:
+    """加载门禁阈值：默认值 + 可选 JSON 文件覆盖（函数）。
+
+    说明：
+        --gate-file 指向 JSON 对象（键为指标名、值为数值阈值），与
+        GATE_DEFAULTS 浅合并；仅接受已知指标名，防止拼写错误静默失效。
+
+    参数：
+        gate_file：阈值覆盖 JSON 文件路径（None 时仅用默认阈值）。
+
+    返回值：
+        dict[str, float]：合并后的门禁阈值表。
+
+    异常：
+        ValueError：文件不存在、JSON 非法、非对象、含未知指标名或阈值非数值。
+    """
+    thresholds = dict(GATE_DEFAULTS)
+    if not gate_file:
+        return thresholds
+    path = Path(gate_file)
+    if not path.exists():
+        raise ValueError(f"门禁阈值文件不存在: {path}")
+    overrides = json.loads(path.read_text(encoding="utf-8"))  # JSONDecodeError 是 ValueError 子类
+    if not isinstance(overrides, dict):
+        raise ValueError("门禁阈值文件内容必须是 JSON 对象")
+    unknown = sorted(set(overrides) - set(GATE_DEFAULTS))
+    if unknown:
+        raise ValueError(f"门禁阈值文件含未知指标: {unknown}")
+    for key, value in overrides.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"门禁指标 {key} 的阈值必须为数值，收到: {value!r}")
+        thresholds[key] = float(value)
+    return thresholds
+
+
+def evaluate_gate(report: EvalReport, thresholds: dict[str, float], offline: bool) -> dict[str, object]:
+    """执行回归门禁判定（函数）。
+
+    说明：
+        - 实际值取自 report.metrics（intent.accuracy / safety.block_recall /
+          safety.false_block_rate / retrieval.hit_at_3 / hit_at_5 / recall_at_5）；
+        - 每指标状态 ∈ {pass, fail, skipped}：skipped 仅限 --offline 未执行的
+          检索类指标；指标值缺失（非 offline 跳过）一律 fail；
+        - 任一维度存在执行失败用例（passed=False 或 error 非空）时，该维度的
+          全部门禁指标判 fail，用例 ID 汇入 failed_case_ids（单条回归也拦截，
+          如高危样本漏拦、用例异常）；
+        - result：任一指标 fail 即 FAIL，否则 PASS（skipped 不影响）。
+
+    参数：
+        report：已汇总 metrics 的评测报告。
+        thresholds：门禁阈值（指标名 → 阈值）。
+        offline：是否 --offline 模式（检索评测未执行）。
+
+    返回值：
+        dict[str, object]：gate 段（enabled/thresholds/actual/statuses/
+        failed_case_ids/result）。
+
+    异常：
+        不抛出（metrics 缺键按 None 处理）。
+    """
+    actual: dict[str, float | None] = {
+        "intent_accuracy": report.metrics.get("intent", {}).get("accuracy"),
+        "block_recall": report.metrics.get("safety", {}).get("block_recall"),
+        "false_block_rate": report.metrics.get("safety", {}).get("false_block_rate"),
+        "hit_at_3": report.metrics.get("retrieval", {}).get("hit_at_3"),
+        "hit_at_5": report.metrics.get("retrieval", {}).get("hit_at_5"),
+        "recall_at_5": report.metrics.get("retrieval", {}).get("recall_at_5"),
+    }
+    failed_case_ids = [r.case_id for r in report.results if r.passed is False or r.error is not None]
+    failed_datasets = {r.dataset for r in report.results if r.passed is False or r.error is not None}
+
+    statuses: dict[str, str] = {}
+    for metric, threshold in thresholds.items():
+        value = actual.get(metric)
+        if value is None:
+            # skipped 仅限 --offline 未执行的检索类指标；其余指标缺失一律 fail
+            statuses[metric] = "skipped" if (offline and metric in GATE_RETRIEVAL_METRICS) else "fail"
+            continue
+        if GATE_METRIC_DATASETS.get(metric) in failed_datasets:
+            statuses[metric] = "fail"
+            continue
+        if metric in GATE_UPPER_METRICS:
+            statuses[metric] = "pass" if value <= threshold else "fail"
+        else:
+            statuses[metric] = "pass" if value >= threshold else "fail"
+    result = "FAIL" if "fail" in statuses.values() else "PASS"
+    return {
+        "enabled": True,
+        "thresholds": dict(thresholds),
+        "actual": actual,
+        "statuses": statuses,
+        "failed_case_ids": failed_case_ids,
+        "result": result,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -709,11 +862,13 @@ def build_parser() -> argparse.ArgumentParser:
     异常：
         无。
     """
-    parser = argparse.ArgumentParser(description="Agent Eval 离线评测框架（意图/风控/检索）")
+    parser = argparse.ArgumentParser(description="Agent Eval 离线评测框架（意图/风控/检索 + 回归门禁）")
     parser.add_argument("--datasets-dir", default="eval/datasets", help="评测数据集目录（相对或绝对路径）")
     parser.add_argument("--output-dir", default="eval/reports", help="报告输出目录")
     parser.add_argument("--offline", action="store_true", help="跳过依赖数据库的检索评测（标注 unavailable）")
     parser.add_argument("--baseline", action="store_true", help="输出文件名前缀改为 baseline_（保存基线报告）")
+    parser.add_argument("--gate-file", default=None, help="门禁阈值覆盖 JSON 文件（键为指标名，与默认阈值合并）")
+    parser.add_argument("--no-gate", action="store_true", help="关闭回归门禁（退出码恒 0，仅产出报告）")
     return parser
 
 
@@ -721,15 +876,17 @@ def main(argv: list[str] | None = None) -> int:
     """评测主流程入口（函数）。
 
     说明：
-        加载三个数据集 → 依次执行意图 / 风控 / 检索评测（--offline 时检索跳过
-        并标注 unavailable）→ 汇总指标 → 写出 JSON + Markdown 报告；
-        数据集加载失败返回退出码 2，单条用例失败不中断评测。
+        加载三个数据集与门禁阈值 → 依次执行意图 / 风控 / 检索评测（--offline
+        时检索跳过并标注 unavailable）→ 汇总指标 → 回归门禁判定 → 写出 JSON +
+        Markdown 报告（评测流程内任何情况下都落盘，含门禁 FAIL）；数据集或
+        阈值加载失败返回退出码 2，单条用例失败不中断评测但会计入门禁。
 
     参数：
         argv：命令行参数列表（None 时取 sys.argv[1:]）。
 
     返回值：
-        int：进程退出码（0 成功，2 数据集加载失败）。
+        int：进程退出码（0 成功，含门禁通过与 --no-gate；1 门禁启用且 FAIL；
+        2 数据集/阈值加载失败）。
 
     异常：
         不抛出（加载异常转为错误码返回）。
@@ -745,6 +902,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[eval] 数据集加载失败: {exc}", file=sys.stderr)
         return 2
 
+    try:
+        thresholds = load_gate_thresholds(args.gate_file)
+    except ValueError as exc:
+        print(f"[eval] 门禁阈值加载失败: {exc}", file=sys.stderr)
+        return 2
+
     # ---- 意图评测（离线确定性）----
     report.results.extend(eval_intent(cases_intent))
     # ---- 风控评测（连库规则引擎）----
@@ -758,12 +921,33 @@ def main(argv: list[str] | None = None) -> int:
         report.notes.extend(retrieval_errors)
 
     summarize(report)
+    # ---- 回归门禁判定（--no-gate 关闭：仅记录 SKIPPED，退出码恒 0）----
+    if args.no_gate:
+        report.gate = {
+            "enabled": False,
+            "thresholds": {},
+            "actual": {},
+            "statuses": {},
+            "failed_case_ids": [],
+            "result": "SKIPPED",
+        }
+    else:
+        report.gate = evaluate_gate(report, thresholds, offline=args.offline)
     json_path, md_path = write_reports(report, Path(args.output_dir), "baseline_" if args.baseline else "report_")
     print(f"[eval] 报告已写出: {json_path}")
     print(f"[eval] 摘要已写出: {md_path}")
     for dataset, metrics in report.metrics.items():
         pairs = ", ".join(f"{k}={v}" for k, v in metrics.items())
         print(f"[eval] {dataset}: {pairs}")
+    if report.gate.get("enabled"):
+        statuses_text = ", ".join(f"{m}={s}" for m, s in report.gate["statuses"].items())  # type: ignore[union-attr]
+        print(f"[eval] 门禁: {report.gate['result']} ({statuses_text})")
+        failed_ids = report.gate["failed_case_ids"]  # type: ignore[union-attr]
+        if failed_ids:
+            print(f"[eval] 失败用例: {', '.join(failed_ids)}", file=sys.stderr)
+        if report.gate["result"] == "FAIL":
+            print("[eval] 回归门禁未通过，退出码置 1", file=sys.stderr)
+            return 1
     return 0
 
 

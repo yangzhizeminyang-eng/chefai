@@ -15,6 +15,7 @@ Create Date: 2026-10-16
     2. 分支策略（依据 SELECT extversion FROM pg_extension WHERE extname='vector'）：
        - 扩展不存在 → 记 WARNING 跳过建列与索引（与 b8d3f5a21c60「向量列仅扩展
          可用时创建」模式一致），迁移绝不失败，embedding_json 便携列不受影响；
+         扩展缺失跳过建列后，安装扩展可运行 python -m app.vector_schema_reconcile 收敛（幂等）；
        - extversion ≥ 0.7.0 → embedding_zhipu halfvec(2048) 列 + hnsw
          halfvec_cosine_ops 索引 idx_emb_zhipu（近似检索）；
        - extversion < 0.7.0 → embedding_zhipu vector(2048) 列，无近似索引
