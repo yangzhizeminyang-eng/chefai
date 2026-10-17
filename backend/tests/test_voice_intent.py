@@ -16,7 +16,6 @@ from fastapi.testclient import TestClient
 
 from app.ability import voice_intent
 from app.ability.llm import LLMError, LLMResult
-from app.main import app
 
 
 def _llm_result(content: str) -> LLMResult:

@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import httpx
 import json
 import random
 import re
@@ -37,6 +36,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from dataclasses import dataclass
 
+import httpx
 import openai
 from sqlalchemy import select
 

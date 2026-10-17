@@ -443,6 +443,15 @@ $env:AICOOK_MCP_STUB = "1"                    # stub 演示模式（零 DB 依�
 
 本地开发库（PostgreSQL 16 未装 pgvector 扩展）下：迁移跳过建列，向量检索自动降级 **`embedding_json` 便携列 Python 点积**回退路径（≤800 行规模、无 numpy），2048 维向量可正常存储与计算；容器部署镜像 `pgvector/pgvector:pg16` 为正式口径（扩展 ≥0.7 走 halfvec + hnsw 索引）。
 
+### 15.6 halfvec 分支容器实测记录（2026-10-17）
+
+`docker compose -f docker-compose.yml up -d db` 拉起镜像后容器内实测（`docker exec aicook-db psql`）：
+
+- `CREATE EXTENSION vector` → **extversion = 0.8.7**（≥0.7，halfvec 分支生效）；
+- `halfvec(2048)` 列创建 + `CREATE INDEX ... USING hnsw (embedding_zhipu halfvec_cosine_ops)` 均成功；
+- 2048 维向量插入 5 行，应用同款余弦 SQL（`1 - (embedding_zhipu <=> CAST(:q AS halfvec))`）按空间过滤查询返回 sim=1.0，`idx_emb_zhipu` 确认存在；
+- 测试表已清理，不影响 `pgdata` 卷既有数据。
+
 ## 16. 创新异步任务持久化与重启恢复
 
 AI 创新生成任务（`POST /v1/innovation/generate` 异步链路）原为纯内存 job store，进程重启后轮询方将 404。本轮升级（改进方案 M-01 最小落地）补齐持久化：
