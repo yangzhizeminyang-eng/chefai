@@ -1,0 +1,18 @@
+{"dataset": "retrieval", "version": "1.0", "description": "检索命中评测样例"}
+{"id": "rt-001", "query": "用番茄和鸡蛋做菜", "expected_keywords": ["番茄", "鸡蛋"]}
+{"id": "rt-002", "query": "红烧肉怎么做", "expected_keywords": ["红烧肉"]}
+{"id": "rt-003", "query": "青椒土豆丝", "expected_keywords": ["土豆丝"]}
+{"id": "rt-004", "query": "麻婆豆腐", "expected_keywords": ["豆腐"]}
+{"id": "rt-005", "query": "可乐鸡翅怎么做", "expected_keywords": ["鸡翅"]}
+{"id": "rt-006", "query": "清蒸鱼", "expected_keywords": ["鱼"]}
+{"id": "rt-007", "query": "鱼香茄子煲", "expected_keywords": ["茄子"]}
+{"id": "rt-008", "query": "土豆炖牛肉", "expected_keywords": ["牛肉"]}
+{"id": "rt-009", "query": "白灼虾怎么做", "expected_keywords": ["虾"]}
+{"id": "rt-010", "query": "冬瓜排骨汤", "expected_keywords": ["冬瓜"]}
+{"id": "rt-011", "query": "凉拌黄瓜", "expected_keywords": ["黄瓜"]}
+{"id": "rt-012", "query": "葱爆羊肉", "expected_keywords": ["羊肉"]}
+{"id": "rt-013", "query": "韭菜炒蛋", "expected_keywords": ["韭菜", "鸡蛋"]}
+{"id": "rt-014", "query": "红烧带鱼", "expected_keywords": ["带鱼"]}
+{"id": "rt-015", "query": "西红柿鸡蛋汤", "expected_keywords": ["西红柿"]}
+{"id": "rt-016", "query": "蒜蓉西兰花", "expected_keywords": ["西兰花"]}
+{"id": "rt-017", "query": "宫保鸡丁做法", "expected_keywords": ["鸡丁"]}

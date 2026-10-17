@@ -233,7 +233,7 @@ RISK_RULES: list[dict] = [
         "rule_code": "FS-001", "category": "food_safety_high_risk", "stage_scope": "input",
         "trigger_condition": {
             "keywords": ["木耳", "银耳", "雪耳"], "any": True, "mode": "all_groups",
-            "groups": [["木耳", "银耳", "雪耳"], ["泡", "发", "浸"], ["过夜", "一晚上", "一夜", "隔夜", "久", "明天"]],
+            "groups": [["木耳", "银耳", "雪耳"], ["泡", "发", "浸"], ["过夜", "一晚上", "一夜", "隔夜", "久", "明天", "三天", "两天", "几天", "好几", "长时间", "太久"]],
         },
         "response_message_id": "MSG-FS-001", "block": True, "risk_level": "critical",
         "evidence_ref": "GB 2760 风险通报；米酵菌酸中毒案例通报（演示口径）",
