@@ -43,6 +43,9 @@ class CookingState(TypedDict, total=False):
         notice：面向用户的附加提示（如结果不足）。
         response：最终响应 dict（finalize/终止节点产出）。
         trace：trace span 列表（operator.add 累加合并，落库 agent_trace）。
+        tool_results：工具循环节点（tool_loop）产出摘要列表
+            （operator.add 累加，与 trace 同风格；条目含 tool/status/summary）。
+        tool_loop_limit_hit：工具循环触限标记（达轮数上限/超预算时为 True）。
     """
 
     # 请求元信息
@@ -71,6 +74,8 @@ class CookingState(TypedDict, total=False):
     qa_answer: str
     partial_failures: list
     notice: str
+    tool_results: Annotated[list[dict], operator.add]
+    tool_loop_limit_hit: bool
 
     # 响应与可观测
     response: dict

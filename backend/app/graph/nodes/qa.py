@@ -67,6 +67,11 @@ def make_node_free_qa():
             names = list(state.get("resolved_ingredient_names") or [])
             if names:
                 user_msg += "\n（用户已选食材：" + "、".join(names) + "）"
+            # 阶段二：tool_loop 产出的工具结果摘要只作为回答素材注入（空列表时不追加）
+            tool_results = [r for r in (state.get("tool_results") or []) if isinstance(r, dict)]
+            if tool_results:
+                facts = "; ".join(f"{r.get('tool')}={r.get('summary')}" for r in tool_results[:5])
+                user_msg += "\n（工具参考数据：" + facts[:800] + "）"
             client = get_llm_client()
             result = client.chat(QA_SYSTEM_PROMPT, user_msg, temperature=0.2)
             if result.content:

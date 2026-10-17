@@ -14,7 +14,7 @@
                  inventory_op → node_inventory_op（M.4/M.5 库存专用节点）
                  cooking_help → node_cooking_help（M.4/M.5 烹饪求助专用节点）
                  nutrition_query → node_nutrition_query（M.4/M.5 饮食记录汇总节点）
-                 其余意图 → node_free_qa（受限问答）
+                 其余意图 → tool_loop（qa 前置工具节点）→ node_free_qa（受限问答）
                   → compose → output_guard
                        ├─ UNKNOWN → safe_mode_handler
                        ├─ hit&block → emit_safety_response
@@ -36,6 +36,13 @@ nutrition_query 路由变更说明（M.4/M.5）：
     由「推荐子图（对推荐结果估算营养）」改为专用节点 node_nutrition_query
     （查 meal_record 今日汇总模板应答）——纯「今天营养怎么样」类询问的主口径
     是饮食记录汇总而非推荐结果估算；推荐场景的营养估算仍由子图并行节点承担。
+
+tool_loop 接入说明（阶段二）：
+    其余意图（photo_recognize/free_qa/smalltalk_or_out_of_scope）统一路由到
+    tool_loop（qa 前置工具节点）→ node_free_qa（无条件边）——工具结果摘要只
+    作为回答素材进入 node_free_qa 提示词，最终回答仍经 compose → output_guard
+    出口闸门（不绕过风控）；MCP_ENABLED='off'（缺省）时 tool_loop 仅挂内置
+    4 个只读工具，LLM 失败/解析失败/无工具需求时立即收敛，行为退化等价于直连。
 """
 
 from __future__ import annotations
@@ -57,10 +64,11 @@ INTENT_ROUTES: dict[str, str] = {
     "inventory_op": "node_inventory_op",
     # 模块 O 创新意图：主图入口节点透传创新子图（precheck→generate）
     "innovation": "node_innovation_entry",
-    # 阶段一无视觉/独立问答子图，其余意图统一并入受限问答（qa 节点覆盖短答场景）
-    "photo_recognize": "node_free_qa",
-    "free_qa": "node_free_qa",
-    "smalltalk_or_out_of_scope": "node_free_qa",
+    # 阶段一无视觉/独立问答子图，其余意图统一并入受限问答（qa 节点覆盖短答场景）；
+    # 阶段二：qa 意图先经 tool_loop（前置工具节点）再进 node_free_qa（无条件边）
+    "photo_recognize": "tool_loop",
+    "free_qa": "tool_loop",
+    "smalltalk_or_out_of_scope": "tool_loop",
 }
 
 
@@ -170,6 +178,7 @@ def build_main_graph():
         sorted(set(INTENT_ROUTES.values())) + ["emit_safety_response"],
     )
     # 业务节点统一汇入 compose（推荐子图、受限问答、M.4/M.5 专用节点与创新入口路径）
+    builder.add_edge("tool_loop", "node_free_qa")  # 阶段二：qa 前置工具节点 → 受限问答
     builder.add_edge("subgraph_recommend", "compose")
     builder.add_edge("node_free_qa", "compose")
     builder.add_edge("node_inventory_op", "compose")
