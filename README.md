@@ -152,11 +152,11 @@ cd backend
 
 | 首页 | 选择食材 | 推荐结果 | 过敏原过滤 |
 | --- | --- | --- | --- |
-| ![首页](artifacts/screenshots-20261027/02-home.png) | ![选择食材](artifacts/screenshots-20261027/05-select-ingredients.png) | ![推荐结果](artifacts/screenshots-20261027/06-recommendations.png) | ![过敏原过滤](artifacts/screenshots-20261027/06b-filtered.png) |
+| ![首页](https://cdn.jsdelivr.net/gh/yangzhizeminyang-eng/chefai@master/artifacts/screenshots-20261027/02-home.png) | ![选择食材](https://cdn.jsdelivr.net/gh/yangzhizeminyang-eng/chefai@master/artifacts/screenshots-20261027/05-select-ingredients.png) | ![推荐结果](https://cdn.jsdelivr.net/gh/yangzhizeminyang-eng/chefai@master/artifacts/screenshots-20261027/06-recommendations.png) | ![过敏原过滤](https://cdn.jsdelivr.net/gh/yangzhizeminyang-eng/chefai@master/artifacts/screenshots-20261027/06b-filtered.png) |
 
 | 菜谱详情 | 分步烹饪 | 安全拦截 | 家庭档案 |
 | --- | --- | --- | --- |
-| ![菜谱详情](artifacts/screenshots-20261027/07-recipe-detail.png) | ![分步烹饪](artifacts/screenshots-20261027/08-cook-guide.png) | ![安全拦截](artifacts/screenshots-20261027/14-safety-blocked.png) | ![家庭档案](artifacts/screenshots-20261027/04-profile.png) |
+| ![菜谱详情](https://cdn.jsdelivr.net/gh/yangzhizeminyang-eng/chefai@master/artifacts/screenshots-20261027/07-recipe-detail.png) | ![分步烹饪](https://cdn.jsdelivr.net/gh/yangzhizeminyang-eng/chefai@master/artifacts/screenshots-20261027/08-cook-guide.png) | ![安全拦截](https://cdn.jsdelivr.net/gh/yangzhizeminyang-eng/chefai@master/artifacts/screenshots-20261027/14-safety-blocked.png) | ![家庭档案](https://cdn.jsdelivr.net/gh/yangzhizeminyang-eng/chefai@master/artifacts/screenshots-20261027/04-profile.png) |
 
 更多截图见 `artifacts/screenshots-20261027/`，包括登录、免责声明、PIPL 敏感信息单独同意、今日菜单、时令食材、库存、设置与会员中心。
 
