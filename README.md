@@ -148,15 +148,17 @@ cd backend
 
 ## 界面截图
 
-| 首页 | 推荐结果 | 菜谱详情 |
-| --- | --- | --- |
-| ![首页](artifacts/assets/images/01-home.png) | ![推荐](artifacts/assets/images/03-recommend.png) | ![菜谱详情](artifacts/assets/images/06-recipe-detail.png) |
+以下截图来自 2026-10-27 的本地开发版本，流程为：登录 → 建立家庭档案（成员对花生过敏）→ 选择食材 → 推荐（过敏原硬过滤）→ 菜谱详情 → 分步烹饪 → 安全拦截。
 
-| 分步烹饪 | 风控拦截 | 个人中心 |
-| --- | --- | --- |
-| ![分步烹饪](artifacts/assets/images/07-cook-guide.png) | ![风控拦截](artifacts/assets/images/08-blocked.png) | ![个人中心](artifacts/assets/images/10-profile.png) |
+| 首页 | 选择食材 | 推荐结果 | 过敏原过滤 |
+| --- | --- | --- | --- |
+| ![首页](artifacts/screenshots-20261027/02-home.png) | ![选择食材](artifacts/screenshots-20261027/05-select-ingredients.png) | ![推荐结果](artifacts/screenshots-20261027/06-recommendations.png) | ![过敏原过滤](artifacts/screenshots-20261027/06b-filtered.png) |
 
-更多截图见 `artifacts/assets/images/`。
+| 菜谱详情 | 分步烹饪 | 安全拦截 | 家庭档案 |
+| --- | --- | --- | --- |
+| ![菜谱详情](artifacts/screenshots-20261027/07-recipe-detail.png) | ![分步烹饪](artifacts/screenshots-20261027/08-cook-guide.png) | ![安全拦截](artifacts/screenshots-20261027/14-safety-blocked.png) | ![家庭档案](artifacts/screenshots-20261027/04-profile.png) |
+
+更多截图见 `artifacts/screenshots-20261027/`，包括登录、免责声明、PIPL 敏感信息单独同意、今日菜单、时令食材、库存、设置与会员中心。
 
 ## 已知限制
 
