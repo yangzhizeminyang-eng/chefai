@@ -141,7 +141,7 @@ def test_hybrid_retrieval_vector_on_and_off() -> None:
         session.close()
 
 
-def test_partition_isolation_ai_private() -> None:
+def test_partition_isolation_ai_private(monkeypatch: pytest.MonkeyPatch) -> None:
     """🔴 分区隔离红线：ai_private 向量行不进默认推荐（测试）。
 
     流程：
@@ -150,9 +150,19 @@ def test_partition_isolation_ai_private() -> None:
         3. 默认检索（include_private_owner=None）：结果不含该菜谱；
         4. include_private_owner=测试用户：结果包含该菜谱（创新链路可见）。
 
+    说明：
+        本用例只写 embedding_json 便携列（无向量列双写），故 monkeypatch 钉住
+        probe=False 强制走 JSON 点积分支——CI/任何装有 pgvector 的环境下
+        probe 会返回 True 并切到 embedding_zhipu 向量列 SQL 路径，本用例的
+        行在该列上为 NULL，将因引擎差异而非分区逻辑误报。生产写入请走
+        upsert_embedding（双写），分区红线在双写路径由 CHECK 约束兜底。
+
     异常：
         默认检索出现 ai_private 菜谱（红线破坏）或 owner 检索不可见时断言失败。
     """
+    import app.ability.retrieval as retrieval_mod
+
+    monkeypatch.setattr(retrieval_mod, "probe_pgvector", lambda *a, **k: False)
     session = SessionLocal()
     user_id: int | None = None
     try:
