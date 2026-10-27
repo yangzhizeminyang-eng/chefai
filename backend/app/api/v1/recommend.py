@@ -36,6 +36,7 @@ from app.api.v1.deps import adapt_risk, difficulty_label, resolve_existing_user_
 from app.core.db import get_db
 from app.core.idempotency import get_cached_response, store_response
 from app.core.logging import get_logger
+from app.core.recipe_covers import resolve_recipe_cover_url
 from app.graph.runner import run_recommend
 from app.models import Ingredient, IngredientAlias, Recipe
 from app.safety import SafetyProfile
@@ -84,6 +85,9 @@ def _load_cover_images(session: Session, recipe_ids: list[int]) -> dict[int, str
     说明：
         召回候选不携带 cover_image_url，此处按结果 recipe_id 批量补齐（单次 IN
         查询），供推荐卡片顶部成品图展示；无图条目值为 None，前端回落占位封面。
+        🔴 取值须经 resolve_recipe_cover_url：封面资源按 md5(title) 落盘，
+        数据库列可能尚未回填（历史数据），直接读列会让「文件已存在但列为 NULL」
+        的菜谱在推荐页误显示为「暂无实拍」，与菜谱列表/详情页表现不一致。
 
     参数：
         session：数据库会话。
@@ -99,9 +103,13 @@ def _load_cover_images(session: Session, recipe_ids: list[int]) -> dict[int, str
         return {}
     try:
         rows = session.execute(
-            select(Recipe.id, Recipe.cover_image_url).where(Recipe.id.in_(recipe_ids))
+            select(Recipe.id, Recipe.title, Recipe.cover_image_url).where(
+                Recipe.id.in_(recipe_ids)
+            )
         ).all()
-        return {int(rid): (url or None) for rid, url in rows}
+        return {
+            int(rid): resolve_recipe_cover_url(title, url) for rid, title, url in rows
+        }
     except Exception as exc:  # noqa: BLE001 —— 封面缺失不影响主结果
         logger.warning("load cover images failed: %s", exc)
         return {}

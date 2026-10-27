@@ -16,3 +16,11 @@
 {"id": "rt-015", "query": "西红柿鸡蛋汤", "expected_keywords": ["西红柿"]}
 {"id": "rt-016", "query": "蒜蓉西兰花", "expected_keywords": ["西兰花"]}
 {"id": "rt-017", "query": "宫保鸡丁做法", "expected_keywords": ["鸡丁"]}
+{"id": "rt-018", "query": "家里就剩鸡蛋和西红柿能做啥", "expected_keywords": ["西红柿", "鸡蛋"]}
+{"id": "rt-019", "query": "用排骨煮个汤", "expected_keywords": ["排骨"]}
+{"id": "rt-020", "query": "豆腐可以做啥菜", "expected_keywords": ["豆腐"]}
+{"id": "rt-021", "query": "青椒肉丝", "expected_keywords": ["青椒"]}
+{"id": "rt-022", "query": "牛腩怎么炖", "expected_keywords": ["牛腩"]}
+{"id": "rt-023", "query": "空心菜清炒一下", "expected_keywords": ["空心菜"]}
+{"id": "rt-024", "query": "懒人版洋葱炒肉", "expected_keywords": ["洋葱"]}
+{"id": "rt-025", "query": "白萝卜排骨汤", "expected_keywords": ["白萝卜", "排骨"]}

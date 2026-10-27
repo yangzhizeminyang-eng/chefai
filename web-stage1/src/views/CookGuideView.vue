@@ -51,6 +51,7 @@ import { finishCookingSession, getRecipe, postCookingHelp, postVoiceIntent } fro
 import type { ApiError, RecipeStep } from '@/api/types'
 import { useCookingStore } from '@/stores/cooking'
 import { useMeStore } from '@/stores/me'
+import { shouldShowTimerCompletionReminder, shouldSpeakCookingStep } from '@/utils/cookingPreferences'
 import { MultiTimer, formatCountdown, type TimerSnapshot } from '@/utils/timer'
 import { scaleStepHint } from '@/utils/scaling'
 import { buildNutritionQuery } from '@/utils/nutritionQuery'
@@ -465,7 +466,7 @@ const timerList = ref<TimerSnapshot[]>([])
 /** 多路计时器实例（非响应式，状态经 onChange 同步到 timerList） */
 const multiTimer = new MultiTimer((event) => {
   timerList.value = event.timers
-  if (event.type === 'finish' && event.id != null) {
+  if (event.type === 'finish' && event.id != null && shouldShowTimerCompletionReminder(meStore.settings?.reminder_enabled === true)) {
     const t = event.timers.find((x) => x.id === event.id)
     ElNotification({
       title: '计时结束',
@@ -913,6 +914,7 @@ let speakSeq = 0
  * @returns 无
  */
 async function speakStep(stepNo: number, text: string): Promise<void> {
+  if (!shouldSpeakCookingStep(meStore.settings?.voice_enabled === true, text)) return
   const content = text.trim()
   if (!content) return
   const seq = ++speakSeq
@@ -997,6 +999,18 @@ watch(
     if (step?.description) void speakStep(currentStepNo.value, step.description)
   },
   { immediate: true },
+)
+
+watch(
+  () => meStore.settings?.voice_enabled,
+  (enabled) => {
+    if (enabled === false) {
+      speakSeq += 1
+      stopStepAudio()
+    } else if (enabled === true && currentStep.value?.description) {
+      void speakStep(currentStepNo.value, currentStep.value.description)
+    }
+  },
 )
 
 /* ═══ Task 9 增强 ⑨：烹饪求助 ═══ */

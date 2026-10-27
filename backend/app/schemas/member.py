@@ -112,6 +112,8 @@ class OrderOut(BaseModel):
         created_at：创建时间（ISO 8601 UTC）。
         wx_transaction_id：模拟交易凭证（'MOCK'+order_no，未支付为 None）。
         pay_channel：支付渠道标识。
+        simulated：是否模拟支付通道结果（阶段一恒 true，显式标记模拟通道，
+            区别于真实微信支付接入后的 false；新增可选字段，前端可忽略）。
     """
 
     order_no: str
@@ -122,6 +124,7 @@ class OrderOut(BaseModel):
     created_at: str | None = None
     wx_transaction_id: str | None = None
     pay_channel: str = "miniprogram_virtual"
+    simulated: bool = True
 
 
 class MockPayRequest(BaseModel):

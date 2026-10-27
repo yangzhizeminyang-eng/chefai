@@ -21,12 +21,16 @@ from app.api.v1 import nutrition as nutrition_api
 from app.api.v1.router import api_router
 from app.core.db import SessionLocal
 from app.models import MealRecord, User
+from tests.conftest import ensure_router_registered
 
 # 并行开发约定：router.py 由集成步骤统一注册；未注册时此处补注册（进程级标记守卫，
-# 避免懒加载路由下重复 include 产生 OpenAPI Duplicate Operation ID 告警）。
-if not getattr(api_router, "_t3_nutrition_registered", False):
-    api_router.include_router(nutrition_api.router)
-    api_router._t3_nutrition_registered = True
+# 避免懒加载路由下重复 include 产生 OpenAPI Duplicate Operation ID 告警）——
+# 统一走 conftest.ensure_router_registered。
+ensure_router_registered(
+    api_router,
+    (nutrition_api.router,),
+    flag="_t3_nutrition_registered",
+)
 
 
 def _headers(anon: str) -> dict:

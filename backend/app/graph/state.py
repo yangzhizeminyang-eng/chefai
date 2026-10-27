@@ -39,6 +39,8 @@ class CookingState(TypedDict, total=False):
         results：排序后三档结果列表（含 rank_reasons/match_level）。
         nutrition：{recipe_id: 营养估算结果 dict}。
         qa_answer：受限问答文本（node_free_qa 产出，待出口闸门复核）。
+        qa_degraded：受限问答是否降级兜底（node_free_qa 在 LLM 失败时为 True，
+            供 compose 组装 citations 的 degraded 标注；未产出时视为非降级）。
         partial_failures：部分失败说明列表（降级标注）。
         notice：面向用户的附加提示（如结果不足）。
         response：最终响应 dict（finalize/终止节点产出）。
@@ -72,6 +74,7 @@ class CookingState(TypedDict, total=False):
     results: list
     nutrition: dict
     qa_answer: str
+    qa_degraded: bool
     partial_failures: list
     notice: str
     tool_results: Annotated[list[dict], operator.add]

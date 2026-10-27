@@ -23,7 +23,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import String, bindparam, select
+from sqlalchemy import Boolean, String, bindparam, not_, select
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
@@ -279,12 +279,12 @@ def hard_filter(
         stmt = base
         if allergen_codes:
             stmt = stmt.where(
-                ~_overlap(Recipe.allergen_codes, allergen_codes)
+                not_(_overlap(Recipe.allergen_codes, allergen_codes))
             ).where(
-                ~_overlap(Recipe.ingredient_allergen_codes, allergen_codes)
+                not_(_overlap(Recipe.ingredient_allergen_codes, allergen_codes))
             )
         if restrictions:
-            stmt = stmt.where(~_overlap(Recipe.dietary_flags, restrictions))
+            stmt = stmt.where(not_(_overlap(Recipe.dietary_flags, restrictions)))
         if profile.difficulty_cap:
             stmt = stmt.where(Recipe.difficulty <= int(profile.difficulty_cap))
         filtered_ids = {int(row[0]) for row in session.execute(stmt).all()}
@@ -305,18 +305,23 @@ def _overlap(column: ColumnElement, values: list[str]) -> ColumnElement:
     说明：
         `?|` 操作符右侧为 text[]（bindparam + psycopg2 数组适配），
         语义：JSONB 数组与给定字符串数组存在任一交集即 True。
+        显式声明 return_type=Boolean：op() 缺省沿用左操作数（JSONB）的
+        操作符类，其结果再做 `|`/`~` 组合会触发 SADeprecationWarning
+        （JSONB 类型不含 or_/inv 操作符，未来版本将抛 InvalidRequestError）；
+        声明 Boolean 后该表达式为标准布尔表达式，可安全参与 and_/or_/not_
+        组合，SQL 语义保持 NOT (jsonb ?| text[]) 不变。
 
     参数：
         column：JSONB 数组列（allergen_codes / dietary_flags 等）。
         values：用户侧字符串集合（非空列表）。
 
     返回值：
-        ColumnElement：可用于 WHERE 的布尔表达式。
+        ColumnElement：类型为 Boolean、可用于 WHERE 的布尔表达式。
 
     异常：
         无。
     """
-    return column.op("?|")(
+    return column.op("?|", return_type=Boolean)(
         bindparam("overlap_values", value=list(values), type_=ARRAY(String))
     )
 

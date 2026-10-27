@@ -7,9 +7,7 @@
  *       ③ 推荐卡片（RecipeCard 组件：封面图 + 菜名/耗时/难度/热量/覆盖率/缺料折叠/设备标注，askMode 隐藏覆盖率）
  *       ④ 「为什么推荐给你」（rank_reasons 弹层）
  *       ⑤ 被过滤清单/计数（双模式）+ 保守模式条 + 部分失败说明条 + 不足 8 条如实说明 + 免责小字。
- *       ⑥ 调度取证线索：trace_id 与 request_id 并列小字展示，「查看调度详情」携带
- *          ?request_id= 跳转 W-06 面板自动查询（M6/T3 ID 串联修复）。
- *       ⑦ 过敏原警示条（G-03，§10.2 ②：askMode 搜索结果含致敏原时页面顶部强制红色警示）。
+ *       ⑥ 过敏原警示条（G-03，§10.2 ②：askMode 搜索结果含致敏原时页面顶部强制红色警示）。
  * ask 直达态（recommend store askMode）：「问厨娘」搜索结果已按 recipe_ids 拉详情落库，
  * 挂载时不重发手选推荐（无论是否残留手选食材，防止问答结果被覆写）；卡片隐藏覆盖率列、
  * 页面隐藏过滤开关与「不足 8 条」说明（语义不适配）。
@@ -18,6 +16,7 @@
 import { computed, onBeforeUnmount, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { Opportunity } from '@element-plus/icons-vue'
 import { filterReasonLabel, useRecommendStore } from '@/stores/recommend'
 import { allergenLabel, groupResults } from '@/utils/recipe'
 import { parseOrdinal } from '@/utils/voiceCommand'
@@ -28,7 +27,7 @@ import RecipeCard from '@/components/RecipeCard.vue'
 
 /** 路由（卡片跳详情 / 编辑食材回 W-01 / 阻断跳 W-05） */
 const router = useRouter()
-/** 推荐 store：三档结果 / 加载态 / 过滤数据 / trace */
+/** 推荐 store：三档结果 / 加载态 / 过滤数据；调度诊断数据不在用户页面展示 */
 const recommendStore = useRecommendStore()
 
 /** 三档分组定义（顺序即展示顺序） */
@@ -153,16 +152,6 @@ function goSelect(): void {
 }
 
 /**
- * 「查看调度详情」：携带本次请求的 request_id 跳转 W-06 调度面板，
- * 面板读取 ?request_id= 自动填入查询框并执行查询（M6/T3 ID 串联）。
- * @returns 无
- */
-function goTrace(): void {
-  if (!recommendStore.requestId) return
-  void router.push({ path: '/trace', query: { request_id: recommendStore.requestId } })
-}
-
-/**
  * 异常重试：强制重发推荐请求。
  * @returns 无
  */
@@ -280,6 +269,8 @@ onBeforeUnmount(() => {
       v-if="recommendStore.notice"
       type="info"
       :title="recommendStore.notice"
+      :icon="Opportunity"
+      class="recommend-hint"
       :closable="false"
       show-icon
     />
@@ -319,6 +310,8 @@ onBeforeUnmount(() => {
           v-if="insufficientNotice"
           type="info"
           :title="insufficientNotice"
+          :icon="Opportunity"
+          class="recommend-hint"
           :closable="false"
           show-icon
         />
@@ -384,23 +377,6 @@ onBeforeUnmount(() => {
           </template>
         </div>
 
-        <!-- 调度取证线索：trace_id 与 request_id 并列（W-06 面板查询用，M6/T3 ID 串联） -->
-        <div class="trace-hint">
-          <span>Agent 调度 trace：{{ recommendStore.traceId || '—' }}</span>
-          <span class="trace-sep" aria-hidden="true">·</span>
-          <span>request_id：{{ recommendStore.requestId || '—' }}</span>
-          <!-- 携带 request_id 跳调度面板，面板自动查询并展示节点详情 -->
-          <el-button
-            v-if="recommendStore.requestId"
-            class="trace-link"
-            link
-            type="primary"
-            size="small"
-            @click="goTrace"
-          >
-            查看调度详情
-          </el-button>
-        </div>
       </template>
     </template>
 
@@ -412,6 +388,10 @@ onBeforeUnmount(() => {
 <style scoped>
 .recommend-page {
   padding-bottom: 28px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .summary-bar {
@@ -423,8 +403,8 @@ onBeforeUnmount(() => {
   padding: 10px 14px;
   margin-bottom: 16px;
   border-radius: 8px;
-  background: var(--color-info-bg);
-  border: 1px solid var(--color-info-border);
+  background: var(--sidebar-active);
+  border: 1px solid var(--sidebar-line);
 }
 
 .summary-ingredients {
@@ -436,7 +416,7 @@ onBeforeUnmount(() => {
 
 .summary-label {
   font-size: var(--font-sm);
-  color: var(--color-info);
+  color: var(--text-muted);
 }
 
 /* ── ask 直达态：来源问句展示（限宽截断，避免超长问句撑破摘要栏） ── */
@@ -455,6 +435,11 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
+.summary-switch :deep(.el-switch) {
+  --el-switch-on-color: var(--accent-deep);
+  --el-switch-off-color: var(--accent-deep);
+}
+
 /* DEF-14：开关文字按钮化——min-height 44px + padding 扩大命中热区，
    点击文字即翻转开关（onSwitchLabelClick），视觉保持原有说明文字样式 */
 .switch-label {
@@ -470,6 +455,20 @@ onBeforeUnmount(() => {
 
 .switch-label:hover {
   color: var(--el-color-primary);
+}
+
+.recommend-page :deep(.el-alert.recommend-hint) {
+  border: 1px solid var(--sidebar-line);
+  background: var(--sidebar-active);
+  color: var(--text-main);
+}
+
+.recommend-page :deep(.recommend-hint .el-alert__title) {
+  color: var(--text-main);
+}
+
+.recommend-page :deep(.recommend-hint .el-alert__icon) {
+  color: var(--accent-deep);
 }
 
 .loading-block {
@@ -515,6 +514,10 @@ onBeforeUnmount(() => {
   gap: 14px;
 }
 
+.card-list :deep(.recipe-card) {
+  background: var(--sidebar-active);
+}
+
 .filtered-item {
   padding: 10px 12px;
   margin-bottom: 8px;
@@ -546,18 +549,4 @@ onBeforeUnmount(() => {
   color: var(--color-info);
 }
 
-.trace-hint {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 20px;
-  font-size: 12px;
-  color: var(--color-info);
-  word-break: break-all;
-}
-
-.trace-sep {
-  color: var(--color-info-border);
-}
 </style>

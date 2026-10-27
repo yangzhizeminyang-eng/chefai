@@ -28,11 +28,15 @@ from app.api.v1.router import api_router
 from app.core.db import SessionLocal
 from app.graph.subgraphs import innovation as innovation_subgraph
 from app.models import Family, User
+from tests.conftest import ensure_router_registered
 
-# 并行开发约定：与 test_api_innovation 一致，router 未注册时补注册（进程级守卫防重复）
-if not getattr(api_router, "_t7_innovation_registered", False):
-    api_router.include_router(innovation_api.router)
-    api_router._t7_innovation_registered = True
+# 并行开发约定：与 test_api_innovation 一致，router 未注册时补注册（进程级守卫防重复）——
+# 统一走 conftest.ensure_router_registered。
+ensure_router_registered(
+    api_router,
+    (innovation_api.router,),
+    flag="_t7_innovation_registered",
+)
 
 # 模糊用量违禁词（与子图 _VAGUE_WORDS 同口径的断言子集）
 _VAGUE_WORDS: tuple[str, ...] = ("适量", "少许")

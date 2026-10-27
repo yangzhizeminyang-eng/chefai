@@ -22,7 +22,7 @@ backend/
 │   └── schemas/               # Pydantic v2 请求/响应模型
 ├── mcp_server/                # 本地 stdio MCP Server（JSON-RPC 2.0 只读工具；AICOOK_MCP_STUB=1 进入零依赖 stub 模式）
 ├── eval/                      # Agent Eval 评测框架（datasets 人工合成数据集 / reports 报告 / run_eval CLI）
-└── tests/                     # pytest（369+ 条：风控 / 硬过滤 / 排序 / 营养 / API 集成 / eval / 工具与 MCP / 创新恢复 / 质量补强）
+└── tests/                     # pytest（493 passed / 4 skipped 条件跳过：风控 / 硬过滤 / 排序 / 营养 / API 集成 / eval（含 citations 双口径）/ 工具与 MCP（含子进程协议闭环）/ 创新恢复 / 埋点 / 支付 provider / 语音视觉边界 / 质量补强）
 ```
 
 ## 2. 环境准备
@@ -82,10 +82,11 @@ python -m venv .venv
 
 ## 5. 启动方式（一键脚本）
 
-项目根目录的 `scripts\manage.ps1` 提供全生命周期管理（`-Action setup|start|stop|status|test|smoke`）：
+项目根目录的 `scripts\manage.ps1` 提供交互菜单和命令行全生命周期管理。无参数运行会显示启动、停止、状态检查和退出菜单；选项 1 按 PostgreSQL 检查 → 后端健康就绪 → 用户端 → 管理后台启动。原有 `-Action` 命令仍兼容：
 
 ```powershell
-# 在项目根目录（d:\Code_Work\AI_Cook）执行：
+# 在项目根目录（D:\ChefAI\ai_cook）执行：
+powershell -ExecutionPolicy Bypass -File scripts\manage.ps1                 # 交互菜单
 powershell -ExecutionPolicy Bypass -File scripts\manage.ps1 -Action start          # 一键启动（缺环境自动 setup）
 powershell -ExecutionPolicy Bypass -File scripts\manage.ps1 -Action start -InitDb  # 启动前先迁移建表 + seed
 powershell -ExecutionPolicy Bypass -File scripts\manage.ps1 -Action status         # 查看服务状态
@@ -93,6 +94,8 @@ powershell -ExecutionPolicy Bypass -File scripts\manage.ps1 -Action smoke       
 powershell -ExecutionPolicy Bypass -File scripts\manage.ps1 -Action test           # 后端 pytest + 前端 vitest
 powershell -ExecutionPolicy Bypass -File scripts\manage.ps1 -Action stop           # 停止并校验端口零监听
 ```
+
+交互菜单内选择 2 会仅停止本项目记录的服务进程，并复查默认/记录端口；若目标端口属于其他项目，不会作为本项目进程终止。
 
 Windows 下也可以直接双击 `scripts\start.bat` 一键启动；启动失败时窗口会保留，并输出后端/前端日志，便于排查。
 
@@ -134,8 +137,8 @@ Windows 下也可以直接双击 `scripts\start.bat` 一键启动；启动失败
 ## 8. 测试与质量命令
 
 ```powershell
-# 全量测试（369+ 条，连真实本地库 aicook，需先完成 seed；
-# test_performance 2 项在 HowToCook 语料未导入时 error——其需 ≥300 篇候选池）
+# 全量测试（493 passed / 4 skipped 条件跳过，连真实本地库 aicook，需先完成 seed；
+# 条件跳过项为真实外部 provider smoke——凭证未配置时标「待环境验证」不伪造）
 .venv\Scripts\python.exe -m pytest tests -q
 
 # 静态检查（质量门：0 error）
@@ -173,9 +176,10 @@ Windows 下也可以直接双击 `scripts\start.bat` 一键启动；启动失败
 ## 10. 已知限制
 
 1. **bge-m3 本地向量检索未引入**：保留 `EMBEDDING_MODE` 配置语义与适配器接口（`recipe_embedding` 预留表已建）；数百篇语料规模下「关键词 + 别名 + 覆盖率」混合召回满足阶段一演示，引入 2GB+ 权重与 torch 依赖收益不匹配（05-V1.1 §12.2 将其定义为可切换项）。阶段二升级已新增**智谱 embedding-3 远程语义嵌入路径**（见 §15，`EMBEDDING_PROVIDER='zhipu'` 启用）；`hash` 仍为缺省兜底提供方，未配置 Key 时行为与阶段一完全一致。
-2. **模块 O「AI 菜品创新」不纳入阶段一**：变更单 CR-20261008-01 未签字生效（其 §五约定未生效前不得开发）；阶段一仅落地第 5 个远程开关 `switch.innovation` 的配置，不实现 subgraph / 新表 / 页面。
+2. **模块 O「AI 菜品创新」——已按后续变更单落地**（原阶段一约定不实现，后续版本已开发）：`POST /v1/innovation/precheck|generate`、私有菜 `recipes/{id}/adopt|index|reuse|feedback`、异步任务 `POST /v1/innovation/jobs`（202 受理 → 轮询终态 succeeded/failed/blocked，写穿透 `innovation_job` 表 + 启动恢复 + 跨用户 404 隔离 + 终态冻结）；LLM 不可用时降级本地模板（`basis.generated_by` 标注 `llm`/`template`）。
 3. **mypy 未引入**：存量代码类型注解不全，全仓改造范围不可控；静态检查暂由 ruff（E/F/W/I/B/UP）承担，mypy 列为后续改进项。
 4. **`app/ability/retrieval.py` 覆盖率 55%**：文本召回分支（ILIKE/别名匹配）暂无独立单测，整体由 API 集成测试间接覆盖；不在质量门硬指标内（硬指标为 `app/safety` 全模块与 `ranking.py`），列为后续补测项。
+5. **模拟服务边界（2026-10-22 复核）**：`ASR/TTS/VISION_PROVIDER` 缺省 `mock`（响应带 `mode` 标识）；ASR 可选 `bailian-realtime` 使用 DashScope `qwen3-asr-flash-realtime`（16 kHz/16-bit/mono PCM WAV，经 WebSocket 实时识别），需单独配置 DashScope `SPEECH_API_KEY`；TTS 可选 `bailian` 使用 DashScope SDK `qwen3-tts-flash`，需 `TTS_API_KEY` 或 `SPEECH_API_KEY`，不要复用不同视觉供应商的 Key。会员支付为 MockPaymentProvider（下单/支付响应带 `simulated: true`），真实微信支付待商户凭证；`EMBEDDING_PROVIDER='bgem3'` 为阶段二占位（配置即抛 NotImplementedError）；埋点 `/v1/track/events` 已落地（白名单/脱敏/保留策略/管理员查询），后台分析 UI 未开发。
 
 ## 11. 15 模块接口清单摘要
 

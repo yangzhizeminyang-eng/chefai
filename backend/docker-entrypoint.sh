@@ -1,4 +1,5 @@
 #!/bin/sh
+# This file must use LF line endings so Linux can resolve the shebang.
 set -eu
 
 mkdir -p /app/uploads /app/assets/recipe_covers

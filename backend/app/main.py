@@ -15,6 +15,7 @@
 """
 
 import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -35,7 +36,52 @@ from app.core.logging import configure_logging, get_logger, new_request_id, requ
 configure_logging()
 logger = get_logger(__name__)
 
-app = FastAPI(title="AI 厨娘・智能烹饪助手 API", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """应用生命周期钩子（异步上下文管理器，函数）。
+
+    说明：
+        FastAPI lifespan 入口（取代已弃用的 @app.on_event("startup")）。
+        启动阶段（yield 前）依次执行：
+            1. 恢复遗留的创新异步任务（innovation_job 表 pending/running → failed
+               终态，进程重启后轮询方可拿到明确失败文案而非悬挂/404，尽力而为）；
+            2. 触发嵌入提供方后台预热（daemon 线程，失败仅 WARNING，
+               不等待完成、不阻断启动——行为与原 on_startup 等价）；
+            3. 打印配置摘要（脱敏，不输出 API Key）。
+        关闭阶段（yield 后）无对称清理逻辑（原实现亦无 shutdown 钩子）。
+        注意：_warmup_embedding_provider 定义于本模块后部（app 实例化之后），
+        此处为前向引用——函数体在应用启动时才执行，届时模块已加载完毕。
+
+    参数：
+        _app：FastAPI 实例（lifespan 协议入参，本应用启动逻辑未使用）。
+
+    返回值：
+        AsyncIterator[None]：async contextmanager，yield 后进入关闭阶段。
+
+    异常：
+        无（预热/恢复失败均为内部告警，不阻断启动）。
+    """
+    # 创新任务恢复：DB 可达时把重启遗留的 pending/running 置 failed（尽力而为）
+    try:
+        from app.api.v1.innovation import recover_stale_innovation_jobs
+
+        recover_stale_innovation_jobs()
+    except Exception as exc:  # noqa: BLE001 —— 恢复失败不阻断启动
+        logger.warning("innovation job recovery skipped: %s", exc)
+    _warmup_embedding_provider()
+    logger.info(
+        "startup",
+        extra={
+            "db": f"{settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME}",
+            "llm_model": settings.LLM_MODEL,
+            "port": settings.APP_PORT,
+        },
+    )
+    yield
+
+
+app = FastAPI(title="AI 厨娘・智能烹饪助手 API", version="1.0.0", lifespan=lifespan)
 
 # CORS：允许阶段一 Web 演示端（Vite 默认端口 5173）跨域携带凭证
 app.add_middleware(
@@ -265,41 +311,3 @@ def _warmup_embedding_provider() -> None:
             logger.warning("embedding warmup failed: %s", exc)
 
     threading.Thread(target=_run, daemon=True, name="embedding-warmup").start()
-
-
-@app.on_event("startup")
-def on_startup() -> None:
-    """应用启动钩子（函数）。
-
-    说明：
-        打印配置摘要（脱敏，不输出 API Key），便于排查部署环境；
-        并触发嵌入提供方后台预热（仅 bailian + warmup 开启时生效，
-        daemon 线程执行，失败仅 WARNING，不阻断启动）；同时恢复遗留的
-        创新异步任务（innovation_job 表 pending/running → failed 终态，
-        进程重启后轮询方可拿到明确失败文案而非悬挂/404）。
-
-    参数：
-        无。
-
-    返回值：
-        None。
-
-    异常：
-        无（预热/恢复失败均为内部告警，不阻断启动）。
-    """
-    # 创新任务恢复：DB 可达时把重启遗留的 pending/running 置 failed（尽力而为）
-    try:
-        from app.api.v1.innovation import recover_stale_innovation_jobs
-
-        recover_stale_innovation_jobs()
-    except Exception as exc:  # noqa: BLE001 —— 恢复失败不阻断启动
-        logger.warning("innovation job recovery skipped: %s", exc)
-    _warmup_embedding_provider()
-    logger.info(
-        "startup",
-        extra={
-            "db": f"{settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME}",
-            "llm_model": settings.LLM_MODEL,
-            "port": settings.APP_PORT,
-        },
-    )

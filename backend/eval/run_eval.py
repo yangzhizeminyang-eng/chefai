@@ -11,8 +11,16 @@
       计算 Hit@3 / Hit@5 / Recall@5 / MRR；--offline 时跳过并标注 unavailable。
 
 诚实性约定：
-    引用覆盖率与 Token/费用指标当前链路无可靠来源，报告一律输出 "unavailable" 并注明
-    原因，绝不编造数字；单条用例失败记 error 不中断整体评测。
+    引用覆盖（citations）为信息展示维度（不进回归门禁）：检索类用例按 compose
+    组装口径产出结构化引用来源并计算 citation_hit 覆盖率；citation_hit 与 Hit@k
+    同源（判据同为候选标题含期望关键词，仅窗口口径不同），coverage 属冗余信息；
+    另设非循环的 citation_grounding 口径——summarize 按已发布菜谱 id 集合批量
+    校验引用可追溯性（id 不在集合 → False），数据库不可达时 grounding 标注
+    unavailable。无有效 citation 数据（--offline / 检索全部失败）时输出
+    "unavailable" 并注明原因。Token/费用指标
+    评测路径为确定性兜底（关键词/规则/SQL）无 LLM 调用（LLM client 的 usage 仅
+    真实模型调用产生），恒 "unavailable" 并注明归因，绝不编造数字；
+    单条用例失败记 error 不中断整体评测。
 
 回归门禁：
     报告顶层输出 gate 段（阈值 / 实际值 / 各指标状态 / 失败用例 / 结果），默认阈值
@@ -69,10 +77,19 @@ VALID_INTENTS: frozenset[str] = frozenset(
     }
 )
 
-# 引用覆盖率与 Token/费用在当前链路无可靠来源的统一说明
-UNAVAILABLE_NOTE_CITATIONS = "citations 覆盖率 unavailable：当前回答链路未产出可校验的引用来源字段"
+# 引用覆盖率无有效数据时的统一说明（有 citation 数据时本说明不输出）
+UNAVAILABLE_NOTE_CITATIONS = "citations 覆盖率 unavailable：本轮无产出 citations 的有效用例（检索用例全部失败/跳过或数据集缺失）"
+# Token/费用在评测路径无来源的统一说明（评测走确定性兜底，无 LLM 调用即无 usage）
 UNAVAILABLE_NOTE_TOKEN = "token/cost unavailable：评测路径为确定性兜底（关键词/规则/SQL），无模型调用与计费数据"
 UNAVAILABLE_NOTE_RETRIEVAL_OFFLINE = "retrieval 指标 unavailable：--offline 模式跳过检索评测"
+# citation_hit 与 Hit@k 同源的口径标注（有 citation 数据且 grounding 校验执行时随 notes 输出）
+NOTE_CITATION_HIT_SAME_SOURCE = (
+    "citation_hit 与 Hit@k 同源（检索候选即引用来源，判据同为标题含期望关键词，仅窗口口径不同："
+    "citation_hit 基于 Top-8 全量 citations、Hit@k 基于前 k 条标题）；grounding_ratio 为非循环的"
+    "可追溯性口径：校验引用 id 是否指向已发布菜谱库"
+)
+# grounding 无法校验时的 unavailable 归因（未获取到已发布菜谱 id 集合，如数据库不可达）
+UNAVAILABLE_NOTE_GROUNDING = "grounding_ratio unavailable：未能获取已发布菜谱 id 集合（数据库不可达），引用可追溯性未校验"
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +143,16 @@ class EvalCaseResult:
         hit_at_3 / hit_at_5：检索前 3 / 前 5 名内是否命中期望关键词。
         recall_at_5：前 5 名对全库相关标题的召回比例。
         mrr：首个命中位置倒数（无命中为 0.0）。
+        citations：结构化引用来源列表（检索数据集用，与 compose 组装口径一致：
+            [{"type": "recipe", "id": 菜谱ID, "title": 菜名}, ...]；其余数据集为空）。
+        citation_hit：citations 中是否含期望关键词来源（检索数据集用；
+            None 表示无有效 citation 数据——用例失败/无候选，不进入覆盖分母）。
+            注意：与 Hit@k 同源（判据同为标题含期望关键词，仅窗口口径不同），
+            属冗余覆盖信息而非独立验证维度。
+        citation_grounding：引用可追溯性校验结果（检索数据集用；非循环口径）：
+            citations 全部 id 指向已发布菜谱库 → True，任一 id 不在集合 → False，
+            无 citations / 未执行校验（如数据库不可达）→ None；由 summarize 按
+            published_recipe_ids 批量判定后回填，本模块构造结果时暂置 None。
     """
 
     case_id: str
@@ -144,6 +171,9 @@ class EvalCaseResult:
     hit_at_5: bool | None = None
     recall_at_5: float | None = None
     mrr: float | None = None
+    citations: list[dict] = field(default_factory=list)
+    citation_hit: bool | None = None
+    citation_grounding: bool | None = None
 
 
 @dataclass
@@ -486,8 +516,14 @@ def eval_retrieval(cases: list[EvalCase]) -> tuple[list[EvalCaseResult], list[st
     说明：
         对每条 query 调用 retrieve_candidates(session, [], query) 取 Top-8 候选标题，
         逐条计算 Hit@3 / Hit@5 / Recall@5 / MRR；Recall@5 的相关集合基于全库
-        已发布菜谱标题（一次性查询复用）。数据库不可达时返回空结果列表与
-        失败原因，由调用方标注 unavailable。
+        已发布菜谱标题（一次性查询复用）。
+        citations（OBS-04）：按 compose 组装口径把候选构造成结构化引用来源
+        [{"type": "recipe", "id": 菜谱ID, "title": 菜名}, ...]，citation_hit 判定
+        citations 中是否含期望关键词来源（与 Hit@k 同源，窗口口径不同：citation_hit
+        基于 Top-8 全量 citations）；citation_grounding 在本函数暂置 None，由
+        summarize 按已发布菜谱 id 集合批量校验引用可追溯性（非循环口径）；
+        无候选（error）时 citations 保持空列表且 citation_hit=None（不进覆盖分母）。
+        数据库不可达时返回空结果列表与失败原因，由调用方标注 unavailable。
 
     参数：
         cases：检索评测用例列表。
@@ -508,12 +544,19 @@ def eval_retrieval(cases: list[EvalCase]) -> tuple[list[EvalCaseResult], list[st
                 try:
                     candidates = retrieve_candidates(session, [], case.text)
                     titles = [str(c.get("title") or "") for c in candidates]
+                    # citations：与 compose 组装口径一致的结构化引用来源（recipe 型）
+                    citations = [
+                        {"type": "recipe", "id": int(c.get("recipe_id")), "title": str(c.get("title") or "")}
+                        for c in candidates
+                        if c.get("recipe_id")
+                    ]
                     result = EvalCaseResult(
                         case_id=case.id,
                         dataset=case.dataset,
                         expected_keywords=case.expected_keywords,
                         latency_ms=round((time.perf_counter() - start) * 1000, 3),
                         titles=titles,
+                        citations=citations,
                     )
                     if not titles:
                         result.error = "检索无候选返回"
@@ -524,6 +567,10 @@ def eval_retrieval(cases: list[EvalCase]) -> tuple[list[EvalCaseResult], list[st
                         result.recall_at_5 = round(recall_at_k(titles, kws, all_titles, 5), 4)
                         result.mrr = round(mrr(titles, kws), 4)
                         result.passed = bool(result.hit_at_5)
+                        # citation_hit：citations（全量 Top-8 来源）中含期望关键词来源
+                        result.citation_hit = any(
+                            any(kw in cit["title"] for kw in kws) for cit in citations
+                        )
                     results.append(result)
                 except Exception as exc:  # noqa: BLE001 —— 单条失败不中断评测
                     results.append(
@@ -540,10 +587,31 @@ def eval_retrieval(cases: list[EvalCase]) -> tuple[list[EvalCaseResult], list[st
     return results, errors
 
 
+def _load_published_recipe_ids() -> set[int] | None:
+    """查询已发布菜谱 id 集合（grounding 校验依据）（函数）。
+
+    说明：
+        一次性查询 status="published" 的菜谱主键集合，供 summarize 批量校验
+        citations 的 id 可追溯性；数据库不可达时返回 None（grounding 降级为
+        unavailable，不中断评测流程）。
+
+    返回值：
+        set[int] | None：已发布菜谱 id 集合；数据库不可达时为 None。
+
+    异常：
+        不抛出（连接/查询异常内部消化为 None）。
+    """
+    try:
+        with SessionLocal() as session:
+            return {int(rid) for rid in session.execute(select(Recipe.id).where(Recipe.status == "published")).scalars().all()}
+    except Exception:  # noqa: BLE001 —— 数据库不可达时 grounding 降级为 unavailable
+        return None
+
+
 # ---------------------------------------------------------------------------
 # 指标汇总与报告输出
 # ---------------------------------------------------------------------------
-def summarize(report: EvalReport) -> None:
+def summarize(report: EvalReport, published_recipe_ids: set[int] | None = None) -> None:
     """汇总各数据集指标并写入 report.metrics / report.notes（函数）。
 
     说明：
@@ -552,10 +620,26 @@ def summarize(report: EvalReport) -> None:
           （UNKNOWN 按未拦截计入，D9 保守拦截语义的如实反映）；
         - retrieval：Hit@3 / Hit@5 / Recall@5 / MRR + P50/P95 延迟；
           无有效结果时指标为 None 并写 notes 标注 unavailable；
-        - citations / token_cost：当前链路无可靠来源，固定 unavailable 并注明原因。
+        - citations（OBS-04）：引用覆盖评测维度——coverage = citation_hit 命中
+          比例（分母为产出有效 citations 的检索类用例；降级/无候选/失败用例
+          citation_hit=None 计 unavailable 不进分母并 notes 归因）；citation_hit
+          与 Hit@k 同源（判据同为标题含期望关键词，仅窗口口径不同），coverage 属
+          冗余信息；另设非循环的 grounding 口径：按 published_recipe_ids 批量校验
+          citations 的 id 可追溯性并回填各用例 citation_grounding（全部在集合内 →
+          True、任一不在 → False、无 citations → None），grounding_ratio = True
+          比例、grounding_cases = 参与校验用例数；未提供 id 集合（如数据库不可达）
+          时 grounding unavailable 并 notes 归因；citations 为信息展示维度，
+          不进回归门禁；
+        - token_cost：评测路径为确定性兜底（关键词/规则/SQL）无 LLM 调用，
+          total_tokens / total_cost_cents 恒 None 并在 reason 注明归因；
+          estimated=False 表示未用占位单价估算，绝不与实际计费混同（LLM client
+          的 usage 只在真实模型调用链路产生，eval 离线路径不采到）。
 
     参数：
-        report：待汇总的评测报告（原地修改 metrics / notes）。
+        report：待汇总的评测报告（原地修改 results 的 citation_grounding 回填、
+            metrics / notes）。
+        published_recipe_ids：已发布菜谱 id 集合（grounding 校验依据；None 表示
+            未获取到——不执行校验，grounding 指标 unavailable）。
 
     返回值：
         None。
@@ -636,12 +720,49 @@ def summarize(report: EvalReport) -> None:
         }
         report.notes.append("retrieval 指标 unavailable：数据库不可达或无候选结果，未产出有效检索评测")
 
-    # ---- 引用覆盖率与 Token/费用：当前链路无可靠来源，诚实标注 ----
-    report.metrics["citations"] = {"coverage": None}
-    report.metrics["token_cost"] = {"total_tokens": None, "total_cost_cents": None}
-    for note in (UNAVAILABLE_NOTE_CITATIONS, UNAVAILABLE_NOTE_TOKEN):
-        if note not in report.notes:
-            report.notes.append(note)
+    # ---- 引用覆盖（OBS-04）：检索类用例的 citation_hit 命中比例；无效数据诚实 unavailable ----
+    # 循环定义修正：citation_hit 与 Hit@k 同源（判据同为"候选标题含期望关键词"，
+    # 仅窗口口径不同），coverage 属冗余信息；grounding 为非循环口径——按
+    # published_recipe_ids 批量校验引用 id 可追溯性。
+    citation_items = [r for r in retrieval_items if r.citation_hit is not None]
+    if citation_items:
+        citations_metrics = {
+            "coverage": round(sum(1 for r in citation_items if r.citation_hit) / len(citation_items), 4),
+            "cases": len(citation_items),
+            "cases_with_citations": sum(1 for r in citation_items if r.citations),
+        }
+        grounded_pool = [r for r in citation_items if r.citations]
+        if published_recipe_ids is not None and grounded_pool:
+            # grounding 回填：citations 全部 id 在已发布集合内 → True，任一不在 → False
+            for r in grounded_pool:
+                r.citation_grounding = all(cit.get("id") in published_recipe_ids for cit in r.citations)
+            citations_metrics["grounding_ratio"] = round(
+                sum(1 for r in grounded_pool if r.citation_grounding) / len(grounded_pool), 4
+            )
+            citations_metrics["grounding_cases"] = len(grounded_pool)
+            if NOTE_CITATION_HIT_SAME_SOURCE not in report.notes:
+                report.notes.append(NOTE_CITATION_HIT_SAME_SOURCE)
+        else:
+            citations_metrics["grounding_ratio"] = None
+            citations_metrics["grounding_cases"] = None
+            if grounded_pool and published_recipe_ids is None and UNAVAILABLE_NOTE_GROUNDING not in report.notes:
+                report.notes.append(UNAVAILABLE_NOTE_GROUNDING)
+        report.metrics["citations"] = citations_metrics
+    else:
+        # 无有效 citation 数据（检索未执行/全部失败）：unavailable + notes 归因，绝不编造
+        report.metrics["citations"] = {"coverage": None, "grounding_ratio": None, "grounding_cases": None}
+        if UNAVAILABLE_NOTE_CITATIONS not in report.notes:
+            report.notes.append(UNAVAILABLE_NOTE_CITATIONS)
+
+    # ---- Token/费用：评测路径无 LLM 调用（确定性兜底），无 usage 来源，诚实标注归因 ----
+    report.metrics["token_cost"] = {
+        "total_tokens": None,
+        "total_cost_cents": None,
+        "estimated": False,
+        "reason": UNAVAILABLE_NOTE_TOKEN,
+    }
+    if UNAVAILABLE_NOTE_TOKEN not in report.notes:
+        report.notes.append(UNAVAILABLE_NOTE_TOKEN)
 
 
 def write_reports(report: EvalReport, output_dir: Path, prefix: str) -> tuple[Path, Path]:
@@ -696,6 +817,11 @@ def write_reports(report: EvalReport, output_dir: Path, prefix: str) -> tuple[Pa
         "latency_p50_ms": "延迟 P50 (ms)",
         "latency_p95_ms": "延迟 P95 (ms)",
         "coverage": "引用覆盖率",
+        "grounding_ratio": "引用可追溯率 (grounding)",
+        "grounding_cases": "grounding 校验用例数",
+        "cases_with_citations": "产出 citations 用例数",
+        "estimated": "成本为估算口径",
+        "reason": "unavailable 归因",
         "total_tokens": "Token 总数",
         "total_cost_cents": "费用 (cents)",
     }
@@ -913,14 +1039,19 @@ def main(argv: list[str] | None = None) -> int:
     # ---- 风控评测（连库规则引擎）----
     report.results.extend(eval_safety(cases_safety, RiskEngine()))
     # ---- 检索评测（依赖数据库；--offline 跳过并标注 unavailable）----
+    published_recipe_ids: set[int] | None = None
     if args.offline:
         report.notes.append(UNAVAILABLE_NOTE_RETRIEVAL_OFFLINE)
     else:
         retrieval_results, retrieval_errors = eval_retrieval(cases_retrieval)
         report.results.extend(retrieval_results)
         report.notes.extend(retrieval_errors)
+        # 仅当检索评测实际产出 citations 时才查询已发布 id 集合（grounding 校验依据；
+        # 桩替换/无候选场景不触库，保持评测桩测试的零数据库依赖约定）
+        if any(r.citations for r in report.results):
+            published_recipe_ids = _load_published_recipe_ids()
 
-    summarize(report)
+    summarize(report, published_recipe_ids=published_recipe_ids)
     # ---- 回归门禁判定（--no-gate 关闭：仅记录 SKIPPED，退出码恒 0）----
     if args.no_gate:
         report.gate = {

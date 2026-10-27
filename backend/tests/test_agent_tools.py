@@ -230,6 +230,23 @@ class TestIdempotentCache:
         assert result.cached is False
         assert tool.exec_count == 2
 
+    def test_clear_tool_cache_forces_reexecution(self) -> None:
+        """clear_tool_cache 后同参数调用重新真实执行（函数）。
+
+        说明：
+            缓存清理契约：清空后不得再命中旧结果（运维/测试隔离依赖）。
+
+        异常：
+            断言失败即测试失败。
+        """
+        tool = StubCountTool()
+        first = execute_tool(tool, {"q": "番茄"}, ToolContext())
+        assert first.cached is False
+        clear_tool_cache()
+        second = execute_tool(tool, {"q": "番茄"}, ToolContext())
+        assert second.cached is False, "清空缓存后必须重新真实执行"
+        assert tool.exec_count == 2
+
 
 class TestPermissionDenied:
     """权限路径（归属敏感工具的 user_id 校验）。"""
@@ -482,6 +499,57 @@ class TestUserScopedCache:
         third = execute_tool(tool, {}, ToolContext(user_id=1, request_id="real"))
         assert third.status == "ok"
         assert third.cached is False, "denied 结果不应污染缓存，实名调用必须真实执行"
+
+    def test_inventory_cache_hit_same_user(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """user_scoped 工具：同一用户同参数二次调用命中自己的缓存（函数）。
+
+        说明：
+            request_id 不同但 user_id 相同（request_id 只作审计关联、不进缓存键），
+            第二次必须 cached=True 且结果与首次一致、attempts=0（未真实执行）。
+
+        参数：
+            monkeypatch：pytest 替身（替换 tools.SessionLocal 为 fake 会话工厂）。
+
+        异常：
+            断言失败即测试失败。
+        """
+        data = {1: [_inv_row(3, "鸡蛋")]}
+        monkeypatch.setattr(tools, "SessionLocal", lambda: _FakeInventorySession(data))
+        tool = InventoryQueryTool()
+        first = execute_tool(tool, {}, ToolContext(user_id=1, request_id="u1-call1"))
+        assert first.status == "ok"
+        assert first.cached is False
+        second = execute_tool(tool, {}, ToolContext(user_id=1, request_id="u1-call2"))
+        assert second.status == "ok"
+        assert second.cached is True, "同用户同参数二次调用应命中自己的缓存"
+        assert second.attempts == 0
+        assert second.result == first.result
+
+    def test_anonymous_cannot_hit_authenticated_cache(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """实名结果入缓存后，匿名调用不得命中缓存读走私有数据（函数）。
+
+        说明：
+            修复 4bd3cf1 的反向攻击面：user_id=None 的键无用户前缀，与实名键
+            （u{id}\\x00 前缀）不同，且 execute 先抛 permission_denied 永不成功
+            写入无前缀键——匿名绝不能经缓存读到实名用户库存。
+
+        参数：
+            monkeypatch：pytest 替身（替换 tools.SessionLocal 为 fake 会话工厂）。
+
+        异常：
+            断言失败即测试失败。
+        """
+        data = {1: [_inv_row(3, "鸡蛋")]}
+        monkeypatch.setattr(tools, "SessionLocal", lambda: _FakeInventorySession(data))
+        tool = InventoryQueryTool()
+        authed = execute_tool(tool, {}, ToolContext(user_id=1, request_id="auth"))
+        assert authed.status == "ok"
+        assert authed.cached is False
+        anon = execute_tool(tool, {}, ToolContext(user_id=None, request_id="anon"))
+        assert anon.status == "error"
+        assert anon.error_code == "permission_denied"
+        assert anon.cached is False, "匿名调用不得通过缓存命中读取实名用户数据"
+        assert anon.result == {}, "拒绝结果不得携带任何库存数据"
 
     def test_non_user_scoped_tools_share_cache(self) -> None:
         """user_scoped=False 工具跨用户共享缓存（防过度隔离回归）（函数）。

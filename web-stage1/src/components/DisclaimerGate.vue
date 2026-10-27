@@ -47,10 +47,12 @@ async function onEnter(): Promise<void> {
     :show-close="false"
     :close-on-click-modal="false"
     :close-on-press-escape="false"
+    title="使用前请阅读"
+    transition="instant-gate"
     class="disclaimer-gate-dialog"
     align-center
-    aria-label="使用前请阅读"
   >
+    <div class="gate-scene" aria-hidden="true"></div>
     <div class="gate-body">
       <h2 class="gate-title">使用前请阅读</h2>
 
@@ -81,19 +83,65 @@ async function onEnter(): Promise<void> {
 </template>
 
 <style scoped>
+:global(.disclaimer-gate-dialog.el-dialog.is-fullscreen) {
+  --gate-countertop: #f5f0e8;
+  --gate-ink: #26362e;
+  --gate-green: #24483a;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: var(--gate-countertop);
+  color: var(--gate-ink);
+}
+
+:global(.disclaimer-gate-dialog .el-dialog__header) {
+  display: none;
+}
+
+:global(.disclaimer-gate-dialog .el-dialog__body) {
+  position: relative;
+  min-height: 100dvh;
+  padding: 0;
+  overflow: hidden;
+}
+
+.gate-scene {
+  position: absolute;
+  z-index: 0;
+  top: 0;
+  right: 0;
+  width: min(34vw, 420px);
+  height: clamp(128px, 20vh, 210px);
+  pointer-events: none;
+  background-image:
+    linear-gradient(270deg, rgba(245, 240, 232, 0.04) 12%, rgba(245, 240, 232, 0.94) 100%),
+    linear-gradient(180deg, rgba(245, 240, 232, 0.08), rgba(245, 240, 232, 0.52)),
+    url('/images/login-prep-scene.png');
+  background-size: cover;
+  background-position: 88% 8%;
+  mask-image: linear-gradient(135deg, transparent 0%, #000 43%);
+}
+
 .gate-body {
+  position: relative;
+  z-index: 1;
+  min-height: 100dvh;
   max-width: 640px;
   margin: 0 auto;
-  padding: 48px 24px;
+  padding: clamp(36px, 8vh, 88px) 24px;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 24px;
 }
 
 .gate-title {
+  color: var(--gate-ink);
+  font-family: 'Noto Serif SC', 'Songti SC', Georgia, serif;
   font-size: 24px;
   font-weight: 600;
+  line-height: 1.4;
   margin: 0;
 }
 
@@ -102,24 +150,94 @@ async function onEnter(): Promise<void> {
   margin: 0;
   padding: 20px 24px;
   list-style: none;
-  background: var(--color-info-bg);
-  border: 1px solid var(--color-info-border);
-  border-radius: 10px;
+  background: #f2eddf;
+  border: 1px solid #e3dccb;
+  border-radius: 8px;
+  box-shadow: 0 10px 26px rgba(83, 68, 45, 0.06);
 }
 
 .gate-clause {
   font-size: var(--font-md);
   line-height: 1.8;
-  color: var(--text-main);
+  color: var(--gate-ink);
 }
 
 .gate-check {
   font-size: var(--font-md);
 }
 
+.gate-check :deep(.el-checkbox__inner) {
+  width: 18px;
+  height: 18px;
+  border-color: #859287;
+  border-radius: 4px;
+  background: #fffdf8;
+}
+
+.gate-check :deep(.el-checkbox__input.is-checked .el-checkbox__inner) {
+  border-color: var(--gate-green);
+  background: var(--gate-green);
+}
+
+.gate-check :deep(.el-checkbox__input.is-focus .el-checkbox__inner) {
+  border-color: var(--gate-green);
+  box-shadow: 0 0 0 3px rgba(36, 72, 58, 0.16);
+}
+
+.gate-check :deep(.el-checkbox__label) {
+  color: #26362e;
+}
+
 .gate-enter-btn {
   min-width: 200px;
-  min-height: 44px;
+  min-height: 46px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--gate-green);
   font-size: var(--font-lg);
+  font-weight: 650;
+  transition: background-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+}
+
+.gate-enter-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--gate-green) 88%, black 12%);
+  box-shadow: 0 5px 14px rgba(36, 72, 58, 0.16);
+  transform: translateY(-1px);
+}
+
+.gate-enter-btn:active:not(:disabled) {
+  box-shadow: none;
+  transform: translateY(1px) scale(0.995);
+}
+
+.gate-enter-btn:disabled {
+  background: #9aa79f;
+}
+
+@media (max-width: 600px) {
+  .gate-scene {
+    width: 48vw;
+    height: 120px;
+    opacity: 0.75;
+  }
+
+  .gate-body {
+    padding: 40px 20px;
+    gap: 20px;
+  }
+
+  .gate-clauses {
+    padding: 18px 16px;
+  }
+
+  .gate-clause {
+    font-size: 15px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gate-enter-btn {
+    transition: none;
+  }
 }
 </style>

@@ -15,6 +15,15 @@
     - 本模块为模拟支付：mock-pay 直接置 paid 并写 wx_transaction_id='MOCK'+order_no，
       正式接入微信支付时替换回调签名校验，状态机与幂等语义保持不变。
 
+支付 provider 抽象（任务 A 接线）：
+    - 支付受理经 app.ability.payment.PaymentProvider 抽象（缺省
+      MockPaymentProvider，行为与既有 mock 语义完全一致）；
+    - 下单与支付响应体携带 "simulated": true（模拟支付通道显式标记，
+      OrderOut.simulated 新增可选字段，前端可忽略）；
+    - 🔴 真实微信支付待商户凭证/沙箱环境验证（见 payment.py 模块文档），
+      接入时实现 WechatPayProvider 并切换工厂配置，本端点状态机与幂等
+      语义保持不变。
+
 幂等与状态机（mock-pay）：
     - pending → paid：写 paid_at / wx_transaction_id（状态机单向流转）；
     - 已 paid 订单的**无参重放**视为支付回调重复通知 → 200 幂等返回既有结果；
@@ -39,6 +48,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.ability.member import get_member_status, get_quota
+from app.ability.payment import get_payment_provider
 from app.api.v1.deps import (
     ERR_CONFLICT,
     ERR_NOT_FOUND,
@@ -95,6 +105,10 @@ _POLICY_NOTE = "小程序虚拟支付；请勿通过其他渠道支付"
 # 支付入口关闭错误码与文案（switch.payment=false 时 POST orders / mock-pay 返回）
 _ERR_PAYMENT_CLOSED = "PAYMENT_CLOSED"
 _MSG_PAYMENT_CLOSED = "支付入口已关闭"
+
+# 金额校验失败错误码与文案（provider 金额篡改拒绝 → 422）
+_ERR_AMOUNT_INVALID = "PAYMENT_AMOUNT_INVALID"
+_MSG_AMOUNT_INVALID = "支付金额非法"
 
 # 订单号生成最大重试次数（order_no UNIQUE 冲突重试上限）
 _ORDER_NO_MAX_RETRY = 5
@@ -175,7 +189,8 @@ def _order_out(order: Order) -> dict:
         order：订单 ORM 实例。
 
     返回值：
-        dict：OrderOut 结构（时间字段 ISO 8601，附 pay_channel）。
+        dict：OrderOut 结构（时间字段 ISO 8601，附 pay_channel 与
+            simulated=true 模拟通道标记）。
 
     异常：
         无。
@@ -189,6 +204,7 @@ def _order_out(order: Order) -> dict:
         "created_at": _iso(order.created_at),
         "wx_transaction_id": order.wx_transaction_id,
         "pay_channel": _PAY_CHANNEL,
+        "simulated": True,
     }
 
 
@@ -316,10 +332,13 @@ def mock_pay_order(
     """模拟支付回调端点（函数）。
 
     说明：
-        状态机 pending→paid（写 paid_at / wx_transaction_id='MOCK'+order_no）；
-        幂等语义：已 paid 订单的**无参重放**返回 200 既有结果；携带 simulate 的
-        新支付指令或非 pending 订单的状态流转 → 422；pending+simulate='fail'
-        → status='failed'（仅 pending 可 failed）。开关关闭 403。
+        支付受理经 app.ability.payment 支付 provider 抽象（缺省
+        MockPaymentProvider，语义与既有 mock 一致）；状态机 pending→paid
+        （写 paid_at / wx_transaction_id，凭证由 provider 结果提供）；
+        幂等语义：已 paid 订单的**无参重放**返回 200 既有结果；携带 simulate
+        的新支付指令或非 pending 订单的状态流转 → 422；pending+simulate='fail'
+        → status='failed'（仅 pending 可 failed）。金额非法（provider 校验
+        拒绝，如订单金额被篡改为 0）→ 422。开关关闭 403。
 
     参数：
         order_no：路径订单号。
@@ -327,11 +346,11 @@ def mock_pay_order(
         session：请求级数据库会话。
 
     返回值：
-        JSONResponse：200 订单状态体（paid/failed）。
+        JSONResponse：200 订单状态体（paid/failed，含 simulated=true）。
 
     异常：
         HTTPException 404：订单不存在；403：支付入口关闭；
-        422：非 pending 订单不可流转。
+        422：非 pending 订单不可流转 / 金额校验拒绝。
     """
     if not _payment_switch_on(session):
         raise api_error(403, _ERR_PAYMENT_CLOSED, _MSG_PAYMENT_CLOSED)
@@ -355,18 +374,27 @@ def mock_pay_order(
             f"order_no={order_no}, status={order.status}",
         )
 
-    if simulate == "fail":
-        # 模拟支付失败（仅 pending 可 failed）
+    # 支付受理经 provider 抽象（金额篡改在 provider 层拒绝，映射 422）
+    try:
+        result = get_payment_provider().pay(order.order_no, int(order.amount_cents), simulate)
+    except ValueError as exc:
+        logger.warning("payment amount rejected: %s", exc)
+        raise api_error(422, _ERR_AMOUNT_INVALID, _MSG_AMOUNT_INVALID, f"order_no={order_no}") from exc
+
+    if not result.success:
+        # 支付失败路径（simulate='fail' 等）：pending → failed（仅 pending 可 failed）
         order.status = "failed"
         session.commit()
         return JSONResponse(content=_order_out(order))
 
-    # 模拟支付成功：pending → paid
+    # 支付成功：pending → paid（凭证与时间由既有状态机口径写入）
     order.status = "paid"
     order.paid_at = datetime.now(UTC)
-    order.wx_transaction_id = f"MOCK{order.order_no}"
+    order.wx_transaction_id = result.transaction_id
     session.commit()
-    logger.info("mock pay success", extra={"order_no": order.order_no})
+    logger.info(
+        "mock pay success", extra={"order_no": order.order_no, "simulated": result.simulated},
+    )
     return JSONResponse(content=_order_out(order))
 
 

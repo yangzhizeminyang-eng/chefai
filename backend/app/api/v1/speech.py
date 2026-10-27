@@ -55,21 +55,25 @@ class SpeechTtsResponse(BaseModel):
         format：音频格式（如 wav）。
         degraded：降级标记（provider 失败时 true，前端静默不播）。
         message：降级说明（仅 degraded 时存在）。
+        mode：provider 通道标识（'mock'=静音占位 / 'bailian'=百炼真实合成；
+            provider 异常降级或实现类未声明时为 None。新增可选字段，
+            前端可忽略；mock 通道结果显式可辨识）。
     """
 
     audio_base64: str = ""
     format: str = "wav"
     degraded: bool = False
     message: str | None = None
+    mode: str | None = None
 
 
 @router.post(
     "/asr",
     response_model=SpeechAsrResponse,
-    summary="语音转文字（阶段一 mock ASR 适配器，音频不落盘）",
+    summary="语音转文字（DashScope Qwen3 ASR，音频不落盘）",
 )
 def post_speech_asr(
-    file: UploadFile = File(..., description="音频文件（webm/mp3/wav 等）"),
+    file: UploadFile = File(..., description="16 kHz/16-bit/mono PCM WAV 音频"),
 ) -> dict:
     """语音转文字端点（函数）。
 
@@ -92,13 +96,15 @@ def post_speech_asr(
         raise api_error(422, ERR_VALIDATION, "请上传音频文件")
 
     try:
-        text = get_speech_provider().transcribe(audio_bytes)
+        provider = get_speech_provider()
+        text = provider.transcribe(audio_bytes)
         logger.info("asr transcript: %r (bytes=%d)", text, len(audio_bytes))
     except Exception as exc:  # noqa: BLE001 —— provider 失败降级为文字输入引导
         logger.warning("speech provider failed: %s", exc)
-        return {"text": "", "degraded": True, "message": "语音识别暂不可用，请使用文字输入"}
+        return {"text": "", "degraded": True, "message": "语音识别暂不可用，请使用文字输入", "mode": None}
 
-    return {"text": text, "degraded": False}
+    # 通道标识（'mock'/'bailian'；实现类未声明时 None，新增可选字段前端可忽略）
+    return {"text": text, "degraded": False, "mode": getattr(provider, "mode", None)}
 
 
 @router.post(
@@ -129,13 +135,21 @@ def post_speech_tts(body: SpeechTtsRequest) -> dict:
         raise api_error(422, ERR_VALIDATION, "文本过长（≤300 字符）")
 
     try:
-        audio_base64, audio_format = get_tts_provider().synthesize(text)
+        provider = get_tts_provider()
+        audio_base64, audio_format = provider.synthesize(text)
         logger.info("tts synthesized: chars=%d bytes=%d", len(text), len(audio_base64))
     except Exception as exc:  # noqa: BLE001 —— provider 失败降级为静默跳过
         logger.warning("tts provider failed: %s", exc)
-        return {"audio_base64": "", "format": "wav", "degraded": True, "message": "语音合成暂不可用"}
+        return {
+            "audio_base64": "", "format": "wav", "degraded": True,
+            "message": "语音合成暂不可用", "mode": None,
+        }
 
-    return {"audio_base64": audio_base64, "format": audio_format, "degraded": False}
+    # 通道标识（'mock'/'bailian'；实现类未声明时 None，新增可选字段前端可忽略）
+    return {
+        "audio_base64": audio_base64, "format": audio_format,
+        "degraded": False, "mode": getattr(provider, "mode", None),
+    }
 
 
 @router.get(
@@ -146,9 +160,9 @@ def get_speech_tts_stream(text: str) -> StreamingResponse:
     """文字转语音流式端点（函数）。
 
     说明：
-        mp3 分片直出（media_type=audio/mpeg），前端 <audio> 原生渐进播放，
-        首声延迟显著低于整段 base64 方案；provider 建连失败抛 502（前端
-        Audio error 事件静默跳过）；流中断即结束（已播部分保留）。
+        provider 返回音频字节后由响应体输出，音频只在内存中处理；provider
+        建连失败抛 502（前端 Audio error 事件静默跳过）。当前 SDK 返回完整
+        WAV，因此本端点虽以流式 HTTP 响应传输，但模型合成阶段不是增量输出。
 
     参数：
         text：待合成文本（query 传入，≤300 字符）。
@@ -178,7 +192,7 @@ def get_speech_tts_stream(text: str) -> StreamingResponse:
         except Exception as exc:  # noqa: BLE001 —— 限流/网络中断按提前结束处理
             logger.warning("tts stream error mid-flight: %s", exc)
 
-    return StreamingResponse(_safe_iter(), media_type="audio/mpeg")
+    return StreamingResponse(_safe_iter(), media_type="audio/wav")
 
 
 class VoiceIntentRequest(BaseModel):

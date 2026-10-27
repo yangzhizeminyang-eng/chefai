@@ -195,7 +195,7 @@ def _load_profile_hint(session: Session, user_id: int) -> dict:
             )
         ).scalar_one()
     )
-    return {"has_profile": True, "member_count": member_count}
+    return {"has_profile": member_count > 0, "member_count": member_count}
 
 
 def _seasonal_categories() -> list[str]:

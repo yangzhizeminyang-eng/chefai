@@ -10,7 +10,7 @@
  *   占位语义由文字与角标承载，不依赖颜色单独传达信息。
  */
 import { computed, ref, watch } from 'vue'
-import { coverPalette } from '@/utils/cover'
+import { Dish } from '@element-plus/icons-vue'
 
 /** 组件入参 */
 const props = defineProps<{
@@ -40,10 +40,8 @@ watch(
 const showPlaceholder = computed(() => !props.src || loadError.value)
 
 /** 占位封面色板（bg 背景 / fg 深色文字，成对保证对比度可读） */
-const palette = computed(() => coverPalette(props.recipeId))
-
 /** 占位态容器无障碍标签（role="img" 的 aria-label：「菜名 示意图」） */
-const placeholderLabel = computed(() => `${props.title} 示意图`)
+const placeholderLabel = computed(() => `${props.title}，暂无实拍图片`)
 </script>
 
 <template>
@@ -54,11 +52,10 @@ const placeholderLabel = computed(() => `${props.title} 示意图`)
       class="cover-placeholder"
       role="img"
       :aria-label="placeholderLabel"
-      :style="{ background: palette.bg, color: palette.fg }"
     >
-      <span class="placeholder-icon" aria-hidden="true">🍳</span>
+      <el-icon class="placeholder-icon" aria-hidden="true"><Dish /></el-icon>
       <span class="placeholder-title">{{ title }}</span>
-      <span class="placeholder-badge">示意图</span>
+      <span class="placeholder-badge">暂无实拍</span>
     </div>
     <!-- 真实图分支：加载中骨架占满容器（图片渐入期间不留白、高度不跳动） -->
     <template v-else>
@@ -124,11 +121,14 @@ const placeholderLabel = computed(() => `${props.title} 示意图`)
   justify-content: center;
   gap: 6px;
   padding: 12px;
+  color: var(--text-main);
+  background: var(--surface-soft);
   text-align: center;
 }
 
 .placeholder-icon {
-  font-size: 28px;
+  color: var(--accent-deep);
+  font-size: 25px;
   line-height: 1;
 }
 
@@ -151,9 +151,9 @@ const placeholderLabel = computed(() => `${props.title} 示意图`)
   bottom: 8px;
   padding: 2px 8px;
   border-radius: 4px;
-  background: rgba(0, 0, 0, 0.45);
-  color: #fff;
-  font-size: 12px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--surface-raised) 88%, transparent);
+  font-size: 10px;
   line-height: 1.5;
 }
 </style>

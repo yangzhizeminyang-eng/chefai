@@ -31,6 +31,7 @@ from app.api.v1 import (
     seasonal,
     speech,
     trace,
+    track,
     vision,
 )
 
@@ -58,4 +59,5 @@ api_router.include_router(member.router)           # 模块 J 会员与支付（
 api_router.include_router(feedback.router)         # 模块 N 用户反馈
 api_router.include_router(innovation.router)       # 模块 O AI 菜品创新
 api_router.include_router(trace.router)
+api_router.include_router(track.router)      # 用户行为埋点（批量接收 + 管理员审计查询）
 api_router.include_router(config.router)

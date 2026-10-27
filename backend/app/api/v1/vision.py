@@ -257,7 +257,8 @@ def post_vision_recognize(
 
     # ⑥ 调用 provider：异常降级为手动选食材，🔴 不扣额度
     try:
-        items = get_vision_provider().recognize(image_bytes)
+        provider = get_vision_provider()
+        items = provider.recognize(image_bytes)
     except Exception as exc:  # noqa: BLE001 —— provider 失败降级，不扣额度
         logger.warning("vision provider failed: %s", exc)
         return {
@@ -265,7 +266,10 @@ def post_vision_recognize(
             "degraded": True,
             "message": "识别暂时不可用，请手动选择食材",
             "quota": quota,
+            "mode": None,
         }
+    # 通道标识（'mock'/'vlm'；实现类未声明时 None，新增可选字段前端可忽略）
+    mode = getattr(provider, "mode", None)
 
     serialized = [
         {"name": item.name, "confidence": item.confidence, "ingredient_id": item.ingredient_id}
@@ -279,6 +283,7 @@ def post_vision_recognize(
             "degraded": False,
             "message": "未能准确识别食材，请手动选择或重拍",
             "quota": quota,
+            "mode": mode,
         }
 
     # ⑧ 有 high 置信项：扣 1 次额度（并发竞态时可能扣减失败 → 429）
@@ -296,6 +301,7 @@ def post_vision_recognize(
         "recognized": serialized,
         "degraded": False,
         "quota": quota_after,
+        "mode": mode,
     }
 
 

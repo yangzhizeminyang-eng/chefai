@@ -38,12 +38,17 @@ from app.api.v1 import vision as vision_module
 from app.core.db import SessionLocal
 from app.main import app
 from app.models import Ingredient, RemoteConfig, User
+from tests.conftest import ensure_router_registered
 
 # ---- 路由接线（幂等）：router.py 注册行由主控落位，测试期确保端点可达 ----
 # （/v1 前缀在 router.py 的 api_router 上，此处 include 时显式补齐）
-if not any(getattr(r, "path", None) == "/v1/vision/recognize" for r in app.routes):
-    app.include_router(vision_module.router, prefix="/v1")
-    app.include_router(speech_module.router, prefix="/v1")
+ensure_router_registered(
+    app,
+    (vision_module.router, speech_module.router),
+    flag="_vision_speech_routes_registered",
+    prefix="/v1",
+    probe_paths=("/v1/vision/recognize",),
+)
 
 
 class _StubHighProvider(VisionProvider):

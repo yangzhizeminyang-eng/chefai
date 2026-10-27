@@ -27,6 +27,7 @@ from app.main import app as main_app
 from app.models import Family, FamilyMember, Ingredient, Recipe, RecipeIngredient, User
 from app.schemas.recommend import RecommendResultItem
 from app.seed.ingredients import INGREDIENTS
+from tests.conftest import ensure_router_registered
 
 
 def _ensure_routes_registered() -> None:
@@ -35,6 +36,7 @@ def _ensure_routes_registered() -> None:
     说明：
         router.py 属禁改文件；若其他任务尚未注册本模块路由，则在主应用上
         幂等挂载（已注册则跳过），保证本测试模块可独立运行。
+        守卫统一复用 conftest.ensure_router_registered（防重复注册）。
 
     参数：
         无。
@@ -45,9 +47,13 @@ def _ensure_routes_registered() -> None:
     异常：
         无。
     """
-    paths = {getattr(route, "path", "") for route in main_app.routes}
-    if "/v1/seasonal" not in paths:
-        main_app.include_router(seasonal_api.router, prefix="/v1")
+    ensure_router_registered(
+        main_app,
+        (seasonal_api.router,),
+        flag="_seasonal_routes_registered",
+        prefix="/v1",
+        probe_paths=("/v1/seasonal",),
+    )
 
 
 _ensure_routes_registered()

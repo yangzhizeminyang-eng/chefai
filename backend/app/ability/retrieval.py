@@ -15,7 +15,9 @@
     来源标记；
     RRF 融合（C5）：RETRIEVAL_FUSION=rrf 时按 ①覆盖 / ②文本 / ③向量 三路排名做
     Reciprocal Rank Fusion（score = Σ 1/(60+rank)），候选携带 _fusion_ranks 内部键
-    标注各路排名；缺省 fixed 模式保持升级前四段固定优先级排序（行为逐字节一致）；
+    标注各路排名；缺省 fixed 模式为五段固定优先级排序（覆盖数 → 菜名命中 →
+    文本食材命中数 _text_covered → 向量相似度 → id，rt-005 修复引入文本信号段）；
+    菜名匹配双向化（菜名含查询 / 查询含菜名，rt-005 方向修复）；
     Top-8（top_k）截断返回，返回结构与既有一致，下游 hard_filter/rank 无感。
 
 分区红线（spec D3）：
@@ -342,7 +344,8 @@ def retrieve_candidates(
 
     说明：
         - 有 ingredient_ids：按「候选菜谱引用的用户食材数（覆盖数）」降序召回；
-        - 有 query_text：追加菜名 ILIKE 召回 + 按文本中解析出的食材召回；
+        - 有 query_text：追加菜名双向匹配召回（菜名含查询 / 查询含菜名）
+          + 按文本中解析出的食材召回；
         - use_vector 且查询文本非空：追加向量语义召回（Top-20），
           pgvector 可用走 raw SQL `<=>`，否则 embedding_json 纯 Python 点积；
         - 合成查询（C4）：RETRIEVAL_VECTOR_FOR_INGREDIENTS 开启且「无文本有食材」
@@ -351,8 +354,10 @@ def retrieve_candidates(
           matched_by_vector=True（下游排序在菜名命中之后、其余之前）；
         - 排序（RETRIEVAL_FUSION）：'rrf' 时按 ①覆盖/②文本/③向量 三路排名做
           Reciprocal Rank Fusion（score = Σ 1/(60+rank)）排序，候选携带
-          _fusion_ranks 内部键标注各路排名；缺省 fixed 为固定优先级排序
-          （覆盖数降序 → 菜名命中 → 向量相似度 → id 升序，与升级前一致）；
+          _fusion_ranks 内部键标注各路排名；缺省 fixed 为五段固定优先级排序
+          （覆盖数降序 → 菜名命中 → 文本食材命中数降序 → 向量相似度 → id 升序；
+          文本食材命中数段为 rt-005 修复引入，空食材口径下保证文本强信号
+          候选不被向量噪声挤出）；
         - 三路皆空：回退全部已发布菜谱（保证冷启动可演示）；
         - 🔴 分区红线：默认（include_private_owner=None）向量查询只查
           source='verified'，AI 私有菜谱绝不进入默认推荐；
@@ -400,11 +405,23 @@ def retrieve_candidates(
                 id_score[int(recipe_id)] = int(covered)
                 path_coverage.append(int(recipe_id))  # ① 覆盖路排名序（SQL 已按覆盖数降序）
 
-        # ② 文本召回：菜名 ILIKE + 文本解析出的食材引用
+        # ② 文本召回：菜名匹配（双向）+ 文本解析出的食材引用
         if query_text:
-            keyword = f"%{query_text.strip()}%"
+            trimmed = query_text.strip()
+            # 菜名匹配双向化（rt-005 方向修复）：正向「菜名含查询」保留，
+            # 新增反向「查询含菜名」（如"可乐鸡翅怎么做"命中菜名"可乐鸡翅"，
+            # 原单向 ILIKE '%整句%' 使带"怎么做/的做法"后缀的问法永远无法
+            # 菜名命中）；反向以 btrim(title) <> '' 防空菜名恒真匹配。
             title_rows = session.execute(
-                select(Recipe.id).where(Recipe.status == "published").where(Recipe.title.ilike(keyword))
+                select(Recipe.id)
+                .where(Recipe.status == "published")
+                .where(
+                    or_(
+                        Recipe.title.ilike(f"%{trimmed}%"),
+                        text("btrim(title) <> '' AND :q LIKE '%' || btrim(title) || '%'"),
+                    )
+                ),
+                {"q": trimmed},
             ).all()
             for (recipe_id,) in title_rows:
                 title_matched.add(int(recipe_id))
@@ -518,6 +535,10 @@ def retrieve_candidates(
                     "matched_by_vector": rid in vector_sims,
                     # 内部键：向量相似度仅参与召回内排序，下游 hard_filter/rank 不消费
                     "_vector_sim": round(vector_sims.get(rid, 0.0), 6),
+                    # 内部键：文本扩展路食材命中数（该菜谱引用了文本解析出的食材
+                    # 数量）——空食材口径（Eval/纯文本检索）下 covered_count 恒 0，
+                    # fixed 排序需消费此信号，否则被向量噪声候选挤出 Top-K（rt-005）
+                    "_text_covered": text_rank_extra.get(rid, 0),
                 }
             )
         if settings.RETRIEVAL_FUSION.strip().lower() == "rrf":
@@ -542,11 +563,18 @@ def retrieve_candidates(
             for c in candidates:
                 c["_fusion_ranks"] = fusion_ranks.get(c["recipe_id"], {})
         else:
-            # 固定优先级（缺省，行为与升级前逐字节一致）：覆盖数降序 → 菜名命中 → 向量相似度 → id 升序
+            # 固定优先级（缺省）：覆盖数降序 → 菜名命中 → 文本食材命中数降序
+            # → 向量相似度 → id 升序。
+            # rt-005 修复：新增「文本食材命中数」（_text_covered）信号——② 文本
+            # 扩展路召回的菜谱（引用了文本解析出的食材）在空食材口径下
+            # covered_count 恒 0，若不消费该信号，fixed 排序退化为向量相似度，
+            # hash 语义噪声候选会把强相关菜谱（如"可乐鸡翅怎么做"→可乐鸡翅）
+            # 挤出 Top-K。
             candidates.sort(
                 key=lambda c: (
                     -c["covered_count"],
                     not c["matched_by_title"],
+                    -c["_text_covered"],
                     -c["_vector_sim"],
                     c["recipe_id"],
                 )

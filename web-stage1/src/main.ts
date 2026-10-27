@@ -19,6 +19,7 @@ import '@/styles/global.css'
 
 import App from './App.vue'
 import router from './router'
+import { mountAfterRouterReady } from './utils/routerBoot'
 
 const app = createApp(App)
 
@@ -34,4 +35,4 @@ for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
   app.component(`ElIcon${key}`, component)
 }
 
-app.mount('#app')
+void mountAfterRouterReady(router, () => app.mount('#app'))

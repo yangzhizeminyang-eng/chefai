@@ -27,6 +27,7 @@ from app.models.innovation import (
 from app.models.misc import AdminUser, Feedback, OperationLog, Order, RemoteConfig
 from app.models.recipe import Recipe, RecipeEmbedding, RecipeIngredient, RecipeStep
 from app.models.safety import AgentTrace, RiskLog, RiskMessage, RiskRule
+from app.models.track import TrackEvent
 from app.models.user import (
     ConsentRecord,
     DietGoal,
@@ -83,4 +84,6 @@ __all__ = [
     "TechniqueLibrary",
     "InnovationRecipe",
     "InnovationJob",
+    # 埋点域（1）
+    "TrackEvent",
 ]

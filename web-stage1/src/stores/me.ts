@@ -64,10 +64,16 @@ export const useMeStore = defineStore('me', {
     /* ── 设置 ── */
     /** 用户设置（null = 尚未加载，页面用默认值渲染） */
     settings: null as SettingsData | null,
+    /** 用户设置加载中 */
+    settingsLoading: false,
     /** 设置保存中 */
     settingsSaving: false,
     /** 设置加载/保存错误 */
     settingsError: null as ApiError | null,
+    /** 设置读取错误 */
+    settingsLoadError: null as ApiError | null,
+    /** 设置写入错误 */
+    settingsSaveError: null as ApiError | null,
 
     /* ── 会员 ── */
     /** 套餐与支付开关 */
@@ -154,13 +160,19 @@ export const useMeStore = defineStore('me', {
      * @returns 无
      */
     async loadSettings(): Promise<void> {
+      if (this.settingsLoading) return
+      this.settingsLoading = true
       this.settingsError = null
+      this.settingsLoadError = null
       try {
         const loaded = await getSettings()
         // 单位键迁移（DEF-09）：旧值 metric→gram、imperial→milliliter，新值直通
         this.settings = { ...loaded, unit: migrateUnitSetting(loaded.unit) }
       } catch (e) {
         this.settingsError = e as ApiError
+        this.settingsLoadError = e as ApiError
+      } finally {
+        this.settingsLoading = false
       }
     },
 
@@ -172,11 +184,13 @@ export const useMeStore = defineStore('me', {
     async saveSettings(settings: SettingsData): Promise<void> {
       this.settingsSaving = true
       this.settingsError = null
+      this.settingsSaveError = null
       try {
         const saved = await putSettings(settings)
         this.settings = saved
       } catch (e) {
         this.settingsError = e as ApiError
+        this.settingsSaveError = e as ApiError
         throw e
       } finally {
         this.settingsSaving = false

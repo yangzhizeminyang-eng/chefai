@@ -41,12 +41,16 @@ class VisionRecognizeResponse(BaseModel):
         degraded：provider 是否异常降级。
         message：附加提示文案（降级 / 全低置信时非空，可缺省）。
         quota：识别额度 {used, limit, remaining}。
+        mode：provider 通道标识（'mock'=确定性模拟 / 'vlm'=真实视觉模型；
+            provider 异常降级或实现类未声明时为 None。新增可选字段，
+            前端可忽略；mock 通道结果显式可辨识）。
     """
 
     recognized: list[RecognizedItemOut] = Field(default_factory=list)
     degraded: bool = False
     message: str | None = None
     quota: dict = Field(default_factory=dict)
+    mode: str | None = None
 
 
 class VisionConfirmRequest(BaseModel):
@@ -82,11 +86,15 @@ class SpeechAsrResponse(BaseModel):
         text：转写文本（降级时为空串）。
         degraded：provider 是否异常降级。
         message：附加提示文案（降级时非空，可缺省）。
+        mode：provider 通道标识（'mock'=固定演示文本 / 'bailian'=百炼真实
+            转写；provider 异常降级或实现类未声明时为 None。新增可选字段，
+            前端可忽略；mock 通道结果显式可辨识）。
     """
 
     text: str
     degraded: bool = False
     message: str | None = None
+    mode: str | None = None
 
 
 class FilteredReason(BaseModel):

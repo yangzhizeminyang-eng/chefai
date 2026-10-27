@@ -67,16 +67,16 @@ class Settings(BaseSettings):
         VISION_MODEL：视觉模型名称（如 qwen3.8-omni-flash）。
         VISION_TIMEOUT_SECONDS：视觉模型请求超时秒数（拍照识别 P95 预算对齐 20s）。
         VISION_MAX_ITEMS：单次识别返回条目上限（超出截断，防噪声刷屏）。
-        SPEECH_PROVIDER：语音转写提供方取值（'mock' 缺省固定演示文本 /
-    'bailian' 阿里云百炼 qwen3-asr-flash，OpenAI 兼容协议）。
-    SPEECH_BASE_URL：语音模型 OpenAI 兼容服务地址（空串回落 VISION_BASE_URL）。
-    SPEECH_API_KEY：语音模型 API Key（空串回落 VISION_API_KEY）。
-    SPEECH_MODEL：语音模型名称（如 qwen3-asr-flash）。
+    SPEECH_PROVIDER：语音转写提供方（mock / bailian / bailian-realtime）。
+    SPEECH_BASE_URL：非实时兼容接口地址。
+    SPEECH_WEBSOCKET_URL：Realtime ASR WebSocket 地址。
+    SPEECH_API_KEY：DashScope 语音 API Key（独立于视觉模型 Key）。
+    SPEECH_MODEL：语音模型名称（qwen3-asr-flash-realtime）。
     SPEECH_TIMEOUT_SECONDS：语音识别请求超时秒数（免手语音指令链路，短句快响应）。
     TTS_PROVIDER：语音合成提供方取值（'mock' 缺省静音 /
-    'bailian' 阿里云百炼 qwen3-tts-flash，DashScope 多模态生成协议）。
-    TTS_BASE_URL：语音合成服务地址（空串用 DashScope 默认端点）。
-    TTS_API_KEY：语音合成 API Key（空串回落 SPEECH_API_KEY / VISION_API_KEY）。
+    'bailian' 阿里云百炼 qwen3-tts-flash，DashScope SDK）。
+    TTS_API_BASE_URL：DashScope SDK 原生 API 基址（形如 https://.../api/v1）。
+    TTS_API_KEY：语音合成 API Key（空串时回落 SPEECH_API_KEY，不复用视觉 Key）。
     TTS_MODEL：语音合成模型名称（如 qwen3-tts-flash）。
     TTS_VOICE：合成音色（如 Cherry）。
     TTS_TIMEOUT_SECONDS：语音合成请求超时秒数。
@@ -137,16 +137,18 @@ class Settings(BaseSettings):
     VISION_TIMEOUT_SECONDS: int = 20
     VISION_MAX_ITEMS: int = 12
 
-    # 语音转写（百炼 qwen3-asr-flash，OpenAI 兼容协议；BASE/KEY 空串回落 VISION_*）
+    # 语音转写（实时识别需 DashScope API Key，与视觉服务凭证分离）
     SPEECH_PROVIDER: str = "mock"
     SPEECH_BASE_URL: str = ""
+    SPEECH_WEBSOCKET_URL: str = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
     SPEECH_API_KEY: str = ""
-    SPEECH_MODEL: str = "qwen3-asr-flash"
+    SPEECH_MODEL: str = "qwen3-asr-flash-realtime"
     SPEECH_TIMEOUT_SECONDS: int = 15
 
-    # 语音合成（百炼 qwen3-tts-flash，DashScope 多模态生成协议；KEY 空串回落 SPEECH_/VISION_*）
+    # 语音合成（DashScope SpeechSynthesizer；KEY 空串回落 SPEECH_API_KEY）
     TTS_PROVIDER: str = "mock"
     TTS_BASE_URL: str = ""
+    TTS_API_BASE_URL: str = "https://dashscope.aliyuncs.com/api/v1"
     TTS_API_KEY: str = ""
     TTS_MODEL: str = "qwen3-tts-flash"
     TTS_VOICE: str = "Cherry"
@@ -181,6 +183,16 @@ class Settings(BaseSettings):
     # 节点经 MCPClient 挂载 MCP 只读工具，off/未配置命令时完全不走 MCP 路径）
     MCP_ENABLED: str = "off"
     MCP_SERVER_COMMAND: str = ""
+
+    # 埋点接收（POST/GET /v1/track/events）：
+    # TRACK_EVENT_WHITELIST 为事件名白名单（逗号分隔覆盖；空串用内置默认：
+    # 客户端 38 事件 + 运维事件 app_error）；TRACK_BATCH_MAX 单批条数上限
+    # （超出 422）；TRACK_ITEM_MAX_BYTES 单条 properties JSON 字节数上限
+    # （超限单条丢弃计数）；TRACK_RETENTION_DAYS 保留天数（超期惰性清理）。
+    TRACK_EVENT_WHITELIST: str = ""
+    TRACK_RETENTION_DAYS: int = 30
+    TRACK_BATCH_MAX: int = 50
+    TRACK_ITEM_MAX_BYTES: int = 4096
 
     # 应用
     APP_HOST: str = "0.0.0.0"

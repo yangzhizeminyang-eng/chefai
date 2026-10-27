@@ -4,7 +4,8 @@
     三档 results 组装（✅现在就能做 / 🛒差1–2样 / 💡需要多买几样，由 match_level 承载）、
     营养结果合并（calories_kcal 用每份估算值 + excluded_items 透传）、
     disclaimer_id="DISCLAIMER_V1" 固定附着、降级/部分失败标注（partial_failures）、
-    结果不足 8 条时的 notice 提示。
+    结果不足 8 条时的 notice 提示、citations 结构化来源组装（OBS-04：检索型回答
+    附 recipe 型来源列表，LLM 降级回答附 degraded 标注，其余为空数组）。
 
 输出：
     响应草稿写入 state["response"]（trace_id 由 finalize/终止节点补齐），
@@ -95,6 +96,22 @@ def make_compose():
             "disclaimer_id": DISCLAIMER_ID,
             "trace_id": state.get("trace_id"),
         }
+        # citations 结构化来源（OBS-04，新增可选字段，既有字段不动）：
+        #   - 检索/推荐型回答（results 非空）→ [{type:"recipe", id, title}, ...]
+        #     （与 results 一一对应，id/title 取自 DB 受控内容，可校验）；
+        #   - LLM 降级兜底回答（qa_degraded=True）→ [{type:"degraded", reason:"llm_unavailable"}]
+        #     （诚实标注本次回答无来源可引）；
+        #   - 其余（正常 LLM 自由回答无结构化来源 / 模板应答）→ 空数组。
+        citations: list[dict] = []
+        if results:
+            citations = [
+                {"type": "recipe", "id": int(item["recipe_id"]), "title": str(item.get("title") or "")}
+                for item in results
+                if item.get("recipe_id")
+            ]
+        elif state.get("qa_answer") and state.get("qa_degraded"):
+            citations = [{"type": "degraded", "reason": "llm_unavailable"}]
+        response["citations"] = citations
         if results:
             response["results"] = results
             response["filtered_by"] = state.get("filtered_by") or {

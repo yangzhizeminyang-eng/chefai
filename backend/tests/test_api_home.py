@@ -31,6 +31,7 @@ from app.models import (
     RemoteConfig,
     User,
 )
+from tests.conftest import ensure_router_registered
 
 
 def _ensure_routes_registered() -> None:
@@ -39,6 +40,7 @@ def _ensure_routes_registered() -> None:
     说明：
         router.py 属禁改文件；若其他任务尚未注册本模块路由，则在主应用上
         幂等挂载（已注册则跳过），保证本测试模块可独立运行。
+        守卫统一复用 conftest.ensure_router_registered（防重复注册）。
 
     参数：
         无。
@@ -49,9 +51,13 @@ def _ensure_routes_registered() -> None:
     异常：
         无。
     """
-    paths = {getattr(route, "path", "") for route in main_app.routes}
-    if "/v1/home" not in paths:
-        main_app.include_router(home_api.router, prefix="/v1")
+    ensure_router_registered(
+        main_app,
+        (home_api.router,),
+        flag="_home_routes_registered",
+        prefix="/v1",
+        probe_paths=("/v1/home",),
+    )
 
 
 _ensure_routes_registered()
@@ -196,6 +202,18 @@ def test_home_profile_hint(client: TestClient) -> None:
         resp = client.get("/v1/home", headers={"X-Anonymous-Id": anon})
         assert resp.status_code == 200
         assert resp.json()["profile_hint"] == {"has_profile": True, "member_count": 2}
+    finally:
+        _delete_user_cascade(anon)
+
+
+def test_home_profile_hint_ignores_empty_family(client: TestClient) -> None:
+    """自动创建但没有成员的家庭不应被展示为已建档。"""
+    anon = _unique_anon()
+    try:
+        client.get("/v1/profile/family", headers={"X-Anonymous-Id": anon})
+        resp = client.get("/v1/home", headers={"X-Anonymous-Id": anon})
+        assert resp.status_code == 200
+        assert resp.json()["profile_hint"] == {"has_profile": False, "member_count": 0}
     finally:
         _delete_user_cascade(anon)
 

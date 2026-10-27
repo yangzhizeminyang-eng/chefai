@@ -13,43 +13,110 @@
 
   /* ── 安全色语义（浅色模式）── */
   /* 危险（红）：风控拦截、过敏原警示 */
-  --color-danger: #d93026;
-  --color-danger-bg: #fdecea;
-  --color-danger-border: #f5b7b1;
+  --color-danger: #b83a30;
+  --color-danger-bg: #fbeae5;
+  --color-danger-border: #efc0b5;
   /* 警示（橙黄）：注意类提示 */
-  --color-warning: #b26a00;
-  --color-warning-bg: #fff4e5;
-  --color-warning-border: #f0d9b5;
+  --color-warning: #986020;
+  --color-warning-bg: #f8eedc;
+  --color-warning-border: #e8d2ad;
   /* 信息（蓝灰）：免责声明、说明类文案 */
-  --color-info: #5b6b7c;
-  --color-info-bg: #f2f5f8;
-  --color-info-border: #d7dee5;
+  --color-info: #68786f;
+  --color-info-bg: #eef1eb;
+  --color-info-border: #d9ddd4;
+  --surface-raised: #fffefa;
+  --surface-soft: #f2f0e8;
+  --surface-hover: #f0ede4;
+  --line-strong: #c9cec4;
+  --text-on-accent: #fffefa;
+  --shadow-soft: 0 12px 30px rgba(38, 54, 46, 0.08);
+  --scrollbar-thumb: #24483a;
 
   /* ── 布局 ── */
   --page-max-width: 1200px;
   --header-height: 56px;
-  --page-bg: #f5f6f8;
-  --card-bg: #ffffff;
-  --text-main: #303133;
+  --page-bg: #f7f6f0;
+  --card-bg: #fffefa;
+  --text-main: #26362e;
+  --text-muted: #718078;
+  --accent-deep: #24483a;
+  --accent: #d4a17b;
+  --accent-soft: #f3e4d7;
+  --sidebar-bg: #fbf9f4;
+  --sidebar-text: #26362e;
+  --sidebar-muted: #64736a;
+  --sidebar-line: #e7e3d9;
+  --sidebar-hover: #f3f0e8;
+  --sidebar-active: #f5e1d0;
+  --sidebar-active-text: #26362e;
+  --sidebar-width: 208px;
+  --el-color-primary: #24483a;
+  --el-color-primary-light-3: #557764;
+  --el-color-primary-light-5: #89a091;
+  --el-color-primary-light-7: #c2d0c5;
+  --el-color-primary-light-8: #dce5dd;
+  --el-color-primary-light-9: #eef2ee;
+  --el-color-primary-dark-2: #1b392d;
 }
 
 /* ── 深色模式变量适配（配合 Element Plus html.dark）── */
 html.dark {
-  --color-danger: #ff7875;
-  --color-danger-bg: #3a1d1d;
-  --color-danger-border: #6b3434;
-  --color-warning: #ffc069;
-  --color-warning-bg: #3a2c14;
-  --color-warning-border: #6b5424;
-  --color-info: #9fb0c0;
-  --color-info-bg: #1f2429;
-  --color-info-border: #38424c;
-  --page-bg: #101418;
-  --card-bg: #1d232a;
-  --text-main: #e5eaf3;
+  --color-danger: #ff9383;
+  --color-danger-bg: #3b2420;
+  --color-danger-border: #70473e;
+  --color-warning: #eab777;
+  --color-warning-bg: #382f20;
+  --color-warning-border: #66543a;
+  --color-info: #a8b7ad;
+  --color-info-bg: #26322b;
+  --color-info-border: #3e4c43;
+  --surface-raised: #202c24;
+  --surface-soft: #26322b;
+  --surface-hover: #303e34;
+  --line-strong: #57665b;
+  --text-on-accent: #17261e;
+  --shadow-soft: 0 12px 30px rgba(0, 0, 0, 0.24);
+  --scrollbar-thumb: #789181;
+  --page-bg: #151f19;
+  --card-bg: #202c24;
+  --text-main: #e8eee7;
+  --text-muted: #afbeb3;
+  --accent-deep: #d7b292;
+  --accent: #d7b292;
+  --accent-soft: #38483e;
+  --sidebar-bg: #1d2b22;
+  --sidebar-text: #e8eee7;
+  --sidebar-muted: #a9b6ab;
+  --sidebar-line: #39473d;
+  --sidebar-hover: #2a392f;
+  --sidebar-active: #3a493e;
+  --sidebar-active-text: #f3e7d8;
+  --el-color-primary: #d7b292;
+  --el-color-primary-light-3: #b59577;
+  --el-color-primary-light-5: #8b725b;
+  --el-color-primary-light-7: #625341;
+  --el-color-primary-light-8: #493e32;
+  --el-color-primary-light-9: #302a23;
+  --el-color-primary-dark-2: #ead1b8;
+  --el-bg-color: #202c24;
+  --el-bg-color-page: #151f19;
+  --el-fill-color-blank: #202c24;
+  --el-text-color-primary: #e8eee7;
+  --el-text-color-regular: #c4cec5;
+  --el-text-color-secondary: #a8b7ad;
+  --el-border-color: #3e4c43;
+  --el-border-color-light: #364239;
+  --el-fill-color-light: #26322b;
+  --el-fill-color-lighter: #303d33;
 }
 
-/* 全局背景与文字色适配深浅模式 */
+/* Global sizing and browser surface styling */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
 html,
 body {
   margin: 0;
@@ -57,9 +124,68 @@ body {
   background: var(--page-bg);
   color: var(--text-main);
   font-size: var(--font-md);
+  font-family: "Segoe UI Variable", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  accent-color: var(--accent-deep);
+  color-scheme: light;
   transition:
     background-color 0.25s ease,
     color 0.25s ease;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+html.dark input,
+html.dark textarea,
+html.dark select {
+  color-scheme: dark;
+}
+
+/* Theme the native scroll affordance with the app's paper and forest-green colors. */
+*,
+*::before,
+*::after {
+  scrollbar-color: var(--scrollbar-thumb) var(--page-bg);
+  scrollbar-width: thin;
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-track-piece,
+::-webkit-scrollbar-corner {
+  background: var(--page-bg);
+}
+
+::-webkit-scrollbar-thumb {
+  min-height: 36px;
+  border: 2px solid var(--page-bg);
+  border-radius: 8px;
+  background: var(--scrollbar-thumb);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--scrollbar-thumb) 84%, #000 16%);
+}
+
+::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+::selection {
+  color: #17372c;
+  background: #e8c5a8;
+}
+
+*:focus-visible {
+  outline-color: var(--accent-deep);
+  outline-offset: 3px;
 }
 
 #app {
@@ -69,16 +195,13 @@ body {
 /* ── 通用页面卡片 ── */
 .page-card {
   background: var(--card-bg);
-  border-radius: 10px;
+  border: 1px solid var(--color-info-border);
+  border-radius: 8px;
   padding: 20px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+  box-shadow: none;
   transition:
     background-color 0.25s ease,
     box-shadow 0.25s ease;
-}
-
-html.dark .page-card {
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
 }
 
 /* ── 免责声明小字（G-02 通用视觉：小字灰蓝、信息语义）── */

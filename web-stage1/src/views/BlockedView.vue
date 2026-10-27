@@ -15,6 +15,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useRecommendStore } from '@/stores/recommend'
 import type { RiskDetail } from '@/api/types'
+import DisclaimerBar from '@/components/DisclaimerBar.vue'
 
 /** 推荐 store：blockedPayload 为本页唯一数据源 */
 const recommendStore = useRecommendStore()

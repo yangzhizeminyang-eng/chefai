@@ -536,6 +536,8 @@ export interface FamilyMember {
   name: string
   /** 与本人关系（如 本人/配偶/孩子） */
   relation: string
+  /** 年龄段（用于婴幼儿/老人等人群的适配与安全提示） */
+  age_group: '0-3' | '4-12' | '13-17' | '18-59' | '60+'
   /** GB 7718 八类致敏原编码列表 */
   allergen_codes: string[]
   /** 自定义过敏原文本列表（八类之外的） */

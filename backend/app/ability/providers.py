@@ -31,10 +31,16 @@ import hashlib
 import json
 import random
 import re
+import struct
 import threading
+import time
+import uuid
+import wave
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from dataclasses import dataclass
+from io import BytesIO
+from urllib.request import urlopen
 
 import httpx
 import openai
@@ -136,10 +142,18 @@ class VisionProvider(ABC):
     说明：
         阶段一仅 Mock 实现；真实模型（多模态 LLM / 端侧视觉）接入时继承本类，
         实现 recognize()，输入为原始图片字节。
+        mode 为实现通道标识（Mock 实现恒 'mock'、真实实现按渠道覆写）：
+        实现类必须显式声明，响应层透出供前端/审计辨识（未声明即 AttributeError
+        快速失败，防真实结果被误标 mock）。
+
+    属性：
+        mode：通道标识（'mock' / 'vlm' 等由实现类显式声明）。
 
     异常：
         实现方抛出的任何异常由调用方捕获并降级（识别结果置空 + degraded 标注）。
     """
+
+    mode: str
 
     @abstractmethod
     def recognize(self, image_bytes: bytes) -> list[RecognizedItem]:
@@ -162,10 +176,16 @@ class ASRProvider(ABC):
 
     说明：
         阶段一仅 Mock 实现；接入真实 ASR（微信同传 / 云厂商语音）时继承本类。
+        mode 为实现通道标识（实现类必须显式声明，口径同 VisionProvider）。
+
+    属性：
+        mode：通道标识（'mock' / 'bailian' 等由实现类显式声明）。
 
     异常：
         实现方抛出的任何异常由调用方捕获并降级（返回空文本 + degraded 标注）。
     """
+
+    mode: str
 
     @abstractmethod
     def transcribe(self, audio_bytes: bytes) -> str:
@@ -188,10 +208,16 @@ class TTSProvider(ABC):
 
     说明：
         缺省 Mock 实现；真实 TTS（阿里云百炼 qwen3-tts-flash 等）接入时继承本类。
+        mode 为实现通道标识（实现类必须显式声明，口径同 VisionProvider）。
+
+    属性：
+        mode：通道标识（'mock' / 'bailian' 等由实现类显式声明）。
 
     异常：
         实现方抛出的任何异常由调用方捕获并降级（degraded 标注，前端静默不播）。
     """
+
+    mode: str
 
     @abstractmethod
     def synthesize(self, text: str) -> tuple[str, str]:
@@ -234,7 +260,12 @@ class MockVisionProvider(VisionProvider):
         - 从 ingredient 表真实存在的常用子集中确定性挑 3~6 个食材；
         - 每项 75% 概率 high 置信、否则 low；
         - 库查询失败时返回空列表（上层不扣额度，等同全低置信路径）。
+
+    属性：
+        mode：通道标识（恒 'mock'，响应层透出供辨识）。
     """
+
+    mode = "mock"
 
     def recognize(self, image_bytes: bytes) -> list[RecognizedItem]:
         """确定性识别图片字节（函数）。
@@ -295,7 +326,12 @@ class MockASRProvider(ASRProvider):
     说明：
         不做任何音频解码，恒定返回固定演示文本（MOCK_ASR_TEXT），
         用于演示「拍照 → 语音 → 推荐」全链路。
+
+    属性：
+        mode：通道标识（恒 'mock'，响应层透出供辨识）。
     """
+
+    mode = "mock"
 
     def transcribe(self, audio_bytes: bytes) -> str:
         """返回固定演示文本（函数）。
@@ -326,8 +362,13 @@ class BailianASRProvider(ASRProvider):
         🔴 音频字节仅在内存中转 base64，绝不落盘（隐私红线）。
 
         配置同源：BASE_URL / API_KEY 空串时回落 VISION_BASE_URL /
-        VISION_API_KEY（百炼同一凭证，与 EMBEDDING 回落策略一致）。
+        VISION_API_KEY（仅适用于使用同一百炼凭证的非实时兼容接口）。
+
+    属性：
+        mode：通道标识（'bailian'，真实渠道，响应层透出供辨识）。
     """
+
+    mode = "bailian"
 
     def __init__(self) -> None:
         """初始化客户端（函数）。
@@ -385,12 +426,185 @@ class BailianASRProvider(ASRProvider):
         return str(completion.choices[0].message.content or "").strip()
 
 
+class RealtimeBailianASRProvider(ASRProvider):
+    """DashScope Qwen3 realtime ASR using in-memory PCM frames."""
+
+    mode = "bailian-realtime"
+    _DEFAULT_WEBSOCKET_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+    _FRAME_BYTES = 3200
+
+    def __init__(self) -> None:
+        api_key = settings.SPEECH_API_KEY.strip()
+        if not api_key:
+            raise LLMError("SPEECH_API_KEY 未配置，无法调用百炼实时语音识别")
+        self._api_key = api_key
+        self._model = settings.SPEECH_MODEL.strip() or "qwen3-asr-flash-realtime"
+        self._websocket_url = (
+            settings.SPEECH_WEBSOCKET_URL.strip() or self._DEFAULT_WEBSOCKET_URL
+        )
+
+    @staticmethod
+    def _extract_pcm(audio_bytes: bytes) -> bytes:
+        try:
+            with wave.open(BytesIO(audio_bytes), "rb") as audio:
+                if (
+                    audio.getnchannels() != 1
+                    or audio.getsampwidth() != 2
+                    or audio.getframerate() != 16000
+                    or audio.getcomptype() != "NONE"
+                ):
+                    raise ValueError("format")
+                pcm = audio.readframes(audio.getnframes())
+        except (wave.Error, EOFError, ValueError, struct.error) as exc:
+            raise LLMError("实时语音识别仅接受 16 kHz mono PCM WAV") from exc
+        if not pcm:
+            raise LLMError("实时语音识别音频为空")
+        return pcm
+
+    def transcribe(self, audio_bytes: bytes) -> str:
+        if not audio_bytes:
+            return ""
+        pcm = self._extract_pcm(audio_bytes)
+        from urllib.parse import urlencode
+
+        import websocket
+
+        url = f"{self._websocket_url}?{urlencode({'model': self._model})}"
+        headers = [
+            f"Authorization: Bearer {self._api_key}",
+            "OpenAI-Beta: realtime=v1",
+        ]
+        transcripts: list[str] = []
+        errors: list[str] = []
+        close_status: list[int | None] = []
+        sender_threads: list[threading.Thread] = []
+        session_ready = threading.Event()
+        sender_finished = threading.Event()
+        final_received = threading.Event()
+
+        def _on_open(ws) -> None:
+            ws.send(json.dumps({
+                "event_id": f"event_{uuid.uuid4().hex}",
+                "type": "session.update",
+                "session": {
+                    "modalities": ["text"],
+                    "input_audio_format": "pcm",
+                    "sample_rate": 16000,
+                    "input_audio_transcription": {"language": "zh"},
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "threshold": 0.2,
+                        "silence_duration_ms": 800,
+                    },
+                },
+            }, ensure_ascii=False))
+
+            def _send_audio() -> None:
+                try:
+                    if not session_ready.wait(timeout):
+                        errors.append("DashScope Realtime ASR 会话初始化超时")
+                        ws.close()
+                        return
+                    chunks = [
+                        pcm[offset : offset + self._FRAME_BYTES]
+                        for offset in range(0, len(pcm), self._FRAME_BYTES)
+                    ]
+                    for index, frame in enumerate(chunks):
+                        ws.send(json.dumps({
+                            "event_id": f"event_{uuid.uuid4().hex}",
+                            "type": "input_audio_buffer.append",
+                            "audio": base64.b64encode(frame).decode("ascii"),
+                        }))
+                        if index < len(chunks) - 1:
+                            time.sleep(0.1)
+                except Exception as exc:  # noqa: BLE001 — surfaced after websocket loop exits
+                    if not errors:
+                        errors.append(f"无法发送实时语音帧（{type(exc).__name__}）")
+                    ws.close()
+                finally:
+                    sender_finished.set()
+                    if final_received.is_set():
+                        ws.close()
+
+            sender = threading.Thread(target=_send_audio, daemon=True)
+            sender_threads.append(sender)
+            sender.start()
+
+        def _on_message(ws, message: str) -> None:
+            try:
+                event = json.loads(message)
+            except (TypeError, ValueError):
+                errors.append("实时语音服务返回了无效事件")
+                ws.close()
+                return
+            event_type = event.get("type")
+            if event_type == "session.updated":
+                session_ready.set()
+            elif event_type in {
+                "conversation.item.input_audio_transcription.completed",
+                "input_audio_transcription.completed",
+            }:
+                transcript = str(event.get("transcript") or "").strip()
+                if transcript:
+                    transcripts.append(transcript)
+                final_received.set()
+                if sender_finished.is_set():
+                    ws.close()
+            elif event_type == "error":
+                detail = event.get("error") or {}
+                code = detail.get("code") if isinstance(detail, dict) else None
+                errors.append(
+                    f"DashScope Realtime ASR 返回错误事件{f'（{code}）' if code else ''}"
+                )
+                ws.close()
+
+        def _on_error(ws, _error) -> None:
+            errors.append("DashScope Realtime ASR WebSocket 连接失败")
+            ws.close()
+
+        def _on_close(_ws, status, _message) -> None:
+            close_status.append(status)
+            session_ready.set()
+
+        app = websocket.WebSocketApp(
+            url,
+            header=headers,
+            on_open=_on_open,
+            on_message=_on_message,
+            on_error=_on_error,
+            on_close=_on_close,
+        )
+        timeout = float(settings.SPEECH_TIMEOUT_SECONDS)
+        timer = threading.Timer(timeout, app.close)
+        try:
+            timer.start()
+            app.run_forever(ping_interval=20, ping_timeout=5)
+        except Exception as exc:  # noqa: BLE001 — normalize SDK failures for route fallback
+            raise LLMError(f"百炼实时语音识别调用失败: {exc}") from exc
+        finally:
+            timer.cancel()
+            for sender in sender_threads:
+                sender.join(timeout=0.2)
+        if errors:
+            detail = f"，WebSocket 状态码 {close_status[-1]}" if close_status else ""
+            raise LLMError(errors[0] + detail)
+        text = "。".join(transcripts).strip("。")
+        if not text:
+            raise LLMError("百炼实时语音识别未返回转写文本")
+        return text
+
+
 class MockTTSProvider(TTSProvider):
     """Mock 语音合成实现（模型类）。
 
     说明：
         不做任何合成，恒返回空音频（前端按 degraded 静默跳过播放）。
+
+    属性：
+        mode：通道标识（恒 'mock'，响应层透出供辨识）。
     """
+
+    mode = "mock"
 
     def synthesize(self, text: str) -> tuple[str, str]:
         """返回空音频（函数）。
@@ -417,9 +631,14 @@ class BailianTTSProvider(TTSProvider):
         文档存在多种响应形态（output.audio.data /
         output.choices[0].message.content[].audio.data），_extract_audio
         逐路容错提取；任何失败抛 LLMError 由路由层降级。
-        配置同源：API_KEY 空串回落 SPEECH_API_KEY / VISION_API_KEY；
+        配置同源：API_KEY 空串回落 SPEECH_API_KEY；视觉服务凭证不跨服务复用。
         BASE_URL 空串用 DashScope 默认端点。
+
+    属性：
+        mode：通道标识（'bailian'，真实渠道，响应层透出供辨识）。
     """
+
+    mode = "bailian"
 
     # DashScope 多模态生成默认端点（qwen3-tts-flash 官方调用地址）
     _DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
@@ -428,20 +647,16 @@ class BailianTTSProvider(TTSProvider):
         """初始化客户端（函数）。
 
         说明：
-            base_url 按 TTS_BASE_URL（空串用 DashScope 默认），api_key 按
-            TTS_API_KEY → SPEECH_API_KEY → VISION_API_KEY 三级回落。
+            endpoint 按 TTS_API_BASE_URL（SDK 原生 API 基址），api_key 按
+            TTS_API_KEY → SPEECH_API_KEY 回落；视觉凭证不跨服务复用。
 
         异常：
             LLMError：API Key 缺失（无可用凭证）时抛出。
         """
-        base_url = settings.TTS_BASE_URL.strip() or self._DEFAULT_BASE_URL
-        api_key = (
-            settings.TTS_API_KEY.strip()
-            or settings.SPEECH_API_KEY.strip()
-            or settings.VISION_API_KEY.strip()
-        )
+        base_url = settings.TTS_API_BASE_URL.strip() or self._DEFAULT_BASE_URL
+        api_key = settings.TTS_API_KEY.strip() or settings.SPEECH_API_KEY.strip()
         if not api_key:
-            raise LLMError("TTS/SPEECH/VISION API Key 均未配置，无法调用百炼语音合成")
+            raise LLMError("TTS_API_KEY/SPEECH_API_KEY 均未配置，无法调用百炼语音合成")
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._model = settings.TTS_MODEL.strip() or "qwen3-tts-flash"
@@ -459,41 +674,55 @@ class BailianTTSProvider(TTSProvider):
         异常：
             LLMError：网络/超时/鉴权/响应解析失败时抛出（路由层统一降级）。
         """
-        payload = {
-            "model": self._model,
-            "input": {"text": normalize_tts_text(text), "voice": self._voice, "format": "wav"},
-        }
         try:
-            resp = httpx.post(
-                f"{self._base_url}/services/aigc/multimodal-generation/generation",
-                headers={
-                    "Authorization": f"Bearer {self._api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-                timeout=float(settings.TTS_TIMEOUT_SECONDS),
-            )
-            resp.raise_for_status()
+            import dashscope
+            from dashscope.audio.qwen_tts import SpeechSynthesizer
+
+            # DashScope keeps its endpoint in module-level state; restore it after
+            # each call so concurrent requests and unrelated providers are isolated.
+            with _dashscope_tts_lock:
+                previous_base_url = dashscope.base_http_api_url
+                dashscope.base_http_api_url = self._base_url
+                try:
+                    response = SpeechSynthesizer.call(
+                        model=self._model,
+                        api_key=self._api_key,
+                        text=normalize_tts_text(text),
+                        voice=self._voice,
+                    )
+                finally:
+                    dashscope.base_http_api_url = previous_base_url
         except Exception as exc:  # noqa: BLE001 —— httpx 异常统一包装为 LLMError
             raise LLMError(f"百炼语音合成调用失败: {exc}") from exc
-        try:
-            body = resp.json()
-        except ValueError as exc:
-            raise LLMError(f"百炼语音合成响应非 JSON: {exc}") from exc
-        audio_base64, audio_format = self._extract_audio(body)
-        audio_url = self._extract_audio_url(body)
+        if getattr(response, "status_code", None) != 200:
+            raise LLMError(
+                "百炼语音合成失败: "
+                f"{getattr(response, 'code', '')} {getattr(response, 'message', '')}"
+            )
+        output = getattr(response, "output", None)
+        audio = output.get("audio") if isinstance(output, dict) else getattr(output, "audio", None)
+        if isinstance(audio, dict):
+            audio_data = audio.get("data")
+            audio_url = str(audio.get("url") or "")
+        else:
+            audio_data = getattr(audio, "data", None) if audio else None
+            audio_url = str(getattr(audio, "url", "") or "") if audio else ""
+        audio_base64 = ""
+        if isinstance(audio_data, bytes):
+            audio_base64 = base64.b64encode(audio_data).decode("ascii")
+        elif isinstance(audio_data, str) and audio_data:
+            audio_base64 = audio_data
         if not audio_base64 and audio_url:
             # 实测 qwen3-tts-flash 返回 OSS 临时 URL 而非 base64：服务端拉取转 base64
             # （🔴 仅内存中转，不落盘；URL 有效期短，不透传给前端避免过期失效）
             try:
-                dl = httpx.get(audio_url, timeout=float(settings.TTS_TIMEOUT_SECONDS))
-                dl.raise_for_status()
-                audio_base64 = base64.b64encode(dl.content).decode("ascii")
-            except Exception as exc:  # noqa: BLE001 —— 下载失败统一降级
-                raise LLMError(f"百炼语音合成音频下载失败: {exc}") from exc
+                with urlopen(audio_url, timeout=float(settings.TTS_TIMEOUT_SECONDS)) as response:
+                    audio_base64 = base64.b64encode(response.read()).decode("ascii")
+            except Exception as exc:  # noqa: BLE001 —— 避免异常日志包含签名 URL
+                raise LLMError("百炼语音合成音频下载失败") from exc
         if not audio_base64:
-            raise LLMError(f"百炼语音合成响应中未找到音频数据: {str(body)[:200]}")
-        return audio_base64, audio_format or "wav"
+            raise LLMError("百炼语音合成响应中未找到音频数据")
+        return audio_base64, "wav"
 
     def synthesize_stream(self, text: str) -> Iterator[bytes]:
         """流式合成音频（SSE 边合成边产出，函数）。
@@ -514,10 +743,9 @@ class BailianTTSProvider(TTSProvider):
         异常：
             不抛出（流式响应无法变更状态码，错误就地降级为提前收流）。
         """
-        try:
-            yield from self._synthesize_stream_impl(text)
-        except Exception as exc:  # noqa: BLE001 —— 流式响应中异常只能优雅收流
-            logger.warning("tts stream aborted: %s", exc)
+        audio_base64, _audio_format = self.synthesize(text)
+        if audio_base64:
+            yield base64.b64decode(audio_base64)
 
     def _synthesize_stream_impl(self, text: str) -> Iterator[bytes]:
         """流式合成实现（内部函数，异常由 synthesize_stream 捕获）。"""
@@ -846,8 +1074,11 @@ class MultimodalVisionProvider(VisionProvider):
         绝不携带任何可食性/安全性结论（RL-3 红线，system prompt 已显式禁止）。
 
     属性：
+        mode：通道标识（'vlm'，真实渠道，响应层透出供辨识）。
         无实例状态（库内向量缓存在模块级 _ING_VEC_CACHE）。
     """
+
+    mode = "vlm"
 
     def recognize(self, image_bytes: bytes) -> list[RecognizedItem]:
         """识别图片中的食材（VLM 两步走，函数）。
@@ -1071,8 +1302,8 @@ def _build_speech_provider() -> ASRProvider:
     说明：
         读 settings.SPEECH_PROVIDER（pydantic-settings 自 .env 加载，缺省 mock；
         与 VISION 同口径——os.getenv 读不到 .env 值，必须走 settings）：
-        'mock' → MockASRProvider、'bailian' → BailianASRProvider（百炼
-        qwen3-asr-flash）；未知取值告警并回退 mock；构建异常同样回退 mock，
+        'mock' → MockASRProvider、'bailian' → BailianASRProvider、
+        'bailian-realtime' → RealtimeBailianASRProvider；未知取值告警并回退 mock；构建异常同样回退 mock，
         保证语音链路可降级可回退。
 
     返回值：
@@ -1087,6 +1318,8 @@ def _build_speech_provider() -> ASRProvider:
             return MockASRProvider()
         if name == "bailian":
             return BailianASRProvider()
+        if name == "bailian-realtime":
+            return RealtimeBailianASRProvider()
     except Exception as exc:  # noqa: BLE001 —— 构建失败回退 mock
         logger.warning("build speech provider %s failed, fallback to mock: %s", name, exc)
         return MockASRProvider()
@@ -1129,6 +1362,7 @@ _speech_provider: ASRProvider | None = None
 _speech_lock = threading.Lock()
 _tts_provider: TTSProvider | None = None
 _tts_lock = threading.Lock()
+_dashscope_tts_lock = threading.Lock()
 
 
 def get_vision_provider() -> VisionProvider:
@@ -1201,6 +1435,7 @@ __all__ = [
     "MockASRProvider",
     "MockTTSProvider",
     "BailianASRProvider",
+    "RealtimeBailianASRProvider",
     "BailianTTSProvider",
     "MultimodalVisionProvider",
     "VLM_SYSTEM_PROMPT",

@@ -29,7 +29,7 @@ services:
     # 镜像由本地 `docker build -f Dockerfile.web` + `docker save` 产出，
     # 经 scp 送达服务器后 `docker load`。compose 检测到该镜像已存在即直接复用，
     # 不会触发构建（deploy.sh 会在启动前断言镜像存在，双重保险）。
-    image: ${WEB_IMAGE:-aicook-web:20261013}
+    image: ${WEB_IMAGE:-aicook-web:20261019}
     build: !reset null
     ports:
       - "${WEB_PORT:-8005}:80"

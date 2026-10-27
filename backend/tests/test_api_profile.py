@@ -31,12 +31,18 @@ from app.graph.runner import run_recommend
 from app.main import app
 from app.models import ConsentRecord, Family, User
 from app.safety import SafetyProfile
+from tests.conftest import ensure_router_registered
 
 # 兜底注册（幂等）：profile 路由由主控在 app/api/v1/router.py 统一 include，
 # 该注册完成前测试自行挂载到 app（检测到 /v1/profile/family 已存在即跳过），
 # 主控注册后本段自动失效，不会产生重复路由。
-if not any(getattr(r, "path", "") == "/v1/profile/family" for r in app.routes):
-    app.include_router(_profile_router_module.router, prefix="/v1")
+ensure_router_registered(
+    app,
+    (_profile_router_module.router,),
+    flag="_profile_routes_registered",
+    prefix="/v1",
+    probe_paths=("/v1/profile/family",),
+)
 
 
 def _unique_anon_id() -> str:
@@ -225,6 +231,8 @@ def test_post_member_with_peanut_201(client: TestClient, anon_id: str) -> None:
         custom_allergens=[],
         no_known_allergen=False,
         taste_spicy=2,
+        relation="孩子",
+        age_group="4-12",
     )
     assert status == 201
     assert isinstance(body["id"], int)
@@ -232,6 +240,8 @@ def test_post_member_with_peanut_201(client: TestClient, anon_id: str) -> None:
     assert body["custom_allergens"] == []
     assert body["no_known_allergen"] is False
     assert body["taste_spicy"] == 2
+    assert body["relation"] == "孩子"
+    assert body["age_group"] == "4-12"
 
     # 自定义过敏原：与八类编码分开存储、分开回读
     status, custom_body = _create_member(
@@ -252,6 +262,8 @@ def test_post_member_with_peanut_201(client: TestClient, anon_id: str) -> None:
     assert len(members) == 2
     by_id = {m["id"]: m for m in members}
     assert by_id[body["id"]]["allergen_codes"] == ["peanut"]
+    assert by_id[body["id"]]["relation"] == "孩子"
+    assert by_id[body["id"]]["age_group"] == "4-12"
     assert by_id[custom_body["id"]]["allergen_codes"] == ["egg", "milk"]
     assert by_id[custom_body["id"]]["custom_allergens"] == ["芒果"]
 
@@ -285,13 +297,15 @@ def test_put_member_update_taste(client: TestClient, anon_id: str) -> None:
 
     resp = client.put(
         f"/v1/profile/members/{member_id}",
-        json={"taste_spicy": 2, "taste_salt": 0},
+        json={"taste_spicy": 2, "taste_salt": 0, "relation": "父母", "age_group": "60+"},
         headers=_headers(anon_id),
     )
     assert resp.status_code == 200
     body = resp.json()
     assert body["taste_spicy"] == 2
     assert body["taste_salt"] == 0
+    assert body["relation"] == "父母"
+    assert body["age_group"] == "60+"
     # 未提供字段保持原值（过敏原不被增量更新清空）
     assert body["allergen_codes"] == ["peanut"]
     assert body["taste_sweet"] == created["taste_sweet"]
@@ -300,6 +314,7 @@ def test_put_member_update_taste(client: TestClient, anon_id: str) -> None:
     resp = client.get("/v1/profile/family", headers=_headers(anon_id))
     member = next(m for m in resp.json()["members"] if m["id"] == member_id)
     assert member["taste_spicy"] == 2 and member["taste_salt"] == 0
+    assert member["relation"] == "父母" and member["age_group"] == "60+"
 
 
 # ---------------------------------------------------------------------------

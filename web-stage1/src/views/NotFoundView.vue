@@ -8,6 +8,7 @@
  *   不硬编码色值，随 html.dark 自适应。
  */
 import { useRouter } from 'vue-router'
+import DisclaimerBar from '@/components/DisclaimerBar.vue'
 
 /** 路由实例：「返回首页」按钮跳转 */
 const router = useRouter()

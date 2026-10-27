@@ -9,7 +9,7 @@
  *       ④ 主操作行「换一换」（loading 中 disabled；点击携带当前批全部 recipe_id 作为
  *          exclude_ids 重拉，每次仍重发不空转；连续 3 次新批与上一批 id 集合完全相同
  *          → toastInfo 提示「试试放宽条件或去选食材」，按钮保持可用）；
- *       ⑤ 三态：loading = 骨架 + 「正在为你挑今天这顿」；error = el-alert + 重试；
+ *       ⑤ 三态：初次 loading = 骨架 + 「正在为你挑今天这顿」；换一换时保留当前结果；error = el-alert + 重试；
  *          空（!error && results.length===0）= el-empty「暂时没有合适的推荐」
  *          + 响应 notice（有则展示）+ 底部兜底按钮组；
  *       ⑥ 耗时口径分组渲染（utils/today.groupDayMenuByTime：⏱≤15 分钟 / ⏱15–30 分钟 /
@@ -21,6 +21,7 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { ArrowRight, Opportunity, Refresh, Refrigerator } from '@element-plus/icons-vue'
 import { fetchDayMenu } from '@/api/dayMenu'
 import type { ApiError, RecommendResultItem } from '@/api/types'
 import { useHomeStore } from '@/stores/home'
@@ -193,16 +194,21 @@ onBeforeUnmount(() => {
 
     <!-- ③ 口径说明条：零输入按耗时口径分组（覆盖率三档不成立，对齐文档12 §6.3 规则 3） -->
     <el-alert
-      class="today-alert"
+      class="today-alert today-note"
       type="info"
-      title="未选食材，按耗时口径分组；选择食材后结果更准"
+      title="选了食材之后推荐更准哦"
       :closable="false"
       show-icon
-    />
+    >
+      <template #icon><Opportunity /></template>
+    </el-alert>
 
     <!-- ④ 主操作行：换一换（loading 中 disabled；每次携带上一批全部 recipe_id 重拉） -->
     <div class="toolbar">
-      <el-button type="primary" plain :disabled="loading" @click="refreshBatch">换一换</el-button>
+      <el-button class="shuffle-button" type="primary" :loading="loading" @click="refreshBatch">
+        <el-icon class="shuffle-icon"><Refresh /></el-icon>
+        换一换
+      </el-button>
     </div>
 
     <!-- ⑤-1 异常态：错误 + 重试 -->
@@ -211,7 +217,7 @@ onBeforeUnmount(() => {
     </el-alert>
 
     <!-- ⑤-2 加载态：骨架 + 文案 -->
-    <div v-if="loading" class="loading-block">
+    <div v-if="loading && results.length === 0" class="loading-block">
       <el-skeleton :rows="6" animated />
       <p class="loading-text">正在为你挑今天这顿</p>
     </div>
@@ -232,20 +238,31 @@ onBeforeUnmount(() => {
           </span>
         </el-divider>
         <!-- 推荐卡片：零输入无覆盖语义，隐藏覆盖率列 -->
-        <div class="card-list">
+        <TransitionGroup
+          name="recipe-shuffle"
+          tag="div"
+          class="card-list"
+          :aria-busy="loading"
+        >
           <RecipeCard
             v-for="item in group.items"
             :key="item.recipe_id"
             :item="item"
             :show-coverage="false"
           />
-        </div>
+        </TransitionGroup>
       </div>
 
       <!-- ⑦ 兜底区（空态与结果态均展示；home store 无库存数据，按钮恒显示，由目标页兜底） -->
       <div class="fallback-actions">
-        <el-button type="primary" @click="router.push('/select')">我有食材，去选食材</el-button>
-        <el-button @click="router.push('/inventory')">用冰箱里的食材</el-button>
+        <el-button class="fallback-action fallback-action--primary" type="primary" @click="router.push('/select')">
+          <span>我有食材，去选食材</span>
+          <el-icon aria-hidden="true"><ArrowRight /></el-icon>
+        </el-button>
+        <el-button class="fallback-action fallback-action--secondary" @click="router.push('/inventory')">
+          <el-icon aria-hidden="true"><Refrigerator /></el-icon>
+          <span>用冰箱里的食材</span>
+        </el-button>
       </div>
     </template>
 
@@ -270,11 +287,59 @@ onBeforeUnmount(() => {
   margin-bottom: 14px;
 }
 
+.today-note {
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--line-strong) 72%, var(--accent));
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.today-note :deep(.el-alert__icon) {
+  color: var(--accent-deep);
+  font-size: 18px;
+}
+
+.today-note :deep(.el-alert__title) {
+  color: var(--text-main);
+  font-size: 14px;
+  font-weight: 500;
+}
+
 /* ── 主操作行：换一换 ── */
 .toolbar {
   display: flex;
   justify-content: flex-end;
   margin-bottom: 8px;
+}
+
+.toolbar :deep(.shuffle-button) {
+  min-height: 42px;
+  gap: 8px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent-deep);
+  box-shadow: 0 3px 10px rgba(36, 72, 58, 0.14);
+  transition: transform 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
+}
+
+.toolbar :deep(.shuffle-button:not(.is-disabled):hover) {
+  transform: translateY(-2px);
+  background: color-mix(in srgb, var(--accent-deep) 92%, white);
+  box-shadow: 0 7px 16px rgba(36, 72, 58, 0.2);
+}
+
+.shuffle-icon {
+  transition: transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.toolbar :deep(.shuffle-button:not(.is-disabled):hover .shuffle-icon) {
+  transform: rotateY(180deg);
+}
+
+.toolbar :deep(.shuffle-button:focus-visible) {
+  outline: 2px solid var(--accent-deep);
+  outline-offset: 3px;
 }
 
 .loading-block {
@@ -315,9 +380,56 @@ onBeforeUnmount(() => {
 
 /* ── 卡片栅格（自 RecommendView .card-list 复制对齐） ── */
 .card-list {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 14px;
+}
+
+.card-list :deep(.recipe-card) {
+  transition: transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    border-color 180ms ease, box-shadow 220ms ease;
+}
+
+.card-list :deep(.recipe-card:hover),
+.card-list :deep(.recipe-card:focus-within) {
+  transform: translateY(-3px);
+  box-shadow: 0 9px 22px rgba(36, 72, 58, 0.12);
+}
+
+.card-list :deep(.card-cover .cover-img),
+.card-list :deep(.card-cover .cover-placeholder) {
+  transition: transform 300ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.card-list :deep(.recipe-card:hover .card-cover .cover-img),
+.card-list :deep(.recipe-card:hover .card-cover .cover-placeholder),
+.card-list :deep(.recipe-card:focus-within .card-cover .cover-img),
+.card-list :deep(.recipe-card:focus-within .card-cover .cover-placeholder) {
+  transform: scale(1.02);
+}
+
+.recipe-shuffle-enter-active,
+.recipe-shuffle-move {
+  transition: opacity 240ms ease, transform 360ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.recipe-shuffle-enter-active:nth-child(2) { transition-delay: 45ms; }
+.recipe-shuffle-enter-active:nth-child(3) { transition-delay: 90ms; }
+.recipe-shuffle-enter-active:nth-child(4) { transition-delay: 135ms; }
+.recipe-shuffle-enter-active:nth-child(5) { transition-delay: 180ms; }
+.recipe-shuffle-enter-active:nth-child(6) { transition-delay: 225ms; }
+
+.recipe-shuffle-enter-from {
+  opacity: 0;
+  transform: translateY(10px) rotate(0.5deg);
+}
+
+.card-list :deep(.equipment-tag.el-tag) {
+  color: var(--text-muted);
+  border-color: color-mix(in srgb, var(--line-strong) 78%, var(--accent));
+  border-radius: 6px;
+  background: var(--surface-soft);
 }
 
 /* ── 底部兜底按钮组 ── */
@@ -325,7 +437,130 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  gap: 12px;
-  margin-top: 26px;
+  gap: 14px;
+  width: min(100%, 530px);
+  margin: 30px auto 0;
+}
+
+.fallback-actions :deep(.fallback-action) {
+  box-sizing: border-box;
+  flex: 1 1 240px;
+  min-width: 0;
+  min-height: 48px;
+  margin: 0;
+  padding: 0 18px;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  transition:
+    transform 180ms ease,
+    box-shadow 180ms ease,
+    background-color 180ms ease,
+    border-color 180ms ease;
+}
+
+.fallback-actions :deep(.fallback-action--primary) {
+  justify-content: space-between;
+  color: var(--text-on-accent);
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary);
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--accent-deep) 18%, transparent);
+}
+
+.fallback-actions :deep(.fallback-action--secondary) {
+  justify-content: center;
+  color: var(--text-main);
+  border-color: var(--sidebar-line);
+  background: var(--surface-soft);
+}
+
+.fallback-actions :deep(.fallback-action .el-icon) {
+  flex: 0 0 auto;
+  font-size: 18px;
+}
+
+.fallback-actions :deep(.fallback-action--primary .el-icon) {
+  margin-left: 10px;
+  transition: transform 180ms ease;
+}
+
+.fallback-actions :deep(.fallback-action--secondary .el-icon) {
+  margin-right: 9px;
+  color: var(--accent-deep);
+}
+
+.fallback-actions :deep(.fallback-action--primary:not(.is-disabled):hover) {
+  color: var(--text-on-accent);
+  border-color: var(--el-color-primary);
+  background: color-mix(in srgb, var(--el-color-primary) 90%, var(--text-main));
+  box-shadow: 0 7px 16px color-mix(in srgb, var(--accent-deep) 24%, transparent);
+  transform: translateY(-2px);
+}
+
+.fallback-actions :deep(.fallback-action--primary:not(.is-disabled):hover .el-icon) {
+  transform: translateX(2px);
+}
+
+.fallback-actions :deep(.fallback-action--secondary:not(.is-disabled):hover) {
+  color: var(--text-main);
+  border-color: color-mix(in srgb, var(--line-strong) 68%, var(--accent-deep));
+  background: var(--surface-hover);
+  transform: translateY(-2px);
+}
+
+.fallback-actions :deep(.fallback-action:focus-visible) {
+  outline: 2px solid var(--accent-deep);
+  outline-offset: 3px;
+}
+
+@media (max-width: 640px) {
+  .fallback-actions {
+    flex-direction: column;
+    width: min(100%, 360px);
+  }
+
+  .fallback-actions :deep(.fallback-action) {
+    flex: 0 0 auto;
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toolbar :deep(.shuffle-button),
+  .shuffle-icon,
+  .fallback-actions :deep(.fallback-action),
+  .fallback-actions :deep(.fallback-action .el-icon),
+  .card-list :deep(.recipe-card),
+  .card-list :deep(.card-cover .cover-img),
+  .card-list :deep(.card-cover .cover-placeholder),
+  .recipe-shuffle-enter-active,
+  .recipe-shuffle-move {
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+  }
+
+  .toolbar :deep(.shuffle-button:not(.is-disabled):hover),
+  .fallback-actions :deep(.fallback-action--primary:not(.is-disabled):hover),
+  .fallback-actions :deep(.fallback-action--secondary:not(.is-disabled):hover),
+  .card-list :deep(.recipe-card:hover),
+  .card-list :deep(.recipe-card:focus-within) {
+    transform: none;
+  }
+
+  .toolbar :deep(.shuffle-button:not(.is-disabled):hover .shuffle-icon) {
+    transform: none;
+  }
+
+  .fallback-actions :deep(.fallback-action--primary:not(.is-disabled):hover .el-icon) {
+    transform: none;
+  }
+
+  .card-list :deep(.recipe-card:hover .card-cover .cover-img),
+  .card-list :deep(.recipe-card:hover .card-cover .cover-placeholder),
+  .card-list :deep(.recipe-card:focus-within .card-cover .cover-img),
+  .card-list :deep(.recipe-card:focus-within .card-cover .cover-placeholder),
+  .recipe-shuffle-enter-from {
+    transform: none;
+  }
 }
 </style>

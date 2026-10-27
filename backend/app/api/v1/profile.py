@@ -10,7 +10,7 @@
     - 当前用户由 get_current_user 依赖解析（X-Anonymous-Id 头 → user 表，
       缺失/不存在时自动 upsert 匿名用户，跟随 auth/consent 惯例）；
     - custom_allergens 与八类编码合并存 family_member.allergen_codes（读取时按
-      八类集合拆分还原），relation 无持久化列仅接口层透传；
+      八类集合拆分还原）；relation 与 age_group 分别持久化至成员表；
     - 饮食目标 goal 经 GOAL_API_TO_DB 映射落 diet_goal.goal_type（对齐 DB CHECK 枚举），
       note 存 user.preferences.diet_goal_note。
 """
@@ -109,7 +109,7 @@ def _member_to_out(member: FamilyMember) -> MemberOut:
 
     说明：
         存储态 allergen_codes（八类编码 + 自定义文本混存）按八类集合拆分为
-        allergen_codes / custom_allergens 两段；relation 无持久化列，返回默认「本人」。
+        allergen_codes / custom_allergens 两段；关系与年龄段从成员行回读。
 
     参数：
         member：成员 ORM 实例。
@@ -124,7 +124,8 @@ def _member_to_out(member: FamilyMember) -> MemberOut:
     return MemberOut(
         id=int(member.id),
         name=str(member.nickname),
-        relation="本人",
+        relation=str(member.relation or "本人"),
+        age_group=str(member.age_group),
         allergen_codes=codes,
         custom_allergens=custom,
         no_known_allergen=bool(member.no_known_allergen),
@@ -322,6 +323,7 @@ def create_member(
     member = FamilyMember(
         family_id=int(family.id),
         nickname=name,
+        relation=payload.relation,
         age_group=payload.age_group or "18-59",
         taste_spicy=payload.taste_spicy,
         taste_salt=payload.taste_salt,
@@ -372,6 +374,11 @@ def update_member(
         if not name:
             raise api_error(422, ERR_VALIDATION, "成员姓名不能为空白", "name 为空白")
         member.nickname = name
+
+    if "relation" in provided and payload.relation is not None:
+        member.relation = payload.relation
+    if "age_group" in provided and payload.age_group is not None:
+        member.age_group = payload.age_group
 
     # 过敏原：未提供的段从存储态拆分还原为生效值，再统一做三选一校验
     stored_codes, stored_custom = split_allergen_codes(list(member.allergen_codes or []))

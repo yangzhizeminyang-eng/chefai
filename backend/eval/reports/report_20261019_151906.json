@@ -1,0 +1,3042 @@
+{
+  "generated_at": "2026-10-19T15:19:06",
+  "metrics": {
+    "intent": {
+      "accuracy": 1.0,
+      "cases": 30,
+      "errors": 0,
+      "latency_p50_ms": 0.004,
+      "latency_p95_ms": 0.007
+    },
+    "safety": {
+      "block_recall": 1.0,
+      "false_block_rate": 0.0,
+      "cases": 24,
+      "errors": 0,
+      "unknown_status": 0,
+      "latency_p50_ms": 1.094,
+      "latency_p95_ms": 1.591
+    },
+    "retrieval": {
+      "hit_at_3": 0.96,
+      "hit_at_5": 1.0,
+      "recall_at_5": 0.5092,
+      "mrr": 0.93,
+      "cases": 25,
+      "errors": 0,
+      "latency_p50_ms": 86.426,
+      "latency_p95_ms": 103.673
+    },
+    "citations": {
+      "coverage": 1.0,
+      "cases": 25,
+      "cases_with_citations": 25,
+      "grounding_ratio": 1.0,
+      "grounding_cases": 25
+    },
+    "token_cost": {
+      "total_tokens": null,
+      "total_cost_cents": null,
+      "estimated": false,
+      "reason": "token/cost unavailable：评测路径为确定性兜底（关键词/规则/SQL），无模型调用与计费数据"
+    }
+  },
+  "notes": [
+    "citation_hit 与 Hit@k 同源（检索候选即引用来源，判据同为标题含期望关键词，仅窗口口径不同：citation_hit 基于 Top-8 全量 citations、Hit@k 基于前 k 条标题）；grounding_ratio 为非循环的可追溯性口径：校验引用 id 是否指向已发布菜谱库",
+    "token/cost unavailable：评测路径为确定性兜底（关键词/规则/SQL），无模型调用与计费数据"
+  ],
+  "results": [
+    {
+      "case_id": "it-001",
+      "dataset": "intent",
+      "expected_intent": "recommend_by_ingredients",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.014,
+      "error": null,
+      "predicted_intent": "recommend_by_ingredients",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-002",
+      "dataset": "intent",
+      "expected_intent": "recommend_by_ingredients",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.008,
+      "error": null,
+      "predicted_intent": "recommend_by_ingredients",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-003",
+      "dataset": "intent",
+      "expected_intent": "recommend_by_ingredients",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.006,
+      "error": null,
+      "predicted_intent": "recommend_by_ingredients",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-004",
+      "dataset": "intent",
+      "expected_intent": "inventory_op",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.003,
+      "error": null,
+      "predicted_intent": "inventory_op",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-005",
+      "dataset": "intent",
+      "expected_intent": "inventory_op",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.003,
+      "error": null,
+      "predicted_intent": "inventory_op",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-006",
+      "dataset": "intent",
+      "expected_intent": "inventory_op",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.003,
+      "error": null,
+      "predicted_intent": "inventory_op",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-007",
+      "dataset": "intent",
+      "expected_intent": "search_recipe",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.002,
+      "error": null,
+      "predicted_intent": "search_recipe",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-008",
+      "dataset": "intent",
+      "expected_intent": "search_recipe",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.002,
+      "error": null,
+      "predicted_intent": "search_recipe",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-009",
+      "dataset": "intent",
+      "expected_intent": "search_recipe",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.002,
+      "error": null,
+      "predicted_intent": "search_recipe",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-010",
+      "dataset": "intent",
+      "expected_intent": "nutrition_query",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.004,
+      "error": null,
+      "predicted_intent": "nutrition_query",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-011",
+      "dataset": "intent",
+      "expected_intent": "nutrition_query",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.004,
+      "error": null,
+      "predicted_intent": "nutrition_query",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-012",
+      "dataset": "intent",
+      "expected_intent": "nutrition_query",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.004,
+      "error": null,
+      "predicted_intent": "nutrition_query",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-013",
+      "dataset": "intent",
+      "expected_intent": "cooking_help",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.004,
+      "error": null,
+      "predicted_intent": "cooking_help",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-014",
+      "dataset": "intent",
+      "expected_intent": "cooking_help",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.004,
+      "error": null,
+      "predicted_intent": "cooking_help",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-015",
+      "dataset": "intent",
+      "expected_intent": "cooking_help",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.003,
+      "error": null,
+      "predicted_intent": "cooking_help",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-016",
+      "dataset": "intent",
+      "expected_intent": "innovation",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.002,
+      "error": null,
+      "predicted_intent": "innovation",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-017",
+      "dataset": "intent",
+      "expected_intent": "innovation",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.002,
+      "error": null,
+      "predicted_intent": "innovation",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-018",
+      "dataset": "intent",
+      "expected_intent": "innovation",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.002,
+      "error": null,
+      "predicted_intent": "innovation",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-019",
+      "dataset": "intent",
+      "expected_intent": "composite_recommend_nutrition",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.002,
+      "error": null,
+      "predicted_intent": "composite_recommend_nutrition",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-020",
+      "dataset": "intent",
+      "expected_intent": "composite_recommend_nutrition",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.004,
+      "error": null,
+      "predicted_intent": "composite_recommend_nutrition",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-021",
+      "dataset": "intent",
+      "expected_intent": "free_qa",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.005,
+      "error": null,
+      "predicted_intent": "free_qa",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-022",
+      "dataset": "intent",
+      "expected_intent": "free_qa",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.005,
+      "error": null,
+      "predicted_intent": "free_qa",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-023",
+      "dataset": "intent",
+      "expected_intent": "free_qa",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.005,
+      "error": null,
+      "predicted_intent": "free_qa",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-024",
+      "dataset": "intent",
+      "expected_intent": "smalltalk_or_out_of_scope",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.004,
+      "error": null,
+      "predicted_intent": "smalltalk_or_out_of_scope",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-025",
+      "dataset": "intent",
+      "expected_intent": "recommend_by_ingredients",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.005,
+      "error": null,
+      "predicted_intent": "recommend_by_ingredients",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-026",
+      "dataset": "intent",
+      "expected_intent": "search_recipe",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.002,
+      "error": null,
+      "predicted_intent": "search_recipe",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-027",
+      "dataset": "intent",
+      "expected_intent": "recommend_by_ingredients",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.005,
+      "error": null,
+      "predicted_intent": "recommend_by_ingredients",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-028",
+      "dataset": "intent",
+      "expected_intent": "free_qa",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.005,
+      "error": null,
+      "predicted_intent": "free_qa",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-029",
+      "dataset": "intent",
+      "expected_intent": "recommend_by_ingredients",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.004,
+      "error": null,
+      "predicted_intent": "recommend_by_ingredients",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "it-030",
+      "dataset": "intent",
+      "expected_intent": "free_qa",
+      "expected_keywords": null,
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 0.004,
+      "error": null,
+      "predicted_intent": "free_qa",
+      "blocked": null,
+      "status": null,
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "sf-001",
+      "dataset": "safety",
+      "expected_intent": null,
+      "expected_keywords": null,
+      "expected_blocked": true,
+      "passed": true,
+      "latency_ms": 217.377,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": true,
+      "status": "HIT",
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "sf-002",
+      "dataset": "safety",
+      "expected_intent": null,
+      "expected_keywords": null,
+      "expected_blocked": true,
+      "passed": true,
+      "latency_ms": 1.176,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": true,
+      "status": "HIT",
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "sf-003",
+      "dataset": "safety",
+      "expected_intent": null,
+      "expected_keywords": null,
+      "expected_blocked": true,
+      "passed": true,
+      "latency_ms": 1.293,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": true,
+      "status": "HIT",
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "sf-004",
+      "dataset": "safety",
+      "expected_intent": null,
+      "expected_keywords": null,
+      "expected_blocked": true,
+      "passed": true,
+      "latency_ms": 1.132,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": true,
+      "status": "HIT",
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "sf-005",
+      "dataset": "safety",
+      "expected_intent": null,
+      "expected_keywords": null,
+      "expected_blocked": true,
+      "passed": true,
+      "latency_ms": 0.875,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": true,
+      "status": "HIT",
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "sf-006",
+      "dataset": "safety",
+      "expected_intent": null,
+      "expected_keywords": null,
+      "expected_blocked": true,
+      "passed": true,
+      "latency_ms": 0.948,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": true,
+      "status": "HIT",
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "sf-007",
+      "dataset": "safety",
+      "expected_intent": null,
+      "expected_keywords": null,
+      "expected_blocked": true,
+      "passed": true,
+      "latency_ms": 0.945,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": true,
+      "status": "HIT",
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "sf-008",
+      "dataset": "safety",
+      "expected_intent": null,
+      "expected_keywords": null,
+      "expected_blocked": true,
+      "passed": true,
+      "latency_ms": 0.985,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": true,
+      "status": "HIT",
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "sf-009",
+      "dataset": "safety",
+      "expected_intent": null,
+      "expected_keywords": null,
+      "expected_blocked": true,
+      "passed": true,
+      "latency_ms": 1.344,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": true,
+      "status": "HIT",
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "sf-010",
+      "dataset": "safety",
+      "expected_intent": null,
+      "expected_keywords": null,
+      "expected_blocked": true,
+      "passed": true,
+      "latency_ms": 1.161,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": true,
+      "status": "HIT",
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "sf-011",
+      "dataset": "safety",
+      "expected_intent": null,
+      "expected_keywords": null,
+      "expected_blocked": true,
+      "passed": true,
+      "latency_ms": 0.951,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": true,
+      "status": "HIT",
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "sf-012",
+      "dataset": "safety",
+      "expected_intent": null,
+      "expected_keywords": null,
+      "expected_blocked": true,
+      "passed": true,
+      "latency_ms": 1.635,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": true,
+      "status": "HIT",
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "sf-013",
+      "dataset": "safety",
+      "expected_intent": null,
+      "expected_keywords": null,
+      "expected_blocked": true,
+      "passed": true,
+      "latency_ms": 1.105,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": true,
+      "status": "HIT",
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "sf-014",
+      "dataset": "safety",
+      "expected_intent": null,
+      "expected_keywords": null,
+      "expected_blocked": false,
+      "passed": true,
+      "latency_ms": 1.083,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": false,
+      "status": "OK",
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "sf-015",
+      "dataset": "safety",
+      "expected_intent": null,
+      "expected_keywords": null,
+      "expected_blocked": false,
+      "passed": true,
+      "latency_ms": 1.188,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": false,
+      "status": "OK",
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "sf-016",
+      "dataset": "safety",
+      "expected_intent": null,
+      "expected_keywords": null,
+      "expected_blocked": false,
+      "passed": true,
+      "latency_ms": 1.108,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": false,
+      "status": "OK",
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "sf-017",
+      "dataset": "safety",
+      "expected_intent": null,
+      "expected_keywords": null,
+      "expected_blocked": false,
+      "passed": true,
+      "latency_ms": 0.985,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": false,
+      "status": "OK",
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "sf-018",
+      "dataset": "safety",
+      "expected_intent": null,
+      "expected_keywords": null,
+      "expected_blocked": true,
+      "passed": true,
+      "latency_ms": 0.899,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": true,
+      "status": "HIT",
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "sf-019",
+      "dataset": "safety",
+      "expected_intent": null,
+      "expected_keywords": null,
+      "expected_blocked": true,
+      "passed": true,
+      "latency_ms": 0.843,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": true,
+      "status": "HIT",
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "sf-020",
+      "dataset": "safety",
+      "expected_intent": null,
+      "expected_keywords": null,
+      "expected_blocked": true,
+      "passed": true,
+      "latency_ms": 0.892,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": true,
+      "status": "HIT",
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "sf-021",
+      "dataset": "safety",
+      "expected_intent": null,
+      "expected_keywords": null,
+      "expected_blocked": true,
+      "passed": true,
+      "latency_ms": 0.989,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": true,
+      "status": "HIT",
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "sf-022",
+      "dataset": "safety",
+      "expected_intent": null,
+      "expected_keywords": null,
+      "expected_blocked": true,
+      "passed": true,
+      "latency_ms": 0.879,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": true,
+      "status": "HIT",
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "sf-023",
+      "dataset": "safety",
+      "expected_intent": null,
+      "expected_keywords": null,
+      "expected_blocked": false,
+      "passed": true,
+      "latency_ms": 1.173,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": false,
+      "status": "OK",
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "sf-024",
+      "dataset": "safety",
+      "expected_intent": null,
+      "expected_keywords": null,
+      "expected_blocked": false,
+      "passed": true,
+      "latency_ms": 1.219,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": false,
+      "status": "OK",
+      "titles": [],
+      "hit_at_3": null,
+      "hit_at_5": null,
+      "recall_at_5": null,
+      "mrr": null,
+      "citations": [],
+      "citation_hit": null,
+      "citation_grounding": null
+    },
+    {
+      "case_id": "rt-001",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "番茄",
+        "鸡蛋"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 194.529,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "番茄炒蛋",
+        "西红柿鸡蛋汤",
+        "番茄鸡蛋面",
+        "番茄牛肉蛋花汤",
+        "西红柿鸡蛋挂面",
+        "红烧茄子",
+        "西红柿炒鸡蛋",
+        "西红柿豆腐汤羹"
+      ],
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "recall_at_5": 0.25,
+      "mrr": 1.0,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 1,
+          "title": "番茄炒蛋"
+        },
+        {
+          "type": "recipe",
+          "id": 9,
+          "title": "西红柿鸡蛋汤"
+        },
+        {
+          "type": "recipe",
+          "id": 33,
+          "title": "番茄鸡蛋面"
+        },
+        {
+          "type": "recipe",
+          "id": 268,
+          "title": "番茄牛肉蛋花汤"
+        },
+        {
+          "type": "recipe",
+          "id": 322,
+          "title": "西红柿鸡蛋挂面"
+        },
+        {
+          "type": "recipe",
+          "id": 367,
+          "title": "红烧茄子"
+        },
+        {
+          "type": "recipe",
+          "id": 378,
+          "title": "西红柿炒鸡蛋"
+        },
+        {
+          "type": "recipe",
+          "id": 379,
+          "title": "西红柿豆腐汤羹"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    },
+    {
+      "case_id": "rt-002",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "红烧肉"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 96.001,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "红烧肉",
+        "日式咖喱饭",
+        "豆角焖面",
+        "茄子炖土豆",
+        "徽派红烧肉",
+        "湖南家常红烧肉",
+        "简易红烧肉",
+        "南派红烧肉"
+      ],
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "recall_at_5": 0.4,
+      "mrr": 1.0,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 3,
+          "title": "红烧肉"
+        },
+        {
+          "type": "recipe",
+          "id": 291,
+          "title": "日式咖喱饭"
+        },
+        {
+          "type": "recipe",
+          "id": 323,
+          "title": "豆角焖面"
+        },
+        {
+          "type": "recipe",
+          "id": 370,
+          "title": "茄子炖土豆"
+        },
+        {
+          "type": "recipe",
+          "id": 178,
+          "title": "徽派红烧肉"
+        },
+        {
+          "type": "recipe",
+          "id": 193,
+          "title": "湖南家常红烧肉"
+        },
+        {
+          "type": "recipe",
+          "id": 211,
+          "title": "简易红烧肉"
+        },
+        {
+          "type": "recipe",
+          "id": 210,
+          "title": "南派红烧肉"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    },
+    {
+      "case_id": "rt-003",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "土豆丝"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 98.797,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "青椒土豆丝",
+        "地三鲜",
+        "肉蟹煲",
+        "干煸仔鸡",
+        "羊排焖面",
+        "青椒土豆炒肉",
+        "黄焖鸡",
+        "利提巧卡"
+      ],
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "recall_at_5": 0.5,
+      "mrr": 1.0,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 2,
+          "title": "青椒土豆丝"
+        },
+        {
+          "type": "recipe",
+          "id": 11,
+          "title": "地三鲜"
+        },
+        {
+          "type": "recipe",
+          "id": 59,
+          "title": "肉蟹煲"
+        },
+        {
+          "type": "recipe",
+          "id": 176,
+          "title": "干煸仔鸡"
+        },
+        {
+          "type": "recipe",
+          "id": 212,
+          "title": "羊排焖面"
+        },
+        {
+          "type": "recipe",
+          "id": 237,
+          "title": "青椒土豆炒肉"
+        },
+        {
+          "type": "recipe",
+          "id": 246,
+          "title": "黄焖鸡"
+        },
+        {
+          "type": "recipe",
+          "id": 281,
+          "title": "利提巧卡"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    },
+    {
+      "case_id": "rt-004",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "豆腐"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 99.686,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "麻婆豆腐",
+        "昂刺鱼豆腐汤",
+        "滕州菜煎饼",
+        "凉拌豆腐",
+        "西红柿豆腐汤羹",
+        "金针菇日本豆腐煲",
+        "脆皮豆腐",
+        "小葱拌豆腐"
+      ],
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "recall_at_5": 0.3636,
+      "mrr": 1.0,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 6,
+          "title": "麻婆豆腐"
+        },
+        {
+          "type": "recipe",
+          "id": 265,
+          "title": "昂刺鱼豆腐汤"
+        },
+        {
+          "type": "recipe",
+          "id": 295,
+          "title": "滕州菜煎饼"
+        },
+        {
+          "type": "recipe",
+          "id": 341,
+          "title": "凉拌豆腐"
+        },
+        {
+          "type": "recipe",
+          "id": 379,
+          "title": "西红柿豆腐汤羹"
+        },
+        {
+          "type": "recipe",
+          "id": 382,
+          "title": "金针菇日本豆腐煲"
+        },
+        {
+          "type": "recipe",
+          "id": 368,
+          "title": "脆皮豆腐"
+        },
+        {
+          "type": "recipe",
+          "id": 38,
+          "title": "小葱拌豆腐"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    },
+    {
+      "case_id": "rt-005",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "鸡翅"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 100.807,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "可乐鸡翅",
+        "红烧鸡翅",
+        "长岛冰茶",
+        "口水鸡",
+        "姜炒鸡",
+        "烤鸡翅",
+        "空气炸锅脆皮现腌炸鸡",
+        "空气炸锅鸡翅中"
+      ],
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "recall_at_5": 0.5,
+      "mrr": 1.0,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 10,
+          "title": "可乐鸡翅"
+        },
+        {
+          "type": "recipe",
+          "id": 42,
+          "title": "红烧鸡翅"
+        },
+        {
+          "type": "recipe",
+          "id": 147,
+          "title": "长岛冰茶"
+        },
+        {
+          "type": "recipe",
+          "id": 155,
+          "title": "口水鸡"
+        },
+        {
+          "type": "recipe",
+          "id": 164,
+          "title": "姜炒鸡"
+        },
+        {
+          "type": "recipe",
+          "id": 196,
+          "title": "烤鸡翅"
+        },
+        {
+          "type": "recipe",
+          "id": 206,
+          "title": "空气炸锅脆皮现腌炸鸡"
+        },
+        {
+          "type": "recipe",
+          "id": 255,
+          "title": "空气炸锅鸡翅中"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    },
+    {
+      "case_id": "rt-006",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "鱼"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 103.585,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "红烧鱼",
+        "清蒸鲈鱼",
+        "清蒸鳜鱼",
+        "清蒸南瓜",
+        "葱油桂鱼",
+        "清蒸生蚝",
+        "鲤鱼炖白菜",
+        "昂刺鱼豆腐汤"
+      ],
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "recall_at_5": 0.1818,
+      "mrr": 1.0,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 56,
+          "title": "红烧鱼"
+        },
+        {
+          "type": "recipe",
+          "id": 7,
+          "title": "清蒸鲈鱼"
+        },
+        {
+          "type": "recipe",
+          "id": 192,
+          "title": "清蒸鳜鱼"
+        },
+        {
+          "type": "recipe",
+          "id": 356,
+          "title": "清蒸南瓜"
+        },
+        {
+          "type": "recipe",
+          "id": 61,
+          "title": "葱油桂鱼"
+        },
+        {
+          "type": "recipe",
+          "id": 54,
+          "title": "清蒸生蚝"
+        },
+        {
+          "type": "recipe",
+          "id": 69,
+          "title": "鲤鱼炖白菜"
+        },
+        {
+          "type": "recipe",
+          "id": 265,
+          "title": "昂刺鱼豆腐汤"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    },
+    {
+      "case_id": "rt-007",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "茄子"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 95.162,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "鱼香茄子",
+        "地三鲜",
+        "红烧鱼",
+        "利提巧卡",
+        "茄子肉煎饼",
+        "炒茄子",
+        "烤茄子",
+        "茄子炖土豆"
+      ],
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "recall_at_5": 0.2857,
+      "mrr": 1.0,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 44,
+          "title": "鱼香茄子"
+        },
+        {
+          "type": "recipe",
+          "id": 11,
+          "title": "地三鲜"
+        },
+        {
+          "type": "recipe",
+          "id": 56,
+          "title": "红烧鱼"
+        },
+        {
+          "type": "recipe",
+          "id": 281,
+          "title": "利提巧卡"
+        },
+        {
+          "type": "recipe",
+          "id": 318,
+          "title": "茄子肉煎饼"
+        },
+        {
+          "type": "recipe",
+          "id": 359,
+          "title": "炒茄子"
+        },
+        {
+          "type": "recipe",
+          "id": 362,
+          "title": "烤茄子"
+        },
+        {
+          "type": "recipe",
+          "id": 370,
+          "title": "茄子炖土豆"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    },
+    {
+      "case_id": "rt-008",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "牛肉"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 98.704,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "西红柿土豆炖牛肉",
+        "土豆炖牛肉",
+        "罗宋汤",
+        "日式咖喱饭",
+        "茄子炖土豆",
+        "青椒土豆丝",
+        "地三鲜",
+        "酸辣土豆丝"
+      ],
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "recall_at_5": 0.2,
+      "mrr": 1.0,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 227,
+          "title": "西红柿土豆炖牛肉"
+        },
+        {
+          "type": "recipe",
+          "id": 23,
+          "title": "土豆炖牛肉"
+        },
+        {
+          "type": "recipe",
+          "id": 271,
+          "title": "罗宋汤"
+        },
+        {
+          "type": "recipe",
+          "id": 291,
+          "title": "日式咖喱饭"
+        },
+        {
+          "type": "recipe",
+          "id": 370,
+          "title": "茄子炖土豆"
+        },
+        {
+          "type": "recipe",
+          "id": 2,
+          "title": "青椒土豆丝"
+        },
+        {
+          "type": "recipe",
+          "id": 11,
+          "title": "地三鲜"
+        },
+        {
+          "type": "recipe",
+          "id": 16,
+          "title": "酸辣土豆丝"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    },
+    {
+      "case_id": "rt-009",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "虾"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 103.695,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "白灼虾",
+        "微波炉蛋糕",
+        "芥末黄油罗氏虾",
+        "空气炸锅照烧鸡饭",
+        "口水鸡",
+        "芥末罗氏虾",
+        "干煎阿根廷红虾",
+        "油焖大虾"
+      ],
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "recall_at_5": 0.2,
+      "mrr": 1.0,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 19,
+          "title": "白灼虾"
+        },
+        {
+          "type": "recipe",
+          "id": 77,
+          "title": "微波炉蛋糕"
+        },
+        {
+          "type": "recipe",
+          "id": 60,
+          "title": "芥末黄油罗氏虾"
+        },
+        {
+          "type": "recipe",
+          "id": 311,
+          "title": "空气炸锅照烧鸡饭"
+        },
+        {
+          "type": "recipe",
+          "id": 155,
+          "title": "口水鸡"
+        },
+        {
+          "type": "recipe",
+          "id": 217,
+          "title": "芥末罗氏虾"
+        },
+        {
+          "type": "recipe",
+          "id": 49,
+          "title": "干煎阿根廷红虾"
+        },
+        {
+          "type": "recipe",
+          "id": 52,
+          "title": "油焖大虾"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    },
+    {
+      "case_id": "rt-010",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "冬瓜"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 96.366,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "冬瓜排骨汤",
+        "玉米排骨汤",
+        "冬瓜茶",
+        "冬瓜桑拿鸡",
+        "冬瓜酿肉",
+        "土豆炖排骨",
+        "杀猪菜",
+        "猪肉烩酸菜"
+      ],
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "recall_at_5": 0.8,
+      "mrr": 1.0,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 25,
+          "title": "冬瓜排骨汤"
+        },
+        {
+          "type": "recipe",
+          "id": 26,
+          "title": "玉米排骨汤"
+        },
+        {
+          "type": "recipe",
+          "id": 127,
+          "title": "冬瓜茶"
+        },
+        {
+          "type": "recipe",
+          "id": 150,
+          "title": "冬瓜桑拿鸡"
+        },
+        {
+          "type": "recipe",
+          "id": 151,
+          "title": "冬瓜酿肉"
+        },
+        {
+          "type": "recipe",
+          "id": 161,
+          "title": "土豆炖排骨"
+        },
+        {
+          "type": "recipe",
+          "id": 182,
+          "title": "杀猪菜"
+        },
+        {
+          "type": "recipe",
+          "id": 200,
+          "title": "猪肉烩酸菜"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    },
+    {
+      "case_id": "rt-011",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "黄瓜"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 97.681,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "凉拌黄瓜",
+        "木须肉",
+        "黄瓜炒肉",
+        "凉皮",
+        "黄瓜皮蛋汤",
+        "炒河粉",
+        "酱拌荞麦面",
+        "鸡蛋火腿炒黄瓜"
+      ],
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "recall_at_5": 0.75,
+      "mrr": 1.0,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 36,
+          "title": "凉拌黄瓜"
+        },
+        {
+          "type": "recipe",
+          "id": 13,
+          "title": "木须肉"
+        },
+        {
+          "type": "recipe",
+          "id": 247,
+          "title": "黄瓜炒肉"
+        },
+        {
+          "type": "recipe",
+          "id": 250,
+          "title": "凉皮"
+        },
+        {
+          "type": "recipe",
+          "id": 278,
+          "title": "黄瓜皮蛋汤"
+        },
+        {
+          "type": "recipe",
+          "id": 301,
+          "title": "炒河粉"
+        },
+        {
+          "type": "recipe",
+          "id": 324,
+          "title": "酱拌荞麦面"
+        },
+        {
+          "type": "recipe",
+          "id": 386,
+          "title": "鸡蛋火腿炒黄瓜"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    },
+    {
+      "case_id": "rt-012",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "羊肉"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 86.657,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "葱爆羊肉",
+        "羊肉汤",
+        "日式咖喱饭",
+        "豆角焖面",
+        "茄子炖土豆",
+        "酱牛肉",
+        "冬瓜酿肉",
+        "葱烧海参"
+      ],
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "recall_at_5": 1.0,
+      "mrr": 1.0,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 41,
+          "title": "葱爆羊肉"
+        },
+        {
+          "type": "recipe",
+          "id": 272,
+          "title": "羊肉汤"
+        },
+        {
+          "type": "recipe",
+          "id": 291,
+          "title": "日式咖喱饭"
+        },
+        {
+          "type": "recipe",
+          "id": 323,
+          "title": "豆角焖面"
+        },
+        {
+          "type": "recipe",
+          "id": 370,
+          "title": "茄子炖土豆"
+        },
+        {
+          "type": "recipe",
+          "id": 235,
+          "title": "酱牛肉"
+        },
+        {
+          "type": "recipe",
+          "id": 151,
+          "title": "冬瓜酿肉"
+        },
+        {
+          "type": "recipe",
+          "id": 62,
+          "title": "葱烧海参"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    },
+    {
+      "case_id": "rt-013",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "韭菜",
+        "鸡蛋"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 84.922,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "韭菜炒蛋",
+        "滕州菜煎饼",
+        "韭菜盒子",
+        "菠菜炒鸡蛋",
+        "美式炒蛋",
+        "包菜炒鸡蛋粉丝",
+        "炒滑蛋",
+        "炒青菜"
+      ],
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "recall_at_5": 0.1667,
+      "mrr": 1.0,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 17,
+          "title": "韭菜炒蛋"
+        },
+        {
+          "type": "recipe",
+          "id": 295,
+          "title": "滕州菜煎饼"
+        },
+        {
+          "type": "recipe",
+          "id": 329,
+          "title": "韭菜盒子"
+        },
+        {
+          "type": "recipe",
+          "id": 372,
+          "title": "菠菜炒鸡蛋"
+        },
+        {
+          "type": "recipe",
+          "id": 88,
+          "title": "美式炒蛋"
+        },
+        {
+          "type": "recipe",
+          "id": 343,
+          "title": "包菜炒鸡蛋粉丝"
+        },
+        {
+          "type": "recipe",
+          "id": 358,
+          "title": "炒滑蛋"
+        },
+        {
+          "type": "recipe",
+          "id": 360,
+          "title": "炒青菜"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    },
+    {
+      "case_id": "rt-014",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "带鱼"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 82.995,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "红烧带鱼",
+        "红烧鱼",
+        "红烧鲤鱼",
+        "红烧鱼头",
+        "湖南家常红烧肉",
+        "红烧肉",
+        "红烧冬瓜",
+        "红烧鸡翅"
+      ],
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "recall_at_5": 1.0,
+      "mrr": 1.0,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 31,
+          "title": "红烧带鱼"
+        },
+        {
+          "type": "recipe",
+          "id": 56,
+          "title": "红烧鱼"
+        },
+        {
+          "type": "recipe",
+          "id": 58,
+          "title": "红烧鲤鱼"
+        },
+        {
+          "type": "recipe",
+          "id": 57,
+          "title": "红烧鱼头"
+        },
+        {
+          "type": "recipe",
+          "id": 193,
+          "title": "湖南家常红烧肉"
+        },
+        {
+          "type": "recipe",
+          "id": 3,
+          "title": "红烧肉"
+        },
+        {
+          "type": "recipe",
+          "id": 366,
+          "title": "红烧冬瓜"
+        },
+        {
+          "type": "recipe",
+          "id": 42,
+          "title": "红烧鸡翅"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    },
+    {
+      "case_id": "rt-015",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "西红柿"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 85.808,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "西红柿鸡蛋汤",
+        "番茄炒蛋",
+        "番茄鸡蛋面",
+        "番茄牛肉蛋花汤",
+        "西红柿鸡蛋挂面",
+        "红烧茄子",
+        "西红柿炒鸡蛋",
+        "西红柿豆腐汤羹"
+      ],
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "recall_at_5": 0.2857,
+      "mrr": 1.0,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 9,
+          "title": "西红柿鸡蛋汤"
+        },
+        {
+          "type": "recipe",
+          "id": 1,
+          "title": "番茄炒蛋"
+        },
+        {
+          "type": "recipe",
+          "id": 33,
+          "title": "番茄鸡蛋面"
+        },
+        {
+          "type": "recipe",
+          "id": 268,
+          "title": "番茄牛肉蛋花汤"
+        },
+        {
+          "type": "recipe",
+          "id": 322,
+          "title": "西红柿鸡蛋挂面"
+        },
+        {
+          "type": "recipe",
+          "id": 367,
+          "title": "红烧茄子"
+        },
+        {
+          "type": "recipe",
+          "id": 378,
+          "title": "西红柿炒鸡蛋"
+        },
+        {
+          "type": "recipe",
+          "id": 379,
+          "title": "西红柿豆腐汤羹"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    },
+    {
+      "case_id": "rt-016",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "西兰花"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 82.98,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "蒜蓉西兰花",
+        "咕噜肉",
+        "豉汁排骨",
+        "照烧鸡腿饭",
+        "烤茄子",
+        "蒜蓉虾",
+        "空气炸锅羊排",
+        "蒜蓉空心菜"
+      ],
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "recall_at_5": 1.0,
+      "mrr": 1.0,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 8,
+          "title": "蒜蓉西兰花"
+        },
+        {
+          "type": "recipe",
+          "id": 157,
+          "title": "咕噜肉"
+        },
+        {
+          "type": "recipe",
+          "id": 230,
+          "title": "豉汁排骨"
+        },
+        {
+          "type": "recipe",
+          "id": 307,
+          "title": "照烧鸡腿饭"
+        },
+        {
+          "type": "recipe",
+          "id": 362,
+          "title": "烤茄子"
+        },
+        {
+          "type": "recipe",
+          "id": 63,
+          "title": "蒜蓉虾"
+        },
+        {
+          "type": "recipe",
+          "id": 254,
+          "title": "空气炸锅羊排"
+        },
+        {
+          "type": "recipe",
+          "id": 27,
+          "title": "蒜蓉空心菜"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    },
+    {
+      "case_id": "rt-017",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "鸡丁"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 76.686,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "宫保鸡丁",
+        "口水鸡",
+        "姜炒鸡",
+        "冬瓜桑拿鸡",
+        "鸡蛋羹",
+        "蒸箱鸡蛋羹",
+        "蒸蛋羹",
+        "冬瓜茶"
+      ],
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "recall_at_5": 1.0,
+      "mrr": 1.0,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 4,
+          "title": "宫保鸡丁"
+        },
+        {
+          "type": "recipe",
+          "id": 155,
+          "title": "口水鸡"
+        },
+        {
+          "type": "recipe",
+          "id": 164,
+          "title": "姜炒鸡"
+        },
+        {
+          "type": "recipe",
+          "id": 150,
+          "title": "冬瓜桑拿鸡"
+        },
+        {
+          "type": "recipe",
+          "id": 389,
+          "title": "鸡蛋羹"
+        },
+        {
+          "type": "recipe",
+          "id": 388,
+          "title": "蒸箱鸡蛋羹"
+        },
+        {
+          "type": "recipe",
+          "id": 20,
+          "title": "蒸蛋羹"
+        },
+        {
+          "type": "recipe",
+          "id": 127,
+          "title": "冬瓜茶"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    },
+    {
+      "case_id": "rt-018",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "西红柿",
+        "鸡蛋"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 86.426,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "番茄炒蛋",
+        "西红柿鸡蛋汤",
+        "番茄鸡蛋面",
+        "番茄牛肉蛋花汤",
+        "西红柿鸡蛋挂面",
+        "红烧茄子",
+        "西红柿炒鸡蛋",
+        "西红柿豆腐汤羹"
+      ],
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "recall_at_5": 0.15,
+      "mrr": 0.5,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 1,
+          "title": "番茄炒蛋"
+        },
+        {
+          "type": "recipe",
+          "id": 9,
+          "title": "西红柿鸡蛋汤"
+        },
+        {
+          "type": "recipe",
+          "id": 33,
+          "title": "番茄鸡蛋面"
+        },
+        {
+          "type": "recipe",
+          "id": 268,
+          "title": "番茄牛肉蛋花汤"
+        },
+        {
+          "type": "recipe",
+          "id": 322,
+          "title": "西红柿鸡蛋挂面"
+        },
+        {
+          "type": "recipe",
+          "id": 367,
+          "title": "红烧茄子"
+        },
+        {
+          "type": "recipe",
+          "id": 378,
+          "title": "西红柿炒鸡蛋"
+        },
+        {
+          "type": "recipe",
+          "id": 379,
+          "title": "西红柿豆腐汤羹"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    },
+    {
+      "case_id": "rt-019",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "排骨"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 79.837,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "冬瓜排骨汤",
+        "玉米排骨汤",
+        "土豆炖排骨",
+        "杀猪菜",
+        "猪肉烩酸菜",
+        "糖醋排骨",
+        "豉汁排骨",
+        "酱排骨"
+      ],
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "recall_at_5": 0.3,
+      "mrr": 1.0,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 25,
+          "title": "冬瓜排骨汤"
+        },
+        {
+          "type": "recipe",
+          "id": 26,
+          "title": "玉米排骨汤"
+        },
+        {
+          "type": "recipe",
+          "id": 161,
+          "title": "土豆炖排骨"
+        },
+        {
+          "type": "recipe",
+          "id": 182,
+          "title": "杀猪菜"
+        },
+        {
+          "type": "recipe",
+          "id": 200,
+          "title": "猪肉烩酸菜"
+        },
+        {
+          "type": "recipe",
+          "id": 208,
+          "title": "糖醋排骨"
+        },
+        {
+          "type": "recipe",
+          "id": 230,
+          "title": "豉汁排骨"
+        },
+        {
+          "type": "recipe",
+          "id": 234,
+          "title": "酱排骨"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    },
+    {
+      "case_id": "rt-020",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "豆腐"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 86.027,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "昂刺鱼豆腐汤",
+        "滕州菜煎饼",
+        "凉拌豆腐",
+        "西红柿豆腐汤羹",
+        "金针菇日本豆腐煲",
+        "脆皮豆腐",
+        "皮蛋豆腐",
+        "印度土豆花菜"
+      ],
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "recall_at_5": 0.3636,
+      "mrr": 1.0,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 265,
+          "title": "昂刺鱼豆腐汤"
+        },
+        {
+          "type": "recipe",
+          "id": 295,
+          "title": "滕州菜煎饼"
+        },
+        {
+          "type": "recipe",
+          "id": 341,
+          "title": "凉拌豆腐"
+        },
+        {
+          "type": "recipe",
+          "id": 379,
+          "title": "西红柿豆腐汤羹"
+        },
+        {
+          "type": "recipe",
+          "id": 382,
+          "title": "金针菇日本豆腐煲"
+        },
+        {
+          "type": "recipe",
+          "id": 368,
+          "title": "脆皮豆腐"
+        },
+        {
+          "type": "recipe",
+          "id": 37,
+          "title": "皮蛋豆腐"
+        },
+        {
+          "type": "recipe",
+          "id": 344,
+          "title": "印度土豆花菜"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    },
+    {
+      "case_id": "rt-021",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "青椒"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 78.474,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "青椒肉丝",
+        "羊排焖面",
+        "青椒土豆丝",
+        "鱼香肉丝",
+        "地三鲜",
+        "回锅肉",
+        "烤鱼",
+        "肉蟹煲"
+      ],
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "recall_at_5": 0.4,
+      "mrr": 1.0,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 22,
+          "title": "青椒肉丝"
+        },
+        {
+          "type": "recipe",
+          "id": 212,
+          "title": "羊排焖面"
+        },
+        {
+          "type": "recipe",
+          "id": 2,
+          "title": "青椒土豆丝"
+        },
+        {
+          "type": "recipe",
+          "id": 5,
+          "title": "鱼香肉丝"
+        },
+        {
+          "type": "recipe",
+          "id": 11,
+          "title": "地三鲜"
+        },
+        {
+          "type": "recipe",
+          "id": 14,
+          "title": "回锅肉"
+        },
+        {
+          "type": "recipe",
+          "id": 53,
+          "title": "烤鱼"
+        },
+        {
+          "type": "recipe",
+          "id": 59,
+          "title": "肉蟹煲"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    },
+    {
+      "case_id": "rt-022",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "牛腩"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 80.947,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "土豆炖牛肉",
+        "番茄牛腩",
+        "广式萝卜牛腩",
+        "柱候牛腩",
+        "西红柿牛腩",
+        "水煮牛肉",
+        "蚂蚁上树",
+        "牛油果拉西"
+      ],
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "recall_at_5": 1.0,
+      "mrr": 0.5,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 23,
+          "title": "土豆炖牛肉"
+        },
+        {
+          "type": "recipe",
+          "id": 24,
+          "title": "番茄牛腩"
+        },
+        {
+          "type": "recipe",
+          "id": 177,
+          "title": "广式萝卜牛腩"
+        },
+        {
+          "type": "recipe",
+          "id": 184,
+          "title": "柱候牛腩"
+        },
+        {
+          "type": "recipe",
+          "id": 228,
+          "title": "西红柿牛腩"
+        },
+        {
+          "type": "recipe",
+          "id": 188,
+          "title": "水煮牛肉"
+        },
+        {
+          "type": "recipe",
+          "id": 225,
+          "title": "蚂蚁上树"
+        },
+        {
+          "type": "recipe",
+          "id": 137,
+          "title": "牛油果拉西"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    },
+    {
+      "case_id": "rt-023",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "空心菜"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 80.67,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "蒜蓉空心菜",
+        "手撕包菜",
+        "清炒花菜",
+        "包菜炒鸡蛋粉丝",
+        "芝麻烧饼",
+        "炒青菜",
+        "韭菜炒蛋",
+        "白灼菜心"
+      ],
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "recall_at_5": 1.0,
+      "mrr": 1.0,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 27,
+          "title": "蒜蓉空心菜"
+        },
+        {
+          "type": "recipe",
+          "id": 29,
+          "title": "手撕包菜"
+        },
+        {
+          "type": "recipe",
+          "id": 355,
+          "title": "清炒花菜"
+        },
+        {
+          "type": "recipe",
+          "id": 343,
+          "title": "包菜炒鸡蛋粉丝"
+        },
+        {
+          "type": "recipe",
+          "id": 305,
+          "title": "芝麻烧饼"
+        },
+        {
+          "type": "recipe",
+          "id": 360,
+          "title": "炒青菜"
+        },
+        {
+          "type": "recipe",
+          "id": 17,
+          "title": "韭菜炒蛋"
+        },
+        {
+          "type": "recipe",
+          "id": 363,
+          "title": "白灼菜心"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    },
+    {
+      "case_id": "rt-024",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "洋葱"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 82.923,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "日式咖喱饭",
+        "孜然牛肉",
+        "番茄牛腩",
+        "洋葱炒鸡蛋",
+        "咖喱炒蟹",
+        "干煎阿根廷红虾",
+        "烤鱼",
+        "肉蟹煲"
+      ],
+      "hit_at_3": false,
+      "hit_at_5": true,
+      "recall_at_5": 0.3333,
+      "mrr": 0.25,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 291,
+          "title": "日式咖喱饭"
+        },
+        {
+          "type": "recipe",
+          "id": 18,
+          "title": "孜然牛肉"
+        },
+        {
+          "type": "recipe",
+          "id": 24,
+          "title": "番茄牛腩"
+        },
+        {
+          "type": "recipe",
+          "id": 40,
+          "title": "洋葱炒鸡蛋"
+        },
+        {
+          "type": "recipe",
+          "id": 46,
+          "title": "咖喱炒蟹"
+        },
+        {
+          "type": "recipe",
+          "id": 49,
+          "title": "干煎阿根廷红虾"
+        },
+        {
+          "type": "recipe",
+          "id": 53,
+          "title": "烤鱼"
+        },
+        {
+          "type": "recipe",
+          "id": 59,
+          "title": "肉蟹煲"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    },
+    {
+      "case_id": "rt-025",
+      "dataset": "retrieval",
+      "expected_intent": null,
+      "expected_keywords": [
+        "白萝卜",
+        "排骨"
+      ],
+      "expected_blocked": null,
+      "passed": true,
+      "latency_ms": 83.33,
+      "error": null,
+      "predicted_intent": null,
+      "blocked": null,
+      "status": null,
+      "titles": [
+        "冬瓜排骨汤",
+        "玉米排骨汤",
+        "微波炉蛋糕",
+        "土豆炖排骨",
+        "广式萝卜牛腩",
+        "杀猪菜",
+        "猪肉烩酸菜",
+        "糖醋排骨"
+      ],
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "recall_at_5": 0.3,
+      "mrr": 1.0,
+      "citations": [
+        {
+          "type": "recipe",
+          "id": 25,
+          "title": "冬瓜排骨汤"
+        },
+        {
+          "type": "recipe",
+          "id": 26,
+          "title": "玉米排骨汤"
+        },
+        {
+          "type": "recipe",
+          "id": 77,
+          "title": "微波炉蛋糕"
+        },
+        {
+          "type": "recipe",
+          "id": 161,
+          "title": "土豆炖排骨"
+        },
+        {
+          "type": "recipe",
+          "id": 177,
+          "title": "广式萝卜牛腩"
+        },
+        {
+          "type": "recipe",
+          "id": 182,
+          "title": "杀猪菜"
+        },
+        {
+          "type": "recipe",
+          "id": 200,
+          "title": "猪肉烩酸菜"
+        },
+        {
+          "type": "recipe",
+          "id": 208,
+          "title": "糖醋排骨"
+        }
+      ],
+      "citation_hit": true,
+      "citation_grounding": true
+    }
+  ],
+  "gate": {
+    "enabled": true,
+    "thresholds": {
+      "intent_accuracy": 0.8,
+      "block_recall": 1.0,
+      "false_block_rate": 0.1,
+      "hit_at_3": 0.7,
+      "hit_at_5": 0.7,
+      "recall_at_5": 0.3
+    },
+    "actual": {
+      "intent_accuracy": 1.0,
+      "block_recall": 1.0,
+      "false_block_rate": 0.0,
+      "hit_at_3": 0.96,
+      "hit_at_5": 1.0,
+      "recall_at_5": 0.5092
+    },
+    "statuses": {
+      "intent_accuracy": "pass",
+      "block_recall": "pass",
+      "false_block_rate": "pass",
+      "hit_at_3": "pass",
+      "hit_at_5": "pass",
+      "recall_at_5": "pass"
+    },
+    "failed_case_ids": [],
+    "result": "PASS"
+  }
+}

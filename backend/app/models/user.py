@@ -179,6 +179,7 @@ class FamilyMember(Base):
         BigInteger, ForeignKey("family.id", ondelete="CASCADE"), nullable=False
     )
     nickname: Mapped[str] = mapped_column(String(10), nullable=False)
+    relation: Mapped[str] = mapped_column(String(20), nullable=False, default="本人", server_default="本人")
     age_group: Mapped[str] = mapped_column(String(20), nullable=False)
     taste_spicy: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     taste_salt: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)

@@ -43,12 +43,17 @@ from app.models import (
     RiskLog,
     User,
 )
+from tests.conftest import ensure_router_registered
 
 # 并行开发约定：router.py 由集成步骤统一注册；未注册时此处补注册（进程级标记守卫，
-# 避免 OpenAPI Duplicate Operation ID 告警；注册后本守卫自动跳过）。
-if not getattr(api_router, "_t7_innovation_registered", False):
-    api_router.include_router(innovation_api.router)
-    api_router._t7_innovation_registered = True
+# 避免 OpenAPI Duplicate Operation ID 告警；注册后本守卫自动跳过）——
+# 统一走 conftest.ensure_router_registered。
+ensure_router_registered(
+    api_router,
+    (innovation_api.router,),
+    flag="_t7_innovation_registered",
+    probe_paths=("/v1/innovation/precheck",),
+)
 
 
 def _headers(anon: str) -> dict:
@@ -733,7 +738,8 @@ def test_nfr92_quantified_spot_check_multiple_recipes(client: TestClient, anon_i
         assert recipe["visibility"] == "private"
         assert recipe["status"] == "generated"
         _assert_quantified_recipe(recipe)
-        assert recipe["basis"]["generated_by"] == "template"
+        assert recipe["basis"]["generated_by"] == "template"
+
 
 def test_nfr94_default_recommend_excludes_ai_private(client: TestClient, anon_id: str) -> None:
     """NFR-9.4 私有分区红线：默认推荐链路绝不检索他人 ai_private 创新菜（函数）。
@@ -801,7 +807,8 @@ def test_nfr94_default_recommend_excludes_ai_private(client: TestClient, anon_id
         )
         assert all(int(recipe_id) != int(item.get("recipe_id") or -1) for item in results)
     finally:
-        _delete_user(other)
+        _delete_user(other)
+
 
 def test_removed_terminal_state_rejects_transitions(client: TestClient, anon_id: str) -> None:
     """removed 终态拒绝一切流转（adopt/index/reuse/detail/feedback → 404）（函数）。
@@ -840,4 +847,4 @@ def test_removed_terminal_state_rejects_transitions(client: TestClient, anon_id:
             headers=headers,
         ).status_code
         == 404
-    )
+    )

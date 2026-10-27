@@ -147,7 +147,13 @@ function goDetail(): void {
       >
         等 {{ missingOverflowCount }} 样
       </el-tag>
-      <el-tag v-for="eq in item.required_equipment" :key="`eq-${eq}`" type="info" size="small">
+      <el-tag
+        v-for="eq in item.required_equipment"
+        :key="`eq-${eq}`"
+        class="equipment-tag"
+        type="info"
+        size="small"
+      >
         需要 {{ eq }} 设备
       </el-tag>
     </div>

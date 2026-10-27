@@ -25,17 +25,24 @@ from app.api.v1 import personal as personal_api
 from app.api.v1.router import api_router
 from app.core.db import SessionLocal
 from app.models import CookingHelpLog, User
+from tests.conftest import ensure_router_registered
 
 # 并行开发约定：router.py 由集成步骤统一注册；未注册时此处补注册（进程级标记守卫，
 # 避免懒加载路由下重复 include 产生 OpenAPI Duplicate Operation ID 告警）。
-# 本文件覆盖导出/注销流程，需同时补注册库存与购物清单路由。
-if not getattr(api_router, "_t3_inventory_registered", False):
-    api_router.include_router(inventory_api.router)
-    api_router.include_router(inventory_api.shopping_router)
-    api_router._t3_inventory_registered = True
-if not getattr(api_router, "_t3_personal_registered", False):
-    api_router.include_router(personal_api.router)
-    api_router._t3_personal_registered = True
+# 本文件覆盖导出/注销流程，需同时补注册库存与购物清单路由——统一走
+# conftest.ensure_router_registered（与 test_api_inventory 共享 _t3_inventory_registered 标记）。
+ensure_router_registered(
+    api_router,
+    (inventory_api.router, inventory_api.shopping_router),
+    flag="_t3_inventory_registered",
+    probe_paths=("/v1/inventory", "/v1/shopping-list"),
+)
+ensure_router_registered(
+    api_router,
+    (personal_api.router,),
+    flag="_t3_personal_registered",
+    probe_paths=("/v1/favorites",),
+)
 
 
 def _headers(anon: str) -> dict:

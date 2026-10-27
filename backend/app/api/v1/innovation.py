@@ -34,7 +34,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
@@ -623,7 +623,10 @@ def _persist_job_record(record: dict) -> None:
                 "issues": list(record.get("issues") or []) or None,
                 "error": record.get("error"),
                 "finished_at": (
-                    datetime.fromtimestamp(float(finished_ts), tz=datetime.UTC)
+                    # 🔴 tz 传 UTC 模级别名（datetime.UTC 类属性形式在
+                    # from datetime import datetime 下必抛 AttributeError，
+                    # 曾导致 job 写穿透静默失效——仅告警不入库）
+                    datetime.fromtimestamp(float(finished_ts), tz=UTC)
                     if finished_ts is not None else None
                 ),
             }

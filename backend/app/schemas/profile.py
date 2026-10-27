@@ -7,9 +7,8 @@
     SkillProfile / DietGoal / ConsentSensitiveResponse 契约。
 
 存储映射说明（🔴 重要）：
-    - family_member 表无 relation / custom_allergens 列：relation 仅在接口层透传
-      （不持久化，GET 返回默认「本人」）；custom_allergens 与八类编码合并存入
-      allergen_codes JSONB（读取时按八类编码集合拆分还原），同时满足表级
+    - family_member 表无 custom_allergens 列：relation / age_group 独立持久化；
+      custom_allergens 与八类编码合并存入 allergen_codes JSONB（读取时按八类编码集合拆分还原），同时满足表级
       CHECK chk_allergen_required（过敏原必选）；
     - diet_goal 表无 note 列：备注存入 user.preferences JSONB 的 diet_goal_note 键；
     - API 目标编码（control_weight/light_salt/low_sugar）与 DB goal_type CHECK 枚举
@@ -43,6 +42,7 @@ ALLERGEN_ALIASES: dict[str, str] = {
 
 # 年龄段枚举（family_member.chk_age_group 表级 CHECK 对齐）
 MemberAgeGroup = Literal["0-3", "4-12", "13-17", "18-59", "60+"]
+MemberRelation = Literal["本人", "配偶", "孩子", "父母", "其他"]
 
 # 厨房设备白名单（与前端 EQUIPMENT_OPTIONS 逐项对齐）：
 # 原 13 项基础上补齐「燃气灶/电磁炉/炖锅/砂锅」（缺陷 M2/P6/S8 修复）——
@@ -172,11 +172,11 @@ class MemberCreate(BaseModel):
 
     说明：
         过敏原三选一校验（八类编码 / 自定义 / 暂无已知）在路由层执行；
-        age_group 缺省 18-59（DB age_group 列 NOT NULL，前端契约无此字段）。
+        age_group 缺省 18-59（DB age_group 列 NOT NULL）。
 
     属性：
         name：成员姓名（必填，≤10 字符对齐 DB nickname varchar(10)）。
-        relation：与本人关系（仅接口层透传，不持久化）。
+        relation：与本人关系（枚举）。
         age_group：年龄段枚举（缺省 18-59）。
         allergen_codes：八类过敏原编码列表。
         custom_allergens：自定义过敏原文本列表。
@@ -188,7 +188,7 @@ class MemberCreate(BaseModel):
     """
 
     name: str = Field(min_length=1, max_length=10)
-    relation: str = Field(default="本人", max_length=20)
+    relation: MemberRelation = "本人"
     age_group: MemberAgeGroup | None = None
     allergen_codes: list[str] = Field(default_factory=list)
     custom_allergens: list[str] = Field(default_factory=list)
@@ -213,7 +213,7 @@ class MemberUpdate(BaseModel):
     """
 
     name: str | None = Field(default=None, min_length=1, max_length=10)
-    relation: str | None = Field(default=None, max_length=20)
+    relation: MemberRelation | None = None
     age_group: MemberAgeGroup | None = None
     allergen_codes: list[str] | None = None
     custom_allergens: list[str] | None = None
@@ -232,7 +232,7 @@ class MemberOut(BaseModel):
     属性：
         id：成员 ID。
         name：成员姓名。
-        relation：与本人关系（阶段一无持久化列，恒返回「本人」）。
+        relation：与本人关系。
         allergen_codes：八类过敏原编码列表（存储态拆分还原）。
         custom_allergens：自定义过敏原文本列表（存储态拆分还原）。
         no_known_allergen：是否暂无已知过敏原。
@@ -244,7 +244,8 @@ class MemberOut(BaseModel):
 
     id: int
     name: str
-    relation: str = "本人"
+    relation: MemberRelation = "本人"
+    age_group: MemberAgeGroup = "18-59"
     allergen_codes: list[str] = Field(default_factory=list)
     custom_allergens: list[str] = Field(default_factory=list)
     no_known_allergen: bool = False

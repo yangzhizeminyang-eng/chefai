@@ -28,6 +28,7 @@ from app.api.v1 import member as member_api
 from app.core.db import SessionLocal
 from app.main import app as main_app
 from app.models import Order, RemoteConfig, User
+from tests.conftest import ensure_router_registered
 
 
 def _ensure_routes_registered() -> None:
@@ -36,6 +37,7 @@ def _ensure_routes_registered() -> None:
     说明：
         router.py 属禁改文件；若其他任务尚未注册本模块路由，则在主应用上
         幂等挂载（已注册则跳过），保证本测试模块可独立运行。
+        守卫统一复用 conftest.ensure_router_registered（防重复注册）。
 
     参数：
         无。
@@ -46,9 +48,13 @@ def _ensure_routes_registered() -> None:
     异常：
         无。
     """
-    paths = {getattr(route, "path", "") for route in main_app.routes}
-    if "/v1/member/plan" not in paths:
-        main_app.include_router(member_api.router, prefix="/v1")
+    ensure_router_registered(
+        main_app,
+        (member_api.router,),
+        flag="_member_routes_registered",
+        prefix="/v1",
+        probe_paths=("/v1/member/plan",),
+    )
 
 
 _ensure_routes_registered()
@@ -606,9 +612,13 @@ def test_member_paid_vision_quota_linkage(
     from app.api.v1 import vision as vision_module
 
     # 路由接线兜底（幂等）：member 测试文件独立运行时保证 vision 端点可达
-    paths = {getattr(route, "path", "") for route in main_app.routes}
-    if "/v1/vision/recognize" not in paths:
-        main_app.include_router(vision_module.router, prefix="/v1")
+    ensure_router_registered(
+        main_app,
+        (vision_module.router,),
+        flag="_member_vision_routes_registered",
+        prefix="/v1",
+        probe_paths=("/v1/vision/recognize",),
+    )
 
     class _StubHighProvider(VisionProvider):
         """桩视觉 provider（测试用）：恒定返回 1 个 high 置信识别项（模型类）。"""
@@ -652,4 +662,4 @@ def test_member_paid_vision_quota_linkage(
         assert me["is_member"] is True
         assert me["quota"]["limit"] == 10
     finally:
-        _delete_user_with_orders(anon)
+        _delete_user_with_orders(anon)

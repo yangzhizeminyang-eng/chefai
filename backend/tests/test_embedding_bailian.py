@@ -35,6 +35,7 @@ from app.ability.embedding import (
     EmbeddingProvider,
     EmbeddingUnavailableError,
     HashEmbeddingProvider,
+    get_embedding_provider,
 )
 from app.ability.retrieval import retrieve_candidates
 from app.cli import main
@@ -213,6 +214,53 @@ def bailian_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setattr(settings, "EMBEDDING_API_BASE", "https://bailian.test.example/compatible-mode/v1")
     monkeypatch.setattr(settings, "EMBEDDING_API_KEY", "sk-test-bailian-offline")
+
+
+@pytest.fixture()
+def _reset_provider_singleton() -> None:
+    """嵌入工厂进程级单例保存/恢复 fixture（函数）。
+
+    说明：
+        get_embedding_provider 有进程内缓存单例；本夹具测试前置空、
+        测试后恢复原值，避免 bgem3 占位用例污染其他用例的工厂状态。
+
+    参数：
+        无。
+
+    返回值：
+        None（yield 夹具）。
+
+    异常：
+        无。
+    """
+    from app.ability import embedding as emb_mod
+
+    saved = emb_mod._PROVIDER_SINGLETON
+    emb_mod._PROVIDER_SINGLETON = None
+    yield
+    emb_mod._PROVIDER_SINGLETON = saved
+
+
+def test_bgem3_provider_placeholder(monkeypatch: pytest.MonkeyPatch, _reset_provider_singleton: None) -> None:
+    """BGEM3 阶段二占位：工厂在 EMBEDDING_PROVIDER=bgem3 时抛 NotImplementedError（测试）。
+
+    断言：
+        - get_embedding_provider() 抛出 NotImplementedError（原样向上，不回落 hash）；
+        - 报错文案包含「阶段二」（占位语义明确，指引阶段二启用方式）。
+
+    参数：
+        monkeypatch：pytest 夹具（patch settings.EMBEDDING_PROVIDER=bgem3）。
+        _reset_provider_singleton：工厂单例保存/恢复夹具。
+
+    返回值：
+        None。
+
+    异常：
+        断言失败即测试失败。
+    """
+    monkeypatch.setattr(settings, "EMBEDDING_PROVIDER", "bgem3")
+    with pytest.raises(NotImplementedError, match="阶段二"):
+        get_embedding_provider()
 
 
 def test_bailian_batch_and_normalize(monkeypatch: pytest.MonkeyPatch, bailian_env: None) -> None:

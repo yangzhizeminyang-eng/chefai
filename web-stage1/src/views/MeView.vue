@@ -1,8 +1,7 @@
 <script setup lang="ts">
 /**
  * 视图职责：个人中心（Task 9 / 路由 /me）。
- * 区块：① 9 入口宫格（我的档案/我的收藏/烹饪历史/拿手菜/营养汇总 → 页内分区或外跳；
- *       会员中心/库存 → 外跳；设置 → 页内分区；反馈 → 触发全局 FeedbackFab 弹窗）；
+ * 区块：① 高频入口（我的收藏 / 设置；家庭档案由主导航进入）；
  *       ② 收藏分区：分组 chips 过滤 + 列表 + 删除二次确认（el-popconfirm）；
  *       ③ 历史分区：倒序列表 + 「再做一次」（已选食材 → /recommend，否则引导回 /select）；
  *       ④ 拿手菜分区：烹饪次数 + 均分卡；
@@ -15,73 +14,64 @@
  * 三态：各分区独立加载/空/异常；深色模式全变量适配。
  */
 import { computed, onMounted, ref, watch } from 'vue'
+import type { Component } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Download } from '@element-plus/icons-vue'
+import { Download, Setting, Star } from '@element-plus/icons-vue'
 import { getNutritionSummary, postNutritionManual } from '@/api/endpoints'
 import type {
   ApiError,
   NutritionSummaryResponse,
 } from '@/api/types'
 import { useMeStore } from '@/stores/me'
+import { useAuthStore } from '@/stores/auth'
+import { useProfileStore } from '@/stores/profile'
+import { useCookingStore } from '@/stores/cooking'
+import { useInventoryStore } from '@/stores/inventory'
+import { useHomeStore } from '@/stores/home'
+import { useRecommendStore } from '@/stores/recommend'
+import { useInnovationStore } from '@/stores/innovation'
+import { useAskStore } from '@/stores/ask'
 import { useIngredientsStore } from '@/stores/ingredients'
-import { useConfigStore } from '@/stores/config'
+import { completeAccountDeletion } from '@/utils/completeAccountDeletion'
 import DisclaimerBar from '@/components/DisclaimerBar.vue'
 
 /** 路由（外跳与「再做一次」） */
 const router = useRouter()
 /** 个人中心 store */
 const meStore = useMeStore()
+const authStore = useAuthStore()
+const profileStore = useProfileStore()
+const cookingStore = useCookingStore()
+const inventoryStore = useInventoryStore()
+const homeStore = useHomeStore()
+const recommendStore = useRecommendStore()
+const innovationStore = useInnovationStore()
+const askStore = useAskStore()
 /** 食材 store（「再做一次」判断是否可直接去推荐） */
 const ingredientsStore = useIngredientsStore()
-/** 远程开关 store（payment 开关控制会员中心入口显隐，§5.8 支付模块） */
-const configStore = useConfigStore()
-
-/** 宫格可见入口（§5.8 支付模块：switch.payment=false → 会员入口隐藏；
- *  已购权益查看依托 /member 路由页自身的状态/订单区，阶段一不在本页注入会员数据） */
-const visibleGridEntries = computed(() =>
-  GRID_ENTRIES.filter((e) => e.key !== 'member' || configStore.switches.payment !== false),
-)
-
-/** 页内激活分区（宫格点选切换；external 类入口直接路由跳转） */
+/** 页内激活分区（入口点选切换） */
 type SectionKey = 'favorites' | 'history' | 'signature' | 'nutrition' | 'settings'
 const activeSection = ref<SectionKey>('favorites')
 
-/** 宫格入口配置 */
+/** 家庭档案由主导航进入；此处只保留个人中心内部的常用分区。 */
 const GRID_ENTRIES: Array<{
   key: string
-  icon: string
+  icon: Component
   title: string
-  action: 'section' | 'route'
-  target: string
+  target: SectionKey
 }> = [
-  { key: 'profile', icon: '👨‍👩‍👧', title: '我的档案', action: 'route', target: '/profile' },
-  { key: 'favorites', icon: '⭐', title: '我的收藏', action: 'section', target: 'favorites' },
-  { key: 'history', icon: '🕘', title: '烹饪历史', action: 'section', target: 'history' },
-  { key: 'signature', icon: '🏆', title: '拿手菜', action: 'section', target: 'signature' },
-  { key: 'nutrition', icon: '🥗', title: '营养汇总', action: 'section', target: 'nutrition' },
-  { key: 'member', icon: '💎', title: '会员中心', action: 'route', target: '/member' },
-  { key: 'inventory', icon: '🧊', title: '库存', action: 'route', target: '/inventory' },
-  { key: 'settings', icon: '⚙️', title: '设置', action: 'section', target: 'settings' },
-  { key: 'feedback', icon: '💬', title: '反馈', action: 'route', target: 'feedback' },
+  { key: 'favorites', icon: Star, title: '我的收藏', target: 'favorites' },
+  { key: 'settings', icon: Setting, title: '设置', target: 'settings' },
 ]
 
 /**
- * 宫格入口点击：页内分区 / 路由跳转 / 触发全局反馈弹窗。
+ * 宫格入口点击：切换个人中心分区。
  * @param entry 宫格入口
  * @returns 无
  */
 function onEntryClick(entry: (typeof GRID_ENTRIES)[number]): void {
-  if (entry.action === 'section') {
-    activeSection.value = entry.target as SectionKey
-    return
-  }
-  if (entry.target === 'feedback') {
-    // 复用全局 FeedbackFab 弹窗（事件名与组件内约定一致）
-    window.dispatchEvent(new CustomEvent('aicook:open-feedback'))
-    return
-  }
-  void router.push(entry.target)
+  activeSection.value = entry.target
 }
 
 /* ── 收藏 ── */
@@ -247,6 +237,16 @@ const settingsForm = ref({
   voice_enabled: false,
   reminder_enabled: false,
 })
+const settingsDirty = computed(() => {
+  const saved = meStore.settings
+  return Boolean(saved && Object.keys(settingsForm.value).some((key) => {
+    const settingKey = key as keyof typeof settingsForm.value
+    return settingsForm.value[settingKey] !== saved[settingKey]
+  }))
+})
+const settingsControlsDisabled = computed(() =>
+  !meStore.settings || meStore.settingsLoading || meStore.settingsSaving,
+)
 
 /**
  * 保存设置（PUT /v1/settings；字号档位经 App.vue watch meStore.settings
@@ -255,8 +255,10 @@ const settingsForm = ref({
  * @throws 不向外抛出（接口异常已就地转为错误 toast）
  */
 async function onSaveSettings(): Promise<void> {
+  if (!meStore.settings || meStore.settingsLoading || meStore.settingsSaving) return
   try {
     await meStore.saveSettings({ ...settingsForm.value })
+    if (meStore.settings) settingsForm.value = { ...meStore.settings }
     ElMessage.success('设置已保存')
   } catch (e) {
     ElMessage.error((e as ApiError).message || '保存失败，请重试')
@@ -308,13 +310,38 @@ async function onDeleteAccount(): Promise<void> {
     })
     if (value !== '注销') return
     await meStore.deleteAccount()
-    ElMessage.success('账号已注销，感谢你的使用')
+    await completeAccountDeletion({
+      clearAccountData: () => {
+        meStore.$reset()
+        profileStore.$reset()
+        cookingStore.clearSession()
+        ingredientsStore.clear()
+        inventoryStore.$reset()
+        homeStore.$reset()
+        recommendStore.$reset()
+        innovationStore.$reset()
+        askStore.$reset()
+      },
+      logout: () => authStore.logout(),
+      navigateToLogin: () => router.replace('/login'),
+    })
+    ElMessage.success('账号已注销，正在返回登录页')
   } catch (e) {
     if ((e as ApiError).code !== 'cancel' && (e as ApiError).code !== 'close') {
       ElMessage.error((e as ApiError).message || '注销失败，请重试')
     }
   }
 }
+
+/** 从头像菜单直达设置分区，并在页面内导航时保持 URL 状态可分享。 */
+watch(
+  () => router.currentRoute.value.query.section,
+  (section) => {
+    if (section === 'settings') activeSection.value = 'settings'
+    else if (section == null || section === 'favorites') activeSection.value = 'favorites'
+  },
+  { immediate: true },
+)
 
 /** 切到营养分区时懒加载汇总数据 */
 watch(activeSection, (sec) => {
@@ -328,29 +355,33 @@ onMounted(() => {
   void meStore.loadFavorites()
   void meStore.loadHistory()
   void meStore.loadSignature()
-  void meStore.loadSettings().then(() => {
-    if (meStore.settings) {
-      settingsForm.value = { ...meStore.settings }
-    }
-  })
+  if (!meStore.settings && !meStore.settingsLoading) void meStore.loadSettings()
 })
+
+watch(
+  () => meStore.settings,
+  (settings) => {
+    if (settings) settingsForm.value = { ...settings }
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
   <section class="page-card me-page">
     <h1 class="page-title">我的</h1>
 
-    <!-- ① 入口宫格（switch.payment=false 时隐藏会员中心入口，§5.8 支付模块） -->
+    <!-- 个人中心快捷分区；家庭档案由主导航进入 -->
     <div class="me-grid">
       <button
-        v-for="entry in visibleGridEntries"
+        v-for="entry in GRID_ENTRIES"
         :key="entry.key"
         type="button"
         class="me-grid-item"
-        :class="{ 'me-grid-item--active': entry.action === 'section' && entry.target === activeSection }"
+        :class="{ 'me-grid-item--active': entry.target === activeSection }"
         @click="onEntryClick(entry)"
       >
-        <span class="me-grid-icon">{{ entry.icon }}</span>
+        <el-icon class="me-grid-icon" aria-hidden="true"><component :is="entry.icon" /></el-icon>
         <span class="me-grid-title">{{ entry.title }}</span>
       </button>
     </div>
@@ -565,17 +596,30 @@ onMounted(() => {
       <h2 class="section-title">设置</h2>
 
       <el-alert
-        v-if="meStore.settingsError"
+        v-if="meStore.settingsLoadError"
         type="error"
-        :title="meStore.settingsError.message"
+        :title="`设置加载失败：${meStore.settingsLoadError.message || '请检查网络后重试'}`"
         :closable="false"
         show-icon
         class="me-alert"
-      />
+      >
+        <el-button size="small" type="primary" plain :loading="meStore.settingsLoading" @click="meStore.loadSettings()">
+          重试加载
+        </el-button>
+      </el-alert>
 
+      <div v-if="meStore.settingsLoading && !meStore.settings" class="settings-loading" role="status">
+        正在读取你的设置…
+      </div>
+
+      <p v-if="meStore.settings" class="settings-description">
+        字号全站生效；计量单位和烹饪偏好在保存后应用。
+      </p>
+
+      <fieldset class="settings-controls" :disabled="settingsControlsDisabled">
       <div class="setting-row">
-        <span class="setting-label">字号</span>
-        <el-radio-group v-model="settingsForm.font_size">
+        <span id="settings-font-label" class="setting-label">字号</span>
+        <el-radio-group v-model="settingsForm.font_size" :disabled="settingsControlsDisabled" aria-labelledby="settings-font-label">
           <el-radio-button value="normal">标准</el-radio-button>
           <el-radio-button value="large">大</el-radio-button>
           <el-radio-button value="xlarge">特大</el-radio-button>
@@ -583,9 +627,9 @@ onMounted(() => {
       </div>
 
       <div class="setting-row">
-        <span class="setting-label">计量单位</span>
+        <span id="settings-unit-label" class="setting-label">计量单位</span>
         <!-- 计量单位三选（PRD §5.4：克 / 毫升 / 勺；历史 metric/imperial 由 store 读时迁移） -->
-        <el-radio-group v-model="settingsForm.unit">
+        <el-radio-group v-model="settingsForm.unit" :disabled="settingsControlsDisabled" aria-labelledby="settings-unit-label">
           <el-radio-button value="gram">克（g）</el-radio-button>
           <el-radio-button value="milliliter">毫升（ml）</el-radio-button>
           <el-radio-button value="spoon">勺（参照 1 勺 ≈ 15ml）</el-radio-button>
@@ -593,23 +637,49 @@ onMounted(() => {
       </div>
 
       <div class="setting-row">
-        <span class="setting-label">语音播报步骤</span>
-        <el-switch v-model="settingsForm.voice_enabled" />
+        <div class="setting-copy">
+          <span id="settings-voice-label" class="setting-label">语音播报步骤</span>
+          <span class="setting-help">进入或切换烹饪步骤时自动朗读</span>
+        </div>
+        <el-switch v-model="settingsForm.voice_enabled" :disabled="settingsControlsDisabled" aria-labelledby="settings-voice-label" />
       </div>
 
       <div class="setting-row">
-        <span class="setting-label">做菜提醒</span>
-        <el-switch v-model="settingsForm.reminder_enabled" />
+        <div class="setting-copy">
+          <span id="settings-reminder-label" class="setting-label">做菜提醒</span>
+          <span class="setting-help">计时结束后在烹饪页面提示，离开页面后不通知</span>
+        </div>
+        <el-switch v-model="settingsForm.reminder_enabled" :disabled="settingsControlsDisabled" aria-labelledby="settings-reminder-label" />
       </div>
+      </fieldset>
+
+      <p v-if="meStore.settings" class="settings-preview" :class="`settings-preview--${settingsForm.font_size}`">
+        示例文字：炒至食材断生后即可出锅。
+      </p>
+
+      <p v-if="settingsDirty" class="settings-dirty" role="status">有尚未保存的更改</p>
+      <p v-else-if="meStore.settings" class="settings-saved" role="status">设置已同步</p>
+      <p v-if="meStore.settingsSaveError" class="settings-error" role="alert">
+        保存失败：{{ meStore.settingsSaveError.message || '请重试，当前更改仍保留' }}
+      </p>
 
       <el-button
         type="primary"
         :loading="meStore.settingsSaving"
+        :disabled="!meStore.settings || meStore.settingsLoading || !settingsDirty"
         class="setting-save"
         @click="onSaveSettings"
       >
         保存设置
       </el-button>
+
+      <div class="trace-setting-link">
+        <div>
+          <strong>调度追踪</strong>
+          <p>查看最近一次推荐与智能问答的执行记录。</p>
+        </div>
+        <el-button @click="router.push('/trace')">查看记录</el-button>
+      </div>
 
       <!-- 数据权利 -->
       <el-divider />
@@ -653,10 +723,21 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.me-page {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  transition: none;
+}
+
 /* ── 宫格 ── */
 .me-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  grid-template-columns: repeat(2, minmax(112px, 160px));
   gap: 10px;
   margin-bottom: 20px;
 }
@@ -668,9 +749,20 @@ onMounted(() => {
   gap: 6px;
   padding: 14px 6px;
   border: 1px solid var(--color-info-border);
-  border-radius: 10px;
+  border-radius: 8px;
   background: var(--card-bg);
   cursor: pointer;
+  transition: border-color 160ms ease, background-color 160ms ease, transform 160ms ease;
+}
+
+.me-grid-item:hover {
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
+}
+
+.me-grid-item:focus-visible {
+  outline: 2px solid var(--accent-deep);
+  outline-offset: 3px;
 }
 
 .me-grid-item--active {
@@ -679,7 +771,10 @@ onMounted(() => {
 }
 
 .me-grid-icon {
-  font-size: 24px;
+  width: 24px;
+  height: 24px;
+  color: var(--accent-deep);
+  font-size: 22px;
 }
 
 .me-grid-title {
@@ -902,8 +997,91 @@ onMounted(() => {
   color: var(--text-main);
 }
 
+.setting-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.setting-help {
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+  line-height: 1.45;
+}
+
+.settings-controls {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+}
+
+.settings-controls:disabled {
+  opacity: 0.58;
+}
+
+.settings-loading,
+.settings-description,
+.settings-preview,
+.settings-dirty,
+.settings-saved {
+  margin: 12px 0;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.settings-description,
+.settings-preview {
+  margin-top: 8px;
+}
+
+.settings-preview--large {
+  font-size: 18px;
+}
+
+.settings-preview--xlarge {
+  font-size: 21px;
+}
+
+.settings-dirty {
+  color: var(--color-forest, #24483a);
+}
+
+.settings-error {
+  margin: 10px 0;
+  color: var(--el-color-danger);
+  font-size: 14px;
+}
+
 .setting-save {
   margin-top: 8px;
+}
+
+.trace-setting-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 20px;
+  padding: 14px 0;
+  border-top: 1px solid var(--color-info-border);
+}
+
+.trace-setting-link strong {
+  color: var(--text-main);
+  font-size: var(--font-md);
+  font-weight: 600;
+}
+
+.trace-setting-link p {
+  margin: 4px 0 0;
+  color: var(--color-info);
+  font-size: var(--font-sm);
+  line-height: 1.5;
+}
+
+.trace-setting-link :deep(.el-button) {
+  min-height: 38px;
+  border-radius: 8px;
 }
 
 .sub-title {
@@ -911,5 +1089,31 @@ onMounted(() => {
   font-size: var(--font-md);
   font-weight: 600;
   color: var(--text-main);
+}
+
+@media (max-width: 560px) {
+  .me-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .settings-controls .setting-row {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .settings-controls .setting-row > :deep(.el-radio-group) {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .me-grid-item {
+    transition-duration: 0.01ms;
+  }
+
+  .me-grid-item:hover {
+    transform: none;
+  }
 }
 </style>

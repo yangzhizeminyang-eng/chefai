@@ -51,7 +51,8 @@ def make_node_free_qa():
             state：编排状态。
 
         返回值：
-            dict：{"qa_answer": 回答文本, "trace": [span]}。
+            dict：{"qa_answer": 回答文本, "qa_degraded": 是否降级兜底,
+            "trace": [span]}（qa_degraded 供 compose 组装 citations 降级标注）。
 
         异常：
             不抛出（全部异常转兜底话术）。
@@ -93,7 +94,7 @@ def make_node_free_qa():
             completion_tokens=completion_tokens or None,
             cost_cents=cost_cents,
         )
-        return {"qa_answer": answer, "trace": [span]}
+        return {"qa_answer": answer, "qa_degraded": status == "degraded", "trace": [span]}
 
     return node_free_qa
 

@@ -6,6 +6,8 @@
     05-V1.1 §12.3 两种口径并存），共用同一幂等逻辑。
     幂等与 /v1/recommend 共用进程内 TTL 缓存；text 空白返回 400 统一错误。
     响应对齐前端 AskResponse：否决体整体嵌套于 blocked 键（前端读取 res.blocked.trace_id）。
+    citations（OBS-04 新增可选字段）：结构化回答来源，检索型为 recipe 来源列表、
+    降级/保守模式为 degraded 标注、拦截/无结果为空数组；既有字段不动。
 """
 
 from __future__ import annotations
@@ -85,6 +87,9 @@ def post_ask(
     response = run_ask({"request_id": rid, "text": input_text, "user_id": user_id})
 
     # 判别意图并组装响应（前端 AskResponse 契约）
+    # citations（OBS-04，新增可选字段，既有字段不动）：结构化回答来源——
+    #   检索/推荐型为 [{type:"recipe", id, title}, ...]；降级/保守模式为
+    #   [{type:"degraded", reason}]；风控拦截与无结果为空数组。缺省兜底空数组。
     if response.get("blocked"):
         blocked_body = {
             "request_id": response.get("request_id") or rid,
@@ -98,6 +103,7 @@ def post_ask(
             "request_id": response.get("request_id") or rid,
             "intent": "blocked",
             "blocked": blocked_body,
+            "citations": [],  # 风控拦截未生成任何内容来源
             "trace_id": response.get("trace_id"),
             "disclaimer_id": response.get("disclaimer_id"),
         }
@@ -107,6 +113,7 @@ def post_ask(
             "request_id": response.get("request_id") or rid,
             "intent": "free_qa",
             "answer": response.get("message") or "安全校验暂不可用，请稍后重试。",
+            "citations": response.get("citations") or [{"type": "degraded", "reason": "safe_mode"}],
             "trace_id": response.get("trace_id"),
             "disclaimer_id": response.get("disclaimer_id"),
         }
@@ -115,6 +122,7 @@ def post_ask(
             "request_id": response.get("request_id") or rid,
             "intent": "free_qa",
             "answer": str(response["qa_answer"]),
+            "citations": response.get("citations") or [],
             "trace_id": response.get("trace_id"),
             "disclaimer_id": response.get("disclaimer_id"),
         }
@@ -125,6 +133,7 @@ def post_ask(
             "request_id": response.get("request_id") or rid,
             "intent": "recipe_search",
             "recipe_ids": recipe_ids,
+            "citations": response.get("citations") or [],
             "trace_id": response.get("trace_id"),
             "disclaimer_id": response.get("disclaimer_id"),
         }
@@ -132,6 +141,7 @@ def post_ask(
         body = {
             "request_id": response.get("request_id") or rid,
             "intent": "recommend",
+            "citations": [],
             "trace_id": response.get("trace_id"),
             "disclaimer_id": response.get("disclaimer_id"),
         }

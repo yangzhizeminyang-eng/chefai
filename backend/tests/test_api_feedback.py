@@ -22,6 +22,7 @@ from app.api.v1 import feedback as feedback_api
 from app.core.db import SessionLocal
 from app.main import app as main_app
 from app.models import Feedback, User
+from tests.conftest import ensure_router_registered
 
 
 def _ensure_routes_registered() -> None:
@@ -30,6 +31,7 @@ def _ensure_routes_registered() -> None:
     说明：
         router.py 属禁改文件；若其他任务尚未注册本模块路由，则在主应用上
         幂等挂载（已注册则跳过），保证本测试模块可独立运行。
+        守卫统一复用 conftest.ensure_router_registered（防重复注册）。
 
     参数：
         无。
@@ -40,9 +42,13 @@ def _ensure_routes_registered() -> None:
     异常：
         无。
     """
-    paths = {getattr(route, "path", "") for route in main_app.routes}
-    if "/v1/feedback" not in paths:
-        main_app.include_router(feedback_api.router, prefix="/v1")
+    ensure_router_registered(
+        main_app,
+        (feedback_api.router,),
+        flag="_feedback_routes_registered",
+        prefix="/v1",
+        probe_paths=("/v1/feedback",),
+    )
 
 
 _ensure_routes_registered()

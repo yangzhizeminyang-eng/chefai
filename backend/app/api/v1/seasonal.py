@@ -42,6 +42,7 @@ from app.ability.ranking import hard_filter
 from app.api.v1.deps import difficulty_label, resolve_existing_user_id
 from app.core.db import get_db
 from app.core.logging import get_logger
+from app.core.recipe_covers import resolve_recipe_cover_url
 from app.graph.runner import load_profile_from_db
 from app.models import Ingredient, Recipe, RecipeIngredient, UserSkillProfile
 from app.safety import SafetyProfile
@@ -269,7 +270,7 @@ def _load_candidates(session: Session, recipe_ids: dict[int, list[str]]) -> list
             "equipment": list(row.equipment or []),
             "allergen_codes": list(row.allergen_codes or []),
             "ingredient_allergen_codes": list(row.ingredient_allergen_codes or []),
-            "cover_image_url": row.cover_image_url,
+            "cover_image_url": resolve_recipe_cover_url(row.title, row.cover_image_url),
             "source_label": str(row.source_label or ""),
             "seasonal_names": list(recipe_ids.get(int(row.id)) or []),
         }

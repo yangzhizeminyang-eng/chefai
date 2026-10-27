@@ -12,6 +12,8 @@ import { ChatDotRound } from '@element-plus/icons-vue'
 import { useMeStore } from '@/stores/me'
 import type { ApiError } from '@/api/types'
 
+const props = withDefaults(defineProps<{ showLauncher?: boolean }>(), { showLauncher: true })
+
 /** 个人中心等外部入口打开弹窗的自定义事件名（与 MeView 约定一致） */
 const OPEN_FEEDBACK_EVENT = 'aicook:open-feedback'
 
@@ -91,6 +93,7 @@ onBeforeUnmount(() => {
 <template>
   <!-- 右下角固定反馈 FAB（全页面可见） -->
   <el-button
+    v-if="props.showLauncher"
     class="feedback-fab"
     type="primary"
     circle

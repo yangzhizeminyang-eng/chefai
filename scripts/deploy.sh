@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # =====================================================================
 # 文件名: scripts/deploy.sh
-# 用途:   「AI 厨娘」Web 端生产部署脚本（Ubuntu 24.04 + Docker CE）
+# 用途:   「AI 厨娘」Web 端生产部署脚本（阿里云 ECS Ubuntu 22.04 + Docker CE）
 #
 # 设计前提（重要）:
 #   前端镜像在**本地开发机**构建后经 `docker save` → `scp` → `docker load`
-#   送达服务器。本脚本不构建前端 —— 服务器 2C2G 跑两次 npm ci + vue-tsc +
-#   两次 vite build（峰值 >1.5GB）会 OOM。后端 api 镜像由服务器本地构建
+#   送达服务器。本脚本不构建前端 —— 服务器构建两套前端时内存峰值较高，
+#   因此在本地完成构建后再传到 ECS。
+#   后端 api 镜像由服务器本地构建
 #   （纯 Python wheel，无重包，2GHz 双核可承受）。
 #
 # 用法（在项目根目录执行）:
@@ -34,7 +35,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 ENV_FILE="${ENV_FILE:-$ROOT/.env.production}"
-WEB_IMAGE_DEFAULT="aicook-web:20261013"
+WEB_IMAGE_DEFAULT="aicook-web:20261019"
 WEB_TARBALL="${WEB_TARBALL:-$ROOT/aicook-web.tar}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-180}"
 
@@ -312,19 +313,25 @@ c_info "步骤 8/8：冒烟验证"
 smoke() {
   local path="$1" label="$2"
   local code
-  code="$(curl -s -o /dev/null -w '%{http_code}' -m 10 "http://127.0.0.1:${WEB_PORT}${path}" || echo 000)"
-  if [ "$code" = "200" ]; then c_ok "$label → 200（$path）"; else c_warn "$label → $code（$path）"; fi
+  code="$(curl -s -o /dev/null -w '%{http_code}' -m 10 "http://127.0.0.1:${WEB_PORT}${path}" || true)"
+  code="${code:-000}"
+  if [ "$code" = "200" ]; then
+    c_ok "$label → 200（$path）"
+  else
+    c_err "$label → $code（$path）"
+    return 1
+  fi
 }
-smoke "/v1/healthz" "后端健康检查"
-smoke "/"           "用户端首页"
-smoke "/admin/"     "管理后台"
+smoke "/v1/healthz" "后端健康检查" || die "冒烟验证失败，部署未完成"
+smoke "/"           "用户端首页" || die "冒烟验证失败，部署未完成"
+smoke "/admin/"     "管理后台" || die "冒烟验证失败，部署未完成"
 
 PUBLIC_IP="$(curl -s -m 5 https://ifconfig.me 2>/dev/null || echo '<服务器公网IP>')"
 echo "$RAIL"
 c_ok "部署完成"
 cat <<EOF
 
- 访问地址（需在腾讯云安全组入站放行 TCP ${WEB_PORT}）：
+ 访问地址（需在阿里云 ECS 安全组入站放行 TCP ${WEB_PORT}，并确认已配置公网 IP）：
    用户端    http://${PUBLIC_IP}:${WEB_PORT}/
    管理后台  http://${PUBLIC_IP}:${WEB_PORT}/admin/
    健康检查  http://${PUBLIC_IP}:${WEB_PORT}/v1/healthz

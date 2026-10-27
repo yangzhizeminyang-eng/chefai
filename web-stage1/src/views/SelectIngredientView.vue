@@ -379,7 +379,11 @@ onMounted(() => {
 
 <style scoped>
 .select-page {
-  padding-bottom: 72px;
+  padding: 0 0 96px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .search-input {
@@ -442,8 +446,33 @@ onMounted(() => {
 .category-bar {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 18px;
+  align-items: center;
+  gap: 8px 20px;
+  margin: 2px 0 20px;
+  border-bottom: 1px solid var(--sidebar-line);
+}
+
+.category-bar :deep(.el-check-tag) {
+  padding: 7px 2px 9px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+  line-height: 1.4;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.category-bar :deep(.el-check-tag:hover) {
+  color: var(--text-main);
+}
+
+.category-bar :deep(.el-check-tag.is-checked) {
+  border-bottom-color: var(--accent-deep);
+  background: transparent;
+  color: var(--accent-deep);
+  font-weight: 600;
 }
 
 .ing-grid {
@@ -460,25 +489,34 @@ onMounted(() => {
   justify-content: center;
   min-height: 48px;
   padding: 10px 8px;
-  border: 1px solid var(--color-info-border);
+  border: 1px solid var(--sidebar-line);
   border-radius: 8px;
-  background: var(--card-bg);
+  background: transparent;
   color: var(--text-main);
   font-size: var(--font-md);
   cursor: pointer;
-  transition:
-    border-color 0.2s ease,
-    background-color 0.2s ease;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
 }
 
 .ing-card:hover {
-  border-color: var(--el-color-primary);
+  border-color: var(--line-strong);
+  background: var(--surface-hover);
 }
 
 .ing-card--selected {
   border-color: var(--el-color-primary);
-  background: var(--el-color-primary-light-9);
+  background: var(--sidebar-active);
   font-weight: 600;
+}
+
+.ing-card--selected:hover {
+  border-color: var(--el-color-primary);
+  background: var(--sidebar-active);
+}
+
+.ing-card:focus-visible {
+  outline: 2px solid var(--accent-deep);
+  outline-offset: 2px;
 }
 
 .ing-card--skeleton {
@@ -495,13 +533,12 @@ onMounted(() => {
 /* ── 底部固定操作条 ── */
 .select-footer {
   position: fixed;
-  left: 0;
+  left: var(--sidebar-width);
   right: 0;
   bottom: 0;
   z-index: 20;
-  background: var(--card-bg);
-  border-top: 1px solid var(--color-info-border);
-  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.06);
+  background: var(--page-bg);
+  border-top: 1px solid var(--sidebar-line);
 }
 
 .footer-inner {
@@ -509,9 +546,9 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  max-width: var(--page-max-width);
+  max-width: 1520px;
   margin: 0 auto;
-  padding: 10px 16px;
+  padding: 12px clamp(24px, 4vw, 72px);
 }
 
 .footer-info {
@@ -539,6 +576,59 @@ onMounted(() => {
 .footer-btn {
   min-width: 132px;
   min-height: 44px;
+  border-radius: 10px;
+  box-shadow: 0 3px 10px rgba(36, 72, 58, 0.14);
   font-size: var(--font-md);
+}
+
+.footer-btn:hover {
+  box-shadow: 0 4px 12px rgba(36, 72, 58, 0.2);
+}
+
+@media (max-width: 900px) {
+  .select-footer {
+    left: 0;
+  }
+
+  .footer-inner {
+    padding-right: 24px;
+    padding-left: 24px;
+  }
+}
+
+@media (max-width: 560px) {
+  .select-page {
+    padding-bottom: 88px;
+  }
+
+  .category-bar {
+    column-gap: 16px;
+  }
+
+  .footer-inner {
+    gap: 10px;
+    padding: 10px 18px;
+  }
+
+  .footer-info {
+    gap: 7px;
+  }
+
+  .footer-names {
+    max-width: 36vw;
+  }
+
+  .footer-btn {
+    min-width: 104px;
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .category-bar :deep(.el-check-tag),
+  .ing-card {
+    transition: none;
+  }
 }
 </style>

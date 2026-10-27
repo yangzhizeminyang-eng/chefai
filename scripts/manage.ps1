@@ -1,4 +1,4 @@
-﻿﻿# =====================================================================
+﻿# =====================================================================
 # 文件名: scripts/manage.ps1
 # 用途:   「AI 厨娘·智能烹饪助手」阶段一前后端一键管理脚本
 #         - 双击 scripts\start.bat 可启动后端 + 用户端前端 + 管理后台；失败时窗口保留并等待确认
@@ -16,8 +16,11 @@
 #                   vite.config.ts 据此切换代理目标，保证端口漂移后前后端数据仍然联通；
 #                   注入的后端端口另记入 logs\frontend.bkport / admin.bkport，复用前端前校验该
 #                   记录与当前后端端口一致，不一致（后端漂移过）则终止旧前端并重启以联动新端口
-#         - stop  : 按 PID 文件终止进程树；PID 文件缺失或进程已死时按端口兜底清理
+#         - stop  : 按 PID 文件终止进程树；PID 文件缺失或进程已死时按端口兜底清理，
+#                   兜底终止前须经 Test-ProjectProcess 归属验证（fail-closed，
+#                   无法确证归属本项目的监听进程一律不杀，防止按端口盲杀外部程序）
 #         - status: 查看 PostgreSQL / 后端 / 用户端前端 / 管理后台 运行状态
+#         - interactive（默认）: 启动 / 查看状态 / 停止 / 退出交互菜单
 #         - test  : 运行后端 pytest 与前端 vitest 并汇总退出码
 #         - smoke : 对运行中的服务执行阶段一冒烟断言（对齐 04-V1.1 §5.7 smoke-test.sh）：
 #                   ① GET /v1/healthz 返回 200 且 status=ok；
@@ -46,11 +49,12 @@
 #         - docker: 转调 docker compose（-DockerCmd up|down|build|logs|ps）；
 #                   docker 不可用时明确报错提示安装 Docker Desktop；up 后轮询 /v1/healthz
 #                   就绪（最多 60 秒）再输出访问地址。
-# 参数:   -Action      string  动作类型 setup|start|stop|status|test|smoke|docker，默认 status
+# 参数:   -Action      string  动作类型 interactive|setup|start|stop|status|test|smoke|docker，默认 interactive
 #         -DockerCmd   string  docker 动作子命令 up|down|build|logs|ps，默认 ps（仅 -Action docker 生效）
 #         -InitDb      switch  start 动作可选：先在 backend 目录执行 python -m app.seed
 #         -OpenBrowser switch  start 动作可选：启动成功后打开浏览器访问 http://localhost:5173
 # 示例:   powershell -ExecutionPolicy Bypass -File scripts\manage.ps1 -Action start
+#         powershell -ExecutionPolicy Bypass -File scripts\manage.ps1                 （交互菜单）
 #         powershell -ExecutionPolicy Bypass -File scripts\manage.ps1 -Action start -InitDb -OpenBrowser
 #         powershell -ExecutionPolicy Bypass -File scripts\manage.ps1 -Action stop
 #         powershell -ExecutionPolicy Bypass -File scripts\manage.ps1 -Action status
@@ -65,9 +69,9 @@
 
 [CmdletBinding()]
 param(
-    # 动作类型：setup|start|stop|status|test|smoke|docker（影响脚本执行的主流程）
-    [ValidateSet('setup', 'start', 'stop', 'status', 'test', 'smoke', 'docker')]
-    [string]$Action = 'status',
+    # 动作类型：无参数进入交互菜单；显式动作保持命令行兼容
+    [ValidateSet('interactive', 'setup', 'start', 'stop', 'status', 'test', 'smoke', 'docker')]
+    [string]$Action = 'interactive',
 
     # docker 动作子命令：up（后台拉起并等健康）|down|build|logs|ps（仅 -Action docker 生效）
     [ValidateSet('up', 'down', 'build', 'logs', 'ps')]
@@ -288,16 +292,55 @@ function Get-ProcessCommandLine {
     return $null
 }
 
+function Get-ProcessExecutablePath {
+    # 查询指定进程的可执行文件路径（Win32_Process.ExecutablePath，venv 归属强证据用）
+    # 参数 $ProcessId - 进程 PID
+    # 返回值：可执行文件路径字符串；CIM 查询失败或路径为空时返回 $null
+    # 异常：Get-CimInstance 异常内部捕获，不向调用方抛出
+    param([int]$ProcessId)
+    try {
+        $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
+        if ($proc -and $proc.ExecutablePath) { return [string]$proc.ExecutablePath }
+    }
+    catch { }
+    return $null
+}
+
+function Get-ParentProcessExecutablePath {
+    # 查询指定进程父进程的可执行文件路径（父链向上找一层，归属判定用）
+    # 覆盖两类包装场景：①Windows venv 的 python.exe 为 venvlauncher 转发器，
+    # 实际解释器是其拉起的基础 Python 子进程（ExecutablePath 不含 venv 路径，
+    # 但其父进程即 venv 内 python.exe）；②uvicorn --reload 的 reloader 包装。
+    # 参数 $ProcessId - 子进程 PID
+    # 返回值：父进程可执行文件路径字符串；CIM 查询失败或无父进程信息时返回 $null
+    # 异常：Get-CimInstance 异常内部捕获，不向调用方抛出
+    param([int]$ProcessId)
+    try {
+        $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
+        if ($proc -and $proc.ParentProcessId) {
+            return Get-ProcessExecutablePath -ProcessId ([int]$proc.ParentProcessId)
+        }
+    }
+    catch { }
+    return $null
+}
+
 function Test-ProjectProcess {
-    # 判定监听目标端口的进程是否属于本项目目录（按进程命令行甄别，复用判定用）
-    # 原理：本项目前端/后端的监听进程（node.exe / python.exe）命令行必然包含项目目录路径，
-    #       其他项目（如其他仓库的 Vite dev server）或无关程序不会命中，
-    #       从而把「本项目前端在跑（复用）」与「其他程序占用端口（端口漂移切换）」区分开。
-    #       旧实现 Test-ViteAlive 仅探测 /@vite/client 特征端点，任何 Vite 项目都返回 200，
-    #       曾导致同端口上其他项目的前端被误判为本项目前端而跳过启动。
+    # 判定监听目标端口的进程是否属于本项目（多重证据交叉甄别，start 复用 / status / stop 兜底共用）
+    # 原理：单一「命令行含项目目录路径」判据有盲区——本项目 venv 经 PATH 解析启动 uvicorn 时，
+    #       监听进程命令行为 `python -m uvicorn app.main:app --port <N>`（venvlauncher 拉起基础
+    #       Python，argv 为不含仓库路径的形态），曾把本项目后端误判为「其他程序占用」，
+    #       healthz 200 也不复用 → 重复启动 / 端口漂移。修复后改为多重证据，任一命中即 $true：
+    #       ①监听 PID == logs\{backend,frontend,admin}.pid 记录值（start 写入；复用场景记录的
+    #         正是监听 PID，新启场景记录外壳 PID，由证据②③覆盖其子进程）；
+    #       ②监听进程的 Win32_Process.ExecutablePath 等于 backend\.venv\Scripts\python.exe
+    #         （本仓库 venv 解释器为强归属信号；因 venvlauncher 转发，实际解释器常为基础
+    #         Python，故同时向父进程链找一层比对，覆盖 venv 转发器与 reloader 包装）；
+    #       ③进程命令行包含项目目录路径（旧判据保留，覆盖 node/vite 等前端场景）。
+    #       全不命中 → $false；进程信息（路径/命令行）完全不可得 → $null（保守不误判）。
     # 参数 $Port - 待检测的监听端口号
-    # 参数 $ProjectDir - 项目目录绝对路径（命令行包含该路径即视为本项目进程）
-    # 返回值：$true 本项目进程 / $false 其他程序占用或无监听 / $null 无法判定（CIM 不可用）
+    # 参数 $ProjectDir - 项目目录绝对路径（与进程命令行比对）
+    # 返回值：$true 本项目进程 / $false 其他程序占用或无监听 / $null 无法判定（进程信息不可得）
     # 异常：内部已捕获，不向调用方抛出
     param(
         [int]$Port,
@@ -305,9 +348,41 @@ function Test-ProjectProcess {
     )
     $listenPid = Get-ListenPid -Port $Port
     if (-not $listenPid) { return $false }
+
+    # 证据①：监听 PID 与 logs 目录 PID 记录文件交叉比对（backend/frontend/admin 任一命中即本项目）
+    foreach ($recName in @('backend', 'frontend', 'admin')) {
+        $recFile = Join-Path $LogsDir ('{0}.pid' -f $recName)
+        if (-not (Test-Path $recFile)) { continue }
+        try {
+            $raw = (Get-Content $recFile -TotalCount 1 -ErrorAction SilentlyContinue)
+            if ($raw) { $raw = ($raw | Select-Object -First 1).ToString().Trim() }
+            if ($raw -match '^\d+$' -and ([int]$raw -eq $listenPid)) { return $true }
+        }
+        catch { }
+    }
+
+    # 证据②：可执行文件路径（本进程与父进程各比对一次，venv 解释器为强归属信号）
+    $venvPython = Join-Path $BackendDir '.venv\Scripts\python.exe'
+    $procPath = Get-ProcessExecutablePath -ProcessId $listenPid
+    $pathHit = $false
+    if ($procPath) {
+        if ($procPath -ieq $venvPython) {
+            $pathHit = $true
+        }
+        else {
+            $parentPath = Get-ParentProcessExecutablePath -ProcessId $listenPid
+            if ($parentPath -and $parentPath -ieq $venvPython) { $pathHit = $true }
+        }
+    }
+
+    # 证据③：命令行包含项目目录路径（旧判据保留）
     $cmdline = Get-ProcessCommandLine -ProcessId $listenPid
-    if ($null -eq $cmdline) { return $null }
-    return ($cmdline -match [regex]::Escape($ProjectDir))
+    $cmdHit = ($null -ne $cmdline -and $cmdline -match [regex]::Escape($ProjectDir))
+
+    if ($pathHit -or $cmdHit) { return $true }
+    # 进程信息完全不可得（CIM 不可用等）→ 保守返回 $null；证据齐全但全不命中 → $false
+    if ($null -eq $procPath -and $null -eq $cmdline) { return $null }
+    return $false
 }
 
 function Get-LaunchBackendPort {
@@ -410,16 +485,20 @@ function Get-RecordedPort {
 
 function Stop-Target {
     # 停止单个服务：优先按 PID 文件终止进程树（taskkill /T /F）；
-    # PID 文件缺失、内容无效或进程已退出时，按候选端口列表逐个兜底清理
+    # PID 文件缺失、内容无效或进程已退出时，按候选端口列表逐个兜底清理——
+    # 兜底终止前必须经 Test-ProjectProcess 归属验证（fail-closed：无法确证
+    # 归属本项目的监听进程一律不杀，防止按端口盲杀外部程序）
     # 参数 $Name - 服务显示名（用于日志输出）
     # 参数 $PidFile - PID 文件路径
     # 参数 $Ports - 候选端口号数组（端口漂移时为「记录端口 + 默认端口」去重列表，兜底清理用）
+    # 参数 $ProjectDir - 项目目录绝对路径（兜底终止前归属验证用）
     # 返回值：$true 执行了终止动作 / $false 无需终止（服务本就未运行）
     # 异常：taskkill 失败仅告警不中断；文件读写异常静默处理
     param(
         [string]$Name,
         [string]$PidFile,
-        [int[]]$Ports
+        [int[]]$Ports,
+        [string]$ProjectDir
     )
     $didKill = $false
     if (Test-Path $PidFile) {
@@ -446,16 +525,23 @@ function Stop-Target {
         Write-Warn ("未找到 {0} 的 PID 文件，改按端口 {1} 兜底清理" -f $Name, ($Ports -join '/'))
     }
     if (-not $didKill) {
-        # 候选端口逐个兜底：命中第一个仍在监听的端口即终止并结束循环
+        # 候选端口逐个兜底：命中第一个仍在监听的端口后，先做归属验证再终止并结束循环。
+        # fail-closed：Test-ProjectProcess 判定 $true 才 taskkill；$false（非本项目）或
+        # $null（进程信息不可得）一律跳过，绝不按端口盲杀，防误伤无关程序。
         foreach ($port in $Ports) {
             $listenPid = Get-ListenPid -Port $port
-            if ($listenPid) {
-                Write-Info ("按端口 {0} 兜底终止 {1} (PID {2}) ..." -f $port, $Name, $listenPid)
-                try { & taskkill.exe /PID $listenPid /T /F 2>&1 | Out-Null }
-                catch { Write-Warn ("按端口终止 {0} 失败：{1}" -f $Name, $_.Exception.Message) }
-                $didKill = $true
-                break
+            if (-not $listenPid) { continue }
+            $ours = Test-ProjectProcess -Port $port -ProjectDir $ProjectDir
+            if ($ours -ne $true) {
+                Write-Warn ("按端口 {0} 兜底跳过：监听进程 PID {1} 无法确证属于本项目（判定={2}），不终止" -f `
+                    $port, $listenPid, $(if ($null -eq $ours) { '无法判定' } else { '非本项目' }))
+                continue
             }
+            Write-Info ("按端口 {0} 兜底终止 {1}（归属已验证, PID {2}）..." -f $port, $Name, $listenPid)
+            try { & taskkill.exe /PID $listenPid /T /F 2>&1 | Out-Null }
+            catch { Write-Warn ("按端口终止 {0} 失败：{1}" -f $Name, $_.Exception.Message) }
+            $didKill = $true
+            break
         }
     }
     return $didKill
@@ -699,6 +785,57 @@ function Get-RiskObject {
 if (-not (Test-Path $LogsDir)) { New-Item -ItemType Directory -Path $LogsDir -Force | Out-Null }
 
 switch ($Action) {
+
+    # ============ interactive：交互式服务管理菜单 ============
+    'interactive' {
+        $hostExe = (Get-Process -Id $PID).Path
+        while ($true) {
+            Write-Host ""
+            Write-Host "===== AI Cook 前后端服务管理 =====" -ForegroundColor Cyan
+            Write-Host "  1. 启动全部服务（PostgreSQL → 后端 → 用户端 → 管理后台）"
+            Write-Host "  2. 停止本项目服务"
+            Write-Host "  3. 查看运行状态"
+            Write-Host "  4. 退出"
+            $choice = Read-Host '请选择操作 [1-4]'
+            $selectedAction = switch ($choice.Trim()) {
+                '1' { 'start'; break }
+                '2' { 'stop'; break }
+                '3' { 'status'; break }
+                '4' { $null; break }
+                default { '' }
+            }
+            if ($choice.Trim() -eq '4') { break }
+            if (-not $selectedAction) {
+                Write-Warn '无效选择，请输入 1、2、3 或 4。'
+                continue
+            }
+
+            # 独立进程执行既有动作，关闭子进程 stdin，避免抢读下一次菜单选择。
+            $actionProcess = New-Object System.Diagnostics.Process
+            $actionProcess.StartInfo.FileName = $hostExe
+            $actionProcess.StartInfo.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Action {1}' -f $PSCommandPath, $selectedAction
+            $actionProcess.StartInfo.UseShellExecute = $false
+            $actionProcess.StartInfo.RedirectStandardInput = $true
+            $actionProcess.StartInfo.RedirectStandardOutput = $true
+            $actionProcess.StartInfo.RedirectStandardError = $true
+            try {
+                [void]$actionProcess.Start()
+                $stdoutTask = $actionProcess.StandardOutput.ReadToEndAsync()
+                $stderrTask = $actionProcess.StandardError.ReadToEndAsync()
+                $actionProcess.StandardInput.Close()
+                $actionProcess.WaitForExit()
+                $actionOutput = $stdoutTask.GetAwaiter().GetResult() + $stderrTask.GetAwaiter().GetResult()
+                if ($actionOutput) { Write-Host $actionOutput.TrimEnd() }
+                if ($actionProcess.ExitCode -ne 0) {
+                    Write-Warn ("动作 {0} 退出码：{1}" -f $selectedAction, $actionProcess.ExitCode)
+                }
+            }
+            finally {
+                $actionProcess.Dispose()
+            }
+        }
+        Write-Info '已退出服务管理菜单。'
+    }
 
     # ============ setup：初始化开发环境 ============
     'setup' {
@@ -1151,9 +1288,9 @@ switch ($Action) {
         $admRecStop = Get-RecordedPort -Name 'admin'
         if ($admRecStop -and $admRecStop -notin $admStopPorts) { $admStopPorts += $admRecStop }
 
-        Stop-Target -Name '后端 Uvicorn' -PidFile (Join-Path $LogsDir 'backend.pid') -Ports $beStopPorts | Out-Null
-        Stop-Target -Name '前端 Vite' -PidFile (Join-Path $LogsDir 'frontend.pid') -Ports $feStopPorts | Out-Null
-        Stop-Target -Name '管理后台 Vite' -PidFile (Join-Path $LogsDir 'admin.pid') -Ports $admStopPorts | Out-Null
+        Stop-Target -Name '后端 Uvicorn' -PidFile (Join-Path $LogsDir 'backend.pid') -Ports $beStopPorts -ProjectDir $BackendDir | Out-Null
+        Stop-Target -Name '前端 Vite' -PidFile (Join-Path $LogsDir 'frontend.pid') -Ports $feStopPorts -ProjectDir $WebDir | Out-Null
+        Stop-Target -Name '管理后台 Vite' -PidFile (Join-Path $LogsDir 'admin.pid') -Ports $admStopPorts -ProjectDir $AdminDir | Out-Null
 
         # 清理端口记录文件（服务已停止，端口记录失效；下次 start 重新从默认端口决策）
         Remove-Item (Join-Path $LogsDir 'backend.port') -Force -ErrorAction SilentlyContinue

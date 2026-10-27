@@ -1,0 +1,2570 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>项目进度</title>
+  <style>
+    :root {
+      --ink: #17352D;
+      --muted: #5D7168;
+      --line: #D6E2DC;
+      --paper: #F3F8F6;
+      --surface: #FFFFFF;
+      --teal: #0B806A;
+      --teal-soft: #DDF2EB;
+      --amber: #A66300;
+      --amber-soft: #FFF0D1;
+      --red: #B42318;
+      --red-soft: #FFE8E4;
+      --blue: #1D4ED8;
+      --blue-soft: #E6EEFF;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: "Microsoft YaHei UI", "Segoe UI Variable", sans-serif;
+    }
+
+    button {
+      font: inherit;
+    }
+
+    ::selection {
+      color: var(--ink);
+      background: #BBE7D9;
+    }
+
+    ::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      border: 3px solid var(--paper);
+      border-radius: 8px;
+      background: #A7BEB3;
+    }
+
+    .page {
+      width: min(1200px, calc(100% - 36px));
+      margin: 0 auto;
+      padding: 36px 0 64px;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      align-items: flex-start;
+      padding-bottom: 26px;
+      border-bottom: 2px solid var(--ink);
+    }
+
+    .section-label,
+    .metric-label,
+    .phase-name,
+    th {
+      color: var(--muted);
+      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.3;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    h1,
+    h2,
+    p {
+      margin: 0;
+    }
+
+    h1 {
+      max-width: 800px;
+      font-size: 32px;
+      line-height: 1.2;
+      font-weight: 800;
+    }
+
+    .goal {
+      max-width: 760px;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.55;
+    }
+
+    .updated {
+      flex: 0 0 auto;
+      padding: 8px 0;
+      color: var(--muted);
+      border-bottom: 1px solid var(--line);
+      background: transparent;
+      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+
+    .overview {
+      display: grid;
+      grid-template-columns: minmax(300px, 1fr) minmax(380px, 1.85fr);
+      gap: 40px;
+      margin-top: 30px;
+    }
+
+    .progress-panel,
+    .phase-panel,
+    .task-panel,
+    .info-panel {
+      background: transparent;
+    }
+
+    .progress-panel {
+      display: grid;
+      align-content: space-between;
+      gap: 22px;
+      min-height: 250px;
+      padding: 24px 0;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .focus-copy {
+      display: grid;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .focus-copy h2 {
+      max-width: 32ch;
+      font-size: 24px;
+      line-height: 1.32;
+    }
+
+    .focus-copy p {
+      max-width: 42ch;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .focus-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .next-action {
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .progress-summary {
+      display: grid;
+      gap: 9px;
+    }
+
+    .progress-summary-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: baseline;
+      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .progress-track {
+      height: 10px;
+      overflow: hidden;
+      background: #DBE6E0;
+    }
+
+    .progress-fill {
+      width: 100%;
+      height: 100%;
+      background: var(--teal);
+      transform: scaleX(var(--progress-ratio));
+      transform-origin: left center;
+      transition: transform 520ms cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .phase-panel {
+      padding: 24px 0;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .section-label {
+      margin-bottom: 22px;
+    }
+
+    .phase-track {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      position: relative;
+    }
+
+    .phase {
+      display: grid;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .phase-marker {
+      display: grid;
+      width: 26px;
+      height: 26px;
+      place-items: center;
+      color: var(--muted);
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      background: var(--paper);
+      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .phase.is-complete .phase-marker {
+      border-color: var(--teal);
+      background: var(--teal);
+    }
+
+    .phase.is-current .phase-marker {
+      color: var(--surface);
+      border: 1px solid var(--teal);
+      background: var(--teal);
+    }
+
+    .phase-name {
+      overflow: hidden;
+      color: var(--muted);
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .phase.is-current .phase-name {
+      color: var(--ink);
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0;
+      margin-top: 32px;
+    }
+
+    .metric {
+      min-height: 70px;
+      padding: 4px 0;
+    }
+
+    .metric + .metric {
+      padding-left: 14px;
+    }
+
+    .metric-value {
+      display: block;
+      margin-top: 8px;
+      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+      font-size: 22px;
+      font-weight: 800;
+      line-height: 1;
+    }
+
+    .task-panel {
+      margin-top: 40px;
+      overflow: hidden;
+      border-top: 2px solid var(--ink);
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    h2 {
+      font-size: 22px;
+      line-height: 1.2;
+    }
+
+    .filters {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .filter {
+      min-width: 56px;
+      padding: 7px 9px;
+      color: var(--muted);
+      cursor: pointer;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: transparent;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .filter:hover,
+    .filter:focus-visible {
+      color: var(--ink);
+      border-color: var(--teal);
+      outline: none;
+    }
+
+    .filter.is-selected {
+      color: var(--surface);
+      border-color: var(--teal);
+      background: var(--teal);
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+    }
+
+    th,
+    td {
+      padding: 15px 12px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+
+    td {
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .task-id {
+      width: 64px;
+      color: var(--muted);
+      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .task-title {
+      min-width: 280px;
+      font-weight: 700;
+    }
+
+    .evidence {
+      min-width: 220px;
+      color: var(--muted);
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      min-width: 104px;
+      padding: 5px 8px;
+      border-radius: 4px;
+      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+      font-size: 11px;
+      font-weight: 800;
+      line-height: 1.1;
+      white-space: nowrap;
+    }
+
+    .status-todo {
+      color: var(--muted);
+      background: #EEF2EF;
+    }
+
+    .status-in-progress {
+      color: var(--blue);
+      background: var(--blue-soft);
+    }
+
+    .status-blocked {
+      color: var(--red);
+      background: var(--red-soft);
+    }
+
+    .status-done {
+      color: var(--teal);
+      background: var(--teal-soft);
+    }
+
+    .empty {
+      padding: 28px 24px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .lower-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 40px;
+      margin-top: 42px;
+    }
+
+    .info-panel {
+      padding: 20px 0 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .info-panel h2 {
+      margin-bottom: 16px;
+    }
+
+    .info-list {
+      display: grid;
+      gap: 10px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .info-list li {
+      padding: 12px 0;
+      color: var(--muted);
+      border-bottom: 1px solid var(--line);
+      background: transparent;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .info-list.is-blocked li {
+      color: var(--red);
+    }
+
+    @media (max-width: 760px) {
+      .page {
+        width: min(100% - 24px, 1200px);
+        padding-top: 24px;
+      }
+
+      .topbar,
+      .panel-header {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .updated {
+        white-space: normal;
+      }
+
+      h1 {
+        font-size: 28px;
+      }
+
+      .overview,
+      .lower-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .metrics {
+        grid-template-columns: 1fr;
+        gap: 16px;
+      }
+
+      .metric,
+      .metric + .metric {
+        padding: 4px 0;
+      }
+
+      th,
+      td {
+        padding: 13px 16px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * {
+        scroll-behavior: auto;
+        transition-duration: 0.01ms !important;
+      }
+    }
+
+    /* Delivery console redesign */
+    :root {
+      --ink: #172026;
+      --muted: #5f6c72;
+      --line: #dbe1e4;
+      --paper: #f3f5f4;
+      --surface: #ffffff;
+      --teal: #247f69;
+      --teal-soft: #e5f2ec;
+      --red: #b64940;
+      --red-soft: #fae9e6;
+      --blue: #315fbd;
+      --blue-soft: #eaf0ff;
+      --sidebar: #151a1d;
+      --sidebar-muted: #a3aeab;
+      --sidebar-line: rgba(255, 255, 255, 0.09);
+      --accent: #c7e57b;
+      --shadow: 0 18px 45px rgba(23, 32, 38, 0.08);
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      background: var(--paper);
+      font-family: "Segoe UI Variable", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+    }
+
+    .app-shell {
+      display: grid;
+      grid-template-columns: 232px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      padding: 28px 18px 20px;
+      color: #f4f7f4;
+      background: var(--sidebar);
+    }
+
+    .brand {
+      display: flex;
+      gap: 11px;
+      align-items: center;
+      padding: 0 8px 28px;
+      border-bottom: 1px solid var(--sidebar-line);
+    }
+
+    .brand-mark {
+      display: grid;
+      width: 34px;
+      height: 34px;
+      place-items: center;
+      color: #1d2817;
+      border-radius: 10px;
+      background: var(--accent);
+      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: -0.04em;
+    }
+
+    .brand strong,
+    .brand small {
+      display: block;
+    }
+
+    .brand strong {
+      font-size: 13px;
+      font-weight: 750;
+    }
+
+    .brand small {
+      margin-top: 3px;
+      color: var(--sidebar-muted);
+      font-size: 11px;
+    }
+
+    .sidebar-nav {
+      display: grid;
+      gap: 5px;
+      margin-top: 30px;
+    }
+
+    .nav-caption {
+      padding: 0 10px 9px;
+      color: #a3aeab;
+      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .nav-item {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      min-height: 39px;
+      padding: 0 10px;
+      color: var(--sidebar-muted);
+      border: 1px solid transparent;
+      border-radius: 9px;
+      font-size: 13px;
+      font-weight: 650;
+      text-decoration: none;
+      transition: color 180ms ease, background 180ms ease, border-color 180ms ease, transform 180ms ease;
+    }
+
+    .nav-item:hover,
+    .nav-item:focus-visible {
+      color: #f4f7f4;
+      border-color: var(--sidebar-line);
+      background: rgba(255, 255, 255, 0.06);
+      outline: none;
+      transform: translateX(2px);
+    }
+
+    .nav-item.is-active {
+      color: #f8fbf7;
+      border-color: rgba(199, 229, 123, 0.18);
+      background: rgba(199, 229, 123, 0.12);
+    }
+
+    .nav-index {
+      display: grid;
+      width: 23px;
+      height: 23px;
+      place-items: center;
+      color: #74807d;
+      border: 1px solid var(--sidebar-line);
+      border-radius: 7px;
+      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+      font-size: 11px;
+    }
+
+    .nav-item.is-active .nav-index {
+      color: #253117;
+      border-color: transparent;
+      background: var(--accent);
+    }
+
+    .sidebar-note {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 5px 8px;
+      align-items: center;
+      margin-top: auto;
+      padding: 13px 10px;
+      border: 1px solid var(--sidebar-line);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.035);
+    }
+
+    .sidebar-note .live-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 4px rgba(199, 229, 123, 0.1);
+    }
+
+    .sidebar-note span:not(.live-dot) {
+      color: #e1e9e3;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .sidebar-note small {
+      grid-column: 2;
+      color: var(--sidebar-muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .page {
+      width: min(1440px, calc(100% - 64px));
+      padding: 28px 0 70px;
+    }
+
+    .topbar {
+      align-items: center;
+      padding: 0 0 20px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .topbar::before {
+      content: "Delivery board / Current project";
+      display: block;
+      margin-bottom: 14px;
+      color: var(--muted);
+      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      max-width: 900px;
+      color: var(--ink);
+      font-size: 40px;
+      line-height: 1.08;
+      letter-spacing: -0.045em;
+    }
+
+    .goal {
+      max-width: 720px;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.55;
+    }
+
+    .updated {
+      align-self: flex-start;
+      margin-top: 2px;
+      padding: 8px 10px;
+      color: var(--muted);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.5);
+      font-size: 11px;
+      font-weight: 750;
+    }
+
+    .overview {
+      grid-template-columns: minmax(0, 1.2fr) minmax(440px, 0.95fr);
+      gap: 20px;
+      margin-top: 22px;
+    }
+
+    .progress-panel,
+    .phase-panel {
+      position: relative;
+      min-height: 302px;
+      overflow: hidden;
+      padding: 26px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background:
+        linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(250, 252, 251, 0.92)),
+        var(--surface);
+      box-shadow: var(--shadow);
+    }
+
+    .progress-panel::after,
+    .phase-panel::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        linear-gradient(90deg, rgba(36, 127, 105, 0.055), transparent 34%),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.34), transparent 42%);
+    }
+
+    .progress-panel > *,
+    .phase-panel > * {
+      position: relative;
+      z-index: 1;
+    }
+
+    .progress-panel {
+      gap: 20px;
+    }
+
+    .focus-copy h2 {
+      max-width: 28ch;
+      font-size: 26px;
+      line-height: 1.18;
+      letter-spacing: -0.035em;
+    }
+
+    .focus-copy p {
+      position: relative;
+      max-width: 68ch;
+      margin-top: 4px;
+      padding: 30px 14px 13px;
+      color: var(--muted);
+      border: 1px solid #e6ece9;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.58);
+      font-size: 13px;
+      line-height: 1.65;
+    }
+
+    .focus-copy p::before {
+      content: "验收依据";
+      position: absolute;
+      top: 10px;
+      left: 14px;
+      color: #617078;
+      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+      font-size: 11px;
+      font-weight: 850;
+      letter-spacing: 0.06em;
+    }
+
+    .focus-meta {
+      gap: 9px;
+      align-items: center;
+      margin-top: 4px;
+      padding: 11px 12px;
+      border: 1px solid #e6ece9;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.62);
+    }
+
+    .next-action {
+      max-width: 56ch;
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 720;
+      line-height: 1.45;
+    }
+
+    .progress-summary {
+      gap: 10px;
+      margin-top: auto;
+      padding: 15px 16px 14px;
+      border: 1px solid #e4ebe8;
+      border-radius: 12px;
+      background: #f8faf9;
+    }
+
+    .progress-summary-row {
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: 0.02em;
+    }
+
+    .progress-summary-row span:last-child {
+      color: var(--ink);
+      font-size: 14px;
+    }
+
+    .progress-track {
+      height: 13px;
+      padding: 2px;
+      border-radius: 99px;
+      background: #e5ebe8;
+    }
+
+    .progress-fill {
+      border-radius: inherit;
+      background: linear-gradient(90deg, #659c65, var(--teal));
+      box-shadow: none;
+    }
+
+    #progress-description {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .phase-panel {
+      display: grid;
+      align-content: start;
+      gap: 22px;
+    }
+
+    .section-label,
+    .metric-label,
+    .phase-name,
+    th {
+      color: #627074;
+      font-size: 11px;
+      letter-spacing: 0.1em;
+    }
+
+    .section-label {
+      margin-bottom: 2px;
+    }
+
+    .phase-track {
+      gap: 0;
+      padding: 16px 14px 18px;
+      border: 1px solid #e6ece9;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.58);
+    }
+
+    .phase-track::before {
+      content: "";
+      position: absolute;
+      top: 30px;
+      right: 12%;
+      left: 7%;
+      height: 1px;
+      background: var(--line);
+    }
+
+    .phase {
+      position: relative;
+      z-index: 1;
+      gap: 9px;
+    }
+
+    .phase-marker {
+      width: 28px;
+      height: 28px;
+      color: var(--muted);
+      border: 2px solid var(--line);
+      background: var(--surface);
+      font-size: 11px;
+    }
+
+    .phase.is-complete .phase-marker,
+    .phase.is-current .phase-marker {
+      color: #20321b;
+      border-color: var(--accent);
+      background: var(--accent);
+      box-shadow: 0 0 0 4px rgba(199, 229, 123, 0.16);
+    }
+
+    .phase-name {
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: none;
+    }
+
+    .phase.is-current .phase-name {
+      color: var(--ink);
+    }
+
+    .metrics {
+      gap: 10px;
+      margin-top: 0;
+    }
+
+    .metric {
+      min-height: 82px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(247, 250, 248, 0.92)),
+        #fafbfa;
+    }
+
+    .metric + .metric {
+      padding-left: 14px;
+    }
+
+    .metric-value {
+      margin-top: 10px;
+      color: var(--ink);
+      font-size: 32px;
+      letter-spacing: -0.04em;
+    }
+
+    .metric.is-done .metric-value {
+      color: var(--teal);
+    }
+
+    .metric.is-active .metric-value {
+      color: var(--blue);
+    }
+
+    .metric.is-blocked .metric-value {
+      color: var(--red);
+    }
+
+    .task-panel {
+      margin-top: 18px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+
+    .panel-header {
+      padding: 18px 22px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    h2 {
+      font-size: 20px;
+      letter-spacing: -0.025em;
+    }
+
+    .filters {
+      gap: 5px;
+    }
+
+    .filter {
+      min-width: auto;
+      padding: 7px 10px;
+      color: var(--muted);
+      border: 1px solid transparent;
+      border-radius: 7px;
+      background: transparent;
+      font-size: 11px;
+      transition: color 180ms ease, background 180ms ease, border-color 180ms ease, transform 180ms ease;
+    }
+
+    .filter:hover,
+    .filter:focus-visible {
+      color: var(--ink);
+      border-color: var(--line);
+      background: #f7f9f8;
+      outline: none;
+      transform: translateY(-1px);
+    }
+
+    .filter.is-selected {
+      color: #263419;
+      border-color: transparent;
+      background: var(--accent);
+    }
+
+    table {
+      table-layout: fixed;
+    }
+
+    th,
+    td {
+      padding: 15px 18px;
+      border-bottom: 1px solid #edf0ef;
+    }
+
+    th:nth-child(1),
+    td:nth-child(1) { width: 8%; }
+    th:nth-child(2),
+    td:nth-child(2) { width: 26%; }
+    th:nth-child(3),
+    td:nth-child(3) { width: 14%; }
+    th:nth-child(4),
+    td:nth-child(4) { width: 52%; }
+
+    td {
+      color: #354147;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    tbody tr {
+      transition: background 160ms ease;
+    }
+
+    tbody tr:hover {
+      background: #fbfcfb;
+    }
+
+    .task-id {
+      color: #8b9699;
+      font-size: 11px;
+    }
+
+    .task-title {
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 750;
+    }
+
+    .evidence {
+      max-width: 0;
+      color: var(--muted);
+      display: -webkit-box;
+      overflow: hidden;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 4;
+    }
+
+    .status {
+      min-width: 0;
+      padding: 6px 9px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      font-family: inherit;
+      font-size: 10px;
+      letter-spacing: 0.04em;
+    }
+
+    .status::before {
+      content: "";
+      width: 5px;
+      height: 5px;
+      margin-right: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .status-todo {
+      color: #69777b;
+      border-color: #e0e5e4;
+      background: #f6f8f7;
+    }
+
+    .status-in-progress {
+      color: var(--blue);
+      border-color: #d8e1fb;
+      background: var(--blue-soft);
+    }
+
+    .status-blocked {
+      color: var(--red);
+      border-color: #f0d2ce;
+      background: var(--red-soft);
+    }
+
+    .status-done {
+      color: var(--teal);
+      border-color: #cee7dc;
+      background: var(--teal-soft);
+    }
+
+    .lower-grid {
+      gap: 18px;
+      margin-top: 18px;
+    }
+
+    .info-panel {
+      min-width: 0;
+      padding: 20px 22px 22px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+
+    .info-panel h2 {
+      margin-bottom: 14px;
+    }
+
+    .info-list {
+      max-height: 360px;
+      overflow: auto;
+      padding-right: 6px;
+    }
+
+    .info-list li {
+      padding: 11px 0;
+      border-bottom: 1px solid #edf0ef;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .info-list li:last-child {
+      border-bottom: 0;
+    }
+
+    .info-list.is-blocked li {
+      color: #86534e;
+    }
+
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      border: 2px solid transparent;
+      border-radius: 99px;
+      background: #c4ceca;
+      background-clip: padding-box;
+    }
+
+    @media (max-width: 980px) {
+      .app-shell {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        min-height: auto;
+        padding: 15px 18px;
+      }
+
+      .brand {
+        padding-bottom: 14px;
+      }
+
+      .sidebar-nav {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 6px;
+        margin-top: 14px;
+      }
+
+      .nav-caption,
+      .sidebar-note {
+        display: none;
+      }
+
+      .nav-item {
+        justify-content: center;
+        padding: 0 8px;
+        font-size: 11px;
+      }
+
+      .page {
+        width: min(100% - 32px, 1440px);
+        padding-top: 22px;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .page {
+        width: min(100% - 24px, 1440px);
+        padding-top: 18px;
+      }
+
+      .topbar::before {
+        margin-bottom: 11px;
+      }
+
+      h1 {
+        font-size: 30px;
+      }
+
+      .overview,
+      .lower-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .overview {
+        gap: 12px;
+      }
+
+      .progress-panel,
+      .phase-panel {
+        min-height: auto;
+        padding: 20px;
+      }
+
+      .metrics {
+        gap: 8px;
+        margin-top: 28px;
+      }
+
+      .metric,
+      .metric + .metric {
+        padding: 11px 12px;
+      }
+
+      .panel-header {
+        align-items: flex-start;
+        flex-direction: column;
+        padding: 16px;
+      }
+
+      .filters {
+        width: 100%;
+        overflow-x: auto;
+        flex-wrap: nowrap;
+        padding-bottom: 2px;
+      }
+
+      .filter {
+        flex: 0 0 auto;
+      }
+
+      th,
+      td {
+        padding: 13px 12px;
+      }
+
+      th:nth-child(1),
+      td:nth-child(1) { width: 14%; }
+      th:nth-child(2),
+      td:nth-child(2) { width: 34%; }
+      th:nth-child(3),
+      td:nth-child(3) { width: 22%; }
+      th:nth-child(4),
+      td:nth-child(4) { width: 30%; }
+
+      .evidence {
+        -webkit-line-clamp: 3;
+      }
+
+      .info-panel {
+        padding: 18px;
+      }
+    }
+
+    /* Final polish: project context and sidebar rhythm */
+    .app-shell {
+      grid-template-columns: 256px minmax(0, 1fr);
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 24px 16px 16px;
+    }
+
+    .brand {
+      padding: 0 8px 21px;
+    }
+
+    .brand-mark {
+      width: 36px;
+      height: 36px;
+      border-radius: 11px;
+    }
+
+    .brand strong {
+      font-size: 14px;
+      letter-spacing: -0.02em;
+    }
+
+    .brand small {
+      font-size: 10px;
+      letter-spacing: 0.02em;
+    }
+
+    .sidebar-context {
+      display: grid;
+      gap: 9px;
+      margin-top: 18px;
+      padding: 13px 12px 12px;
+      border: 1px solid rgba(199, 229, 123, 0.16);
+      border-radius: 11px;
+      background: #1b2421;
+    }
+
+    .context-topline,
+    .context-bottom {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .context-topline {
+      color: #9eafa7;
+      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+    }
+
+    .context-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 3px rgba(199, 229, 123, 0.1);
+    }
+
+    .sidebar-context strong {
+      overflow: hidden;
+      color: #f2f6f2;
+      font-size: 13px;
+      font-weight: 750;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .context-meta {
+      display: flex;
+      gap: 7px;
+      align-items: center;
+      color: #b5c0ba;
+      font-size: 11px;
+    }
+
+    .context-divider {
+      color: #5a6d65;
+    }
+
+    .context-progress {
+      height: 4px;
+      overflow: hidden;
+      border-radius: 99px;
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    #sidebar-progress-fill {
+      display: block;
+      width: 100%;
+      height: 100%;
+      border-radius: inherit;
+      background: var(--accent);
+      transform: scaleX(var(--sidebar-ratio, 0));
+      transform-origin: left center;
+      transition: transform 420ms cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .context-bottom {
+      color: #b0bcb6;
+      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+      font-size: 11px;
+    }
+
+    #sidebar-progress-percent {
+      color: var(--accent);
+      font-weight: 800;
+    }
+
+    .sidebar-nav {
+      gap: 4px;
+      margin-top: 24px;
+    }
+
+    .nav-caption {
+      padding: 0 11px 8px;
+      font-size: 9px;
+      letter-spacing: 0.15em;
+    }
+
+    .nav-item {
+      min-height: 43px;
+      padding: 0 11px;
+      border-radius: 10px;
+    }
+
+    .nav-item.is-active {
+      border-color: rgba(199, 229, 123, 0.14);
+      background: rgba(199, 229, 123, 0.1);
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
+
+    .nav-index {
+      width: 24px;
+      height: 24px;
+      border-radius: 7px;
+    }
+
+    .sidebar-note {
+      gap: 7px;
+      margin-top: auto;
+      padding: 12px;
+      border-color: rgba(255, 255, 255, 0.12);
+      background: #1b2022;
+    }
+
+    .sidebar-note-top {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .sidebar-note span:not(.live-dot) {
+      font-size: 11px;
+    }
+
+    .sidebar-note small {
+      grid-column: auto;
+      margin-left: 16px;
+      color: #a1aea8;
+      font-size: 11px;
+    }
+
+    .sidebar-sync {
+      display: block;
+      margin-left: 16px;
+      color: #8f9f98;
+      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+      font-size: 11px;
+    }
+
+    #focus-evidence {
+      display: -webkit-box;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      color: var(--muted);
+      border: 0;
+      background: transparent;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 4;
+      line-height: 1.65;
+    }
+
+    /* Focus panel polish */
+    .focus-heading {
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+      justify-content: space-between;
+      min-width: 0;
+    }
+
+    .focus-heading h2 {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .focus-heading .status {
+      flex: 0 0 auto;
+      margin-top: 2px;
+    }
+
+    .focus-evidence {
+      display: grid;
+      gap: 8px;
+      width: 100%;
+      min-width: 0;
+      margin-top: 8px;
+      padding: 13px 0 14px;
+      overflow: hidden;
+      border-top: 1px solid #e1e9e5;
+      border-bottom: 1px solid #e1e9e5;
+      background: transparent;
+    }
+
+    .focus-evidence-head {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .focus-evidence-label {
+      color: #2b383d;
+      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+      font-size: 11px;
+      font-weight: 850;
+      letter-spacing: 0.06em;
+    }
+
+    .focus-evidence-note {
+      max-width: 50%;
+      overflow: hidden;
+      color: #82908f;
+      font-size: 11px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .focus-copy p#focus-evidence {
+      max-width: none;
+      max-height: calc(1.65em * 4);
+      margin-top: 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      font-size: 13px;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .focus-copy p#focus-evidence::before {
+      content: none;
+    }
+
+    .focus-meta {
+      min-width: 0;
+      margin-top: 0;
+      padding-top: 11px;
+      border-top: 1px solid #e6ece9;
+    }
+
+    @media (max-width: 760px) {
+      .focus-heading {
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .focus-heading .status {
+        margin-top: 0;
+      }
+
+      .focus-evidence-head {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .focus-evidence-note {
+        max-width: none;
+        overflow: visible;
+        white-space: normal;
+      }
+    }
+
+    #focus-evidence {
+      display: -webkit-box;
+      overflow: hidden;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 4;
+    }
+
+    @media (max-width: 980px) {
+      .sidebar {
+        position: static;
+        height: auto;
+      }
+
+      .sidebar-context {
+        display: none;
+      }
+    }
+
+    /* Keep the navigation readable in narrow desktop windows. */
+    @media (max-width: 1120px) {
+      .app-shell {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        position: static;
+        height: auto;
+        min-height: auto;
+        padding: 15px 18px 14px;
+      }
+
+      .brand {
+        padding-bottom: 14px;
+      }
+
+      .sidebar-context,
+      .sidebar-note,
+      .nav-caption {
+        display: none;
+      }
+
+      .sidebar-nav {
+        display: flex;
+        gap: 8px;
+        margin-top: 14px;
+        overflow-x: auto;
+        padding: 1px 0 2px;
+        scrollbar-width: none;
+      }
+
+      .sidebar-nav::-webkit-scrollbar {
+        display: none;
+      }
+
+      .nav-item {
+        flex: 0 0 auto;
+        min-height: 40px;
+        padding: 0 11px;
+        white-space: nowrap;
+      }
+
+      .nav-item.is-active {
+        box-shadow: inset 3px 0 0 var(--accent);
+      }
+
+      .page {
+        width: min(100% - 32px, 1440px);
+        padding-top: 22px;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .sidebar {
+        padding: 13px 12px 12px;
+      }
+
+      .brand {
+        padding: 0 4px 12px;
+      }
+
+      .sidebar-nav {
+        gap: 6px;
+        margin-top: 11px;
+      }
+
+      .nav-item {
+        min-height: 38px;
+        padding: 0 9px;
+        font-size: 12px;
+      }
+
+      .nav-index {
+        width: 22px;
+        height: 22px;
+        font-size: 11px;
+      }
+    }
+
+    /* Task queue polish */
+    .task-panel {
+      overflow: hidden;
+    }
+
+    .panel-heading {
+      display: grid;
+      gap: 7px;
+      min-width: 0;
+    }
+
+    .panel-heading p {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .filter {
+      display: inline-flex;
+      gap: 7px;
+      align-items: center;
+      min-height: 34px;
+      white-space: nowrap;
+    }
+
+    .filter-count {
+      display: grid;
+      min-width: 20px;
+      height: 20px;
+      place-items: center;
+      padding: 0 6px;
+      border-radius: 999px;
+      background: rgba(23, 32, 38, 0.06);
+      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .filter.is-selected .filter-count {
+      background: rgba(21, 26, 29, 0.13);
+    }
+
+    .task-list-wrap {
+      padding: 0 18px 18px;
+    }
+
+    .task-list-header,
+    .task-card {
+      display: grid;
+      grid-template-columns: minmax(118px, 0.45fr) minmax(280px, 1fr) minmax(184px, 0.62fr) minmax(360px, 1.42fr);
+      gap: 20px;
+      align-items: stretch;
+    }
+
+    .task-list-header {
+      padding: 14px 14px 10px;
+      color: #627074;
+      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+    }
+
+    .task-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .task-card {
+      position: relative;
+      min-height: 116px;
+      padding: 18px 16px;
+      overflow: hidden;
+      border: 1px solid #e6ece9;
+      border-radius: 12px;
+      background:
+        linear-gradient(90deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.96)),
+        #fbfcfb;
+      box-shadow: 0 8px 24px rgba(23, 32, 38, 0.035);
+      transition: border-color 180ms ease, background 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+    }
+
+    .task-card:hover {
+      border-color: #cad6d2;
+      background: #ffffff;
+      box-shadow: 0 14px 34px rgba(23, 32, 38, 0.065);
+      transform: translateY(-1px);
+    }
+
+    .task-card::before {
+      content: "";
+      position: absolute;
+      top: 14px;
+      bottom: 14px;
+      left: 0;
+      width: 2px;
+      border-radius: 0 999px 999px 0;
+      background: #b9c3c1;
+    }
+
+    .task-card.status-done::before {
+      background: var(--teal);
+    }
+
+    .task-card.status-in-progress::before {
+      background: var(--blue);
+    }
+
+    .task-card.status-blocked::before {
+      background: var(--red);
+    }
+
+    .task-id-cell {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      min-width: 0;
+      width: 100%;
+    }
+
+    .task-id-badge {
+      display: block;
+      width: 100%;
+      min-width: 96px;
+      min-height: 42px;
+      padding: 8px 10px;
+      color: #607076;
+      border: 1px solid #dce4e2;
+      border-radius: 9px;
+      background: #f6f8f7;
+      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+      font-size: 11px;
+      font-weight: 850;
+      letter-spacing: 0.01em;
+      line-height: 24px;
+      overflow: hidden;
+      text-align: center;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .task-card.status-done .task-id-badge {
+      color: var(--teal);
+      border-color: #cee7dc;
+      background: var(--teal-soft);
+    }
+
+    .task-card.status-in-progress .task-id-badge {
+      color: var(--blue);
+      border-color: #d8e1fb;
+      background: var(--blue-soft);
+    }
+
+    .task-main {
+      display: grid;
+      align-content: start;
+      gap: 9px;
+      min-width: 0;
+      padding-top: 2px;
+    }
+
+    .task-stage {
+      width: fit-content;
+      padding: 4px 7px;
+      color: #5d6b70;
+      border: 1px solid #e1e7e5;
+      border-radius: 6px;
+      background: #f4f7f5;
+      font-size: 11px;
+      font-weight: 720;
+      line-height: 1;
+    }
+
+    .task-title {
+      min-width: 0;
+      color: var(--ink);
+      font-size: 16px;
+      font-weight: 780;
+      line-height: 1.38;
+      text-wrap: pretty;
+    }
+
+    .task-meta {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .task-status-cell {
+      display: grid;
+      align-content: start;
+      gap: 9px;
+      min-height: 100%;
+      padding: 10px 11px;
+      border: 1px solid #e6ece9;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.56);
+    }
+
+    .task-status-cell .status {
+      width: 100%;
+      min-width: 0;
+    }
+
+    .task-status-copy {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .task-evidence {
+      display: grid;
+      align-content: start;
+      gap: 8px;
+      min-width: 0;
+      min-height: 100%;
+      padding: 11px 12px;
+      color: #58686e;
+      border: 1px solid #edf1ef;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.68);
+      font-size: 13px;
+      line-height: 1.65;
+    }
+
+    .task-evidence strong {
+      display: block;
+      color: #2b383d;
+      font-size: 12px;
+      font-weight: 760;
+    }
+
+    .evidence-head {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+      min-width: 0;
+    }
+
+    .task-evidence p {
+      display: -webkit-box;
+      margin: 0;
+      overflow: hidden;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+    }
+
+    .task-card.status-in-progress .task-evidence p {
+      -webkit-line-clamp: 3;
+    }
+
+    .evidence-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .evidence-tag {
+      padding: 4px 7px;
+      color: #56676d;
+      border: 1px solid #e1e8e5;
+      border-radius: 6px;
+      background: #f7f9f8;
+      font-size: 11px;
+      font-weight: 720;
+      line-height: 1;
+    }
+
+    .task-card.status-done {
+      background:
+        linear-gradient(90deg, rgba(229, 242, 236, 0.52), rgba(255, 255, 255, 0.95)),
+        #fbfcfb;
+    }
+
+    .task-card.status-in-progress {
+      border-color: #d8e1fb;
+      background:
+        linear-gradient(90deg, rgba(234, 240, 255, 0.62), rgba(255, 255, 255, 0.95)),
+        #fbfcfb;
+    }
+
+    .task-card.status-todo {
+      background:
+        linear-gradient(90deg, rgba(246, 248, 247, 0.65), rgba(255, 255, 255, 0.95)),
+        #fbfcfb;
+    }
+
+    .task-card.status-todo .task-title,
+    .task-card.status-todo .task-evidence p {
+      color: #5b676b;
+    }
+
+    .empty-task-list {
+      padding: 34px 20px;
+      color: var(--muted);
+      border: 1px dashed #d8dfdd;
+      border-radius: 12px;
+      background: #fafbfa;
+      font-size: 14px;
+    }
+
+    @media (max-width: 980px) {
+      .task-list-header {
+        display: none;
+      }
+
+      .task-list-wrap {
+        padding: 10px 12px 14px;
+      }
+
+      .task-card {
+        grid-template-columns: 112px minmax(0, 1fr);
+        gap: 12px 14px;
+        min-height: auto;
+      }
+
+      .task-status-cell,
+      .task-evidence {
+        grid-column: 2;
+      }
+
+      .task-status-cell {
+        order: 3;
+      }
+
+      .task-evidence {
+        order: 4;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .app-shell,
+      .sidebar,
+      .page {
+        min-width: 0;
+        max-width: 100%;
+      }
+
+      .sidebar {
+        width: 100%;
+        overflow: hidden;
+      }
+
+      .sidebar-nav,
+      .filters {
+        max-width: 100%;
+      }
+
+      .page {
+        width: calc(100% - 24px);
+      }
+
+      h1,
+      .goal {
+        overflow-wrap: anywhere;
+      }
+
+      .task-card {
+        grid-template-columns: 1fr;
+      }
+
+      .task-id-badge {
+        width: auto;
+        max-width: 100%;
+      }
+
+      .task-id-cell,
+      .task-status-cell,
+      .task-evidence {
+        grid-column: 1;
+      }
+
+      .task-id-cell {
+        justify-content: space-between;
+      }
+
+      .task-status-copy {
+        max-width: none;
+      }
+
+      .evidence-head {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="项目导航">
+      <div class="brand">
+        <span class="brand-mark" id="sidebar-brand-mark">PB</span>
+        <div>
+          <strong id="sidebar-brand-name">Progress Board</strong>
+          <small>delivery workspace</small>
+        </div>
+      </div>
+      <div class="sidebar-context" aria-label="当前项目状态">
+        <div class="context-topline">
+          <span>ACTIVE PROJECT</span>
+          <span class="context-dot" aria-hidden="true"></span>
+        </div>
+        <strong id="sidebar-project-name">ProjectDream AI 漫剧内容工厂</strong>
+        <div class="context-meta">
+          <span id="sidebar-phase">验证阶段</span>
+          <span class="context-divider">·</span>
+          <span id="sidebar-task-total">0 项任务</span>
+        </div>
+        <div class="context-progress" aria-hidden="true">
+          <span id="sidebar-progress-fill"></span>
+        </div>
+        <div class="context-bottom">
+          <span id="sidebar-progress-label">7 / 12 已验收</span>
+          <span id="sidebar-progress-percent">58%</span>
+        </div>
+      </div>
+      <nav class="sidebar-nav">
+        <div class="nav-caption">Workspace</div>
+        <a class="nav-item is-active" href="#overview"><span class="nav-index">01</span><span>项目总览</span></a>
+        <a class="nav-item" href="#tasks-heading"><span class="nav-index">02</span><span>任务队列</span></a>
+        <a class="nav-item" href="#blocker-list"><span class="nav-index">03</span><span>阻塞与风险</span></a>
+        <a class="nav-item" href="#scope-list"><span class="nav-index">04</span><span>范围变化</span></a>
+      </nav>
+      <div class="sidebar-note">
+        <div class="sidebar-note-top">
+          <span class="live-dot" aria-hidden="true"></span>
+          <span>本地看板已连接</span>
+        </div>
+        <small>数据来自当前项目进度文件</small>
+        <span class="sidebar-sync" id="sidebar-sync">同步于 2026-09-19</span>
+      </div>
+    </aside>
+    <main class="page">
+    <header class="topbar">
+      <div>
+        <h1 id="project-name"></h1>
+        <p class="goal" id="project-goal"></p>
+      </div>
+      <p class="updated" id="updated-at"></p>
+    </header>
+
+    <section class="overview" id="overview" aria-label="项目概览">
+      <article class="progress-panel">
+        <div class="focus-copy">
+          <div class="focus-heading">
+            <h2 id="focus-title"></h2>
+            <span class="status" id="focus-status"></span>
+          </div>
+          <div class="focus-evidence">
+            <div class="focus-evidence-head">
+              <span class="focus-evidence-label">验收依据</span>
+              <span class="focus-evidence-note">摘要 · 悬停查看全文</span>
+            </div>
+            <p id="focus-evidence"></p>
+          </div>
+          <div class="focus-meta">
+            <span class="next-action" id="next-action"></span>
+          </div>
+        </div>
+        <div class="progress-summary">
+          <div class="progress-summary-row">
+            <span>验收进度</span>
+            <span id="progress-count"></span>
+          </div>
+          <div class="progress-track" id="progress-track" role="progressbar" aria-label="项目完成率" aria-valuemin="0" aria-valuemax="100">
+            <div class="progress-fill" id="progress-fill"></div>
+          </div>
+          <span id="progress-description"></span>
+        </div>
+      </article>
+
+      <article class="phase-panel">
+        <p class="section-label">Delivery Phase</p>
+        <div class="phase-track" id="phase-track"></div>
+        <div class="metrics">
+          <div class="metric is-done">
+            <span class="metric-label">Done</span>
+            <span class="metric-value" id="done-count"></span>
+          </div>
+          <div class="metric is-active">
+            <span class="metric-label">In Progress</span>
+            <span class="metric-value" id="active-count"></span>
+          </div>
+          <div class="metric is-blocked">
+            <span class="metric-label">Blocked</span>
+            <span class="metric-value" id="blocked-count"></span>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <section class="task-panel" aria-labelledby="tasks-heading">
+      <div class="panel-header">
+        <div class="panel-heading">
+          <h2 id="tasks-heading">任务清单</h2>
+          <p id="task-summary">按验收状态整理当前项目交付队列。</p>
+        </div>
+        <div class="filters" id="filters" aria-label="筛选任务状态"></div>
+      </div>
+      <div class="task-list-wrap">
+        <div class="task-list-header" aria-hidden="true">
+          <span>ID</span>
+          <span>交付项</span>
+          <span>状态</span>
+          <span>验收证据</span>
+        </div>
+        <div class="task-list" id="task-list"></div>
+      </div>
+    </section>
+
+    <section class="lower-grid">
+      <article class="info-panel">
+        <h2>阻塞项</h2>
+        <ul class="info-list is-blocked" id="blocker-list"></ul>
+      </article>
+      <article class="info-panel">
+        <h2>范围变化</h2>
+        <ul class="info-list" id="scope-list"></ul>
+      </article>
+    </section>
+    </main>
+  </div>
+
+  <script>
+    const projectProgress = {
+      projectName: "AI Cook 产品体验与服务交付",
+      brandName: "AI Cook",
+      goal: "完成 AI Cook 服务交付与 web-stage1 核心流程体验、家庭档案数据契约及安全边界优化。",
+      updatedAt: "2026-10-19",
+      phase: "verification",
+      tasks: [
+        {
+          id: "P1",
+          title: "实现默认交互菜单",
+          status: "DONE",
+          evidence: "菜单退出、状态分派用例通过，脚本解析通过"
+        },
+        {
+          id: "P2",
+          title: "完成菜单和兼容性回归",
+          status: "DONE",
+          evidence: "Pester 11 passed、0 failed；1 条后端预运行集成用例 inconclusive"
+        },
+        {
+          id: "P3",
+          title: "同步启动管理文档",
+          status: "DONE",
+          evidence: "backend/README.md 已更新"
+        },
+        {
+          id: "P4",
+          title: "验证真实服务启停和端口清理",
+          status: "DONE",
+          evidence: "2026-10-18 以隔离端口 8231 完成真实启动、健康检查、核心 API 与停止清理验证"
+        },
+        {
+          id: "P5",
+          title: "重构 web-stage1 导航壳层与首页视觉层级",
+          status: "DONE",
+          evidence: "App.vue、AppHeader.vue、HomeView.vue 和全局令牌已改；npm run build 通过"
+        },
+        {
+          id: "P6",
+          title: "接入真实食材状态和今日菜谱推荐",
+          status: "DONE",
+          evidence: "首页读取 Pinia 选择并调用 /v1/recommend/day-menu；类型检查与构建通过"
+        },
+        {
+          id: "P7",
+          title: "验证桌面、移动布局与首页交互",
+          status: "DONE",
+          evidence: "agent-browser 桌面/390px 预览、标题切换、减少动态效果验证通过；390px 无横向溢出"
+        },
+        {
+          id: "P8",
+          title: "完成视觉 QA 与项目设计文档",
+          status: "IN PROGRESS",
+          evidence: "PRODUCT.md、DESIGN.md、design-qa.md 已建立；Impeccable detector 通过；Axe 仍报告共享侧栏/免责声明既有问题"
+        },
+        {
+          id: "P9",
+          title: "收窄首页内容并消除厨房图硬边",
+          status: "DONE",
+          evidence: "桌面截图确认 220px 渐隐与图片贴边；390px 截图确认单列且无横向溢出"
+        },
+        {
+          id: "P10",
+          title: "添加克制且可访问的首页微交互",
+          status: "DONE",
+          evidence: "标题切换可键盘操作；照片位移上限 2px；减少动态效果下 CSS 动画关闭"
+        },
+        {
+          id: "P11",
+          title: "修复家庭成员关系/年龄段保存与空档案状态",
+          status: "DONE",
+          evidence: "profile/home 测试 17 passed；relation 迁移已应用"
+        },
+        {
+          id: "P12",
+          title: "阻断敏感同意同步失败后的过敏原保存",
+          status: "DONE",
+          evidence: "同意门禁测试 2 passed；前端全量测试 256 passed"
+        },
+        {
+          id: "P13",
+          title: "移除重复档案入口并接入年龄段表单",
+          status: "DONE",
+          evidence: "生产构建通过；浏览器因未登录重定向，未做登录后视觉验收"
+        },
+        {
+          id: "P14",
+          title: "完善设置功能链路、反馈状态与注销本地清理",
+          status: "IN PROGRESS",
+          evidence: "新增行为单测 7 passed、全量前端单测 262 passed、生产构建与 Impeccable 检测通过；未确认免责声明门禁阻止了控件浏览器验收"
+        }
+      ],
+      blockers: [
+        "现有端口集成测试需要后端预先监听 8000，当前环境不满足。",
+        "本次首页范围的 axe 扫描仍报告共享账户按钮缺少可访问名称、共享免责声明文字对比度偏低；归属 AppHeader/DisclaimerBar，不在本次 HomeView 改动范围。",
+        "alembic check 仍报告既有 order.uq_order_order_no 元数据差异；本次浏览器未确认免责声明，设置页控件无法验收。"
+      ],
+      scopeChanges: [
+        "新增并行任务：按用户已选视觉稿重构 web-stage1 首页和共享导航，并将 /login 拆为独立布局；不改 web-mini、admin-web 或推荐/风控后端。原服务管理脚本任务 P1–P4 保留。",
+        "用户确认首页局部升级：收窄阅读流、厨房主图贴右边缘并做长渐隐、仅增加不改变业务含义的标签/背景/匹配菜品微动效；单张素材不伪装轮播，标题彩蛋不采用连点触发。",
+        "首页桌面与手机浏览器验收完成；更改仅涉及 HomeView，未修改既有全站导航与免责声明问题.",
+        "家庭档案优化：关系字段新增兼容迁移，已有年龄段接入表单；同意接口失败不再本地放行；首页仅在存在成员时报告档案已建。",
+        "设置链路优化：语音偏好接入步骤 TTS、提醒偏好接入页面内计时完成通知、补齐加载保存反馈与注销后的账号态清理。"
+      ]
+    };
+
+    const phaseOrder = [
+      ["planning", "规划"],
+      ["implementation", "开发"],
+      ["verification", "验证"],
+      ["complete", "完成"]
+    ];
+
+    const statusLabels = {
+      "TODO": "TODO",
+      "IN PROGRESS": "IN PROGRESS",
+      "BLOCKED": "BLOCKED",
+      "DONE": "DONE"
+    };
+
+    let activeFilter = "ALL";
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll("\"", "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function statusClass(status) {
+      return `status-${status.toLowerCase().replaceAll(" ", "-")}`;
+    }
+
+    function projectInitials(name) {
+      const text = String(name || "").trim();
+      if (!text) return "PB";
+      const asciiWords = text.match(/[A-Za-z0-9]+/g);
+      if (asciiWords && asciiWords.length >= 2) {
+        return asciiWords.slice(0, 2).map((word) => word[0]).join("").toUpperCase();
+      }
+      if (asciiWords && asciiWords.length === 1) {
+        return asciiWords[0].slice(0, 2).toUpperCase();
+      }
+      return Array.from(text.replace(/\s+/g, "")).slice(0, 2).join("");
+    }
+
+    function taskStageLabel(taskId) {
+      const taskNumber = Number(String(taskId).replace(/\D/g, ""));
+      if (taskNumber <= 3) return "机会验证";
+      if (taskNumber <= 6) return "生产底座";
+      if (taskNumber <= 8) return "发布回归";
+      return "体验收口";
+    }
+
+    function taskStatusCopy(status) {
+      const copy = {
+        "DONE": "已完成验收，可作为后续依据。",
+        "IN PROGRESS": "正在推进，优先看证据和阻塞。",
+        "BLOCKED": "需要先解除阻塞再继续。",
+        "TODO": "待排期，暂未进入验收。"
+      };
+      return copy[status] || "等待确认状态。";
+    }
+
+    function taskMetaCopy(status) {
+      const copy = {
+        "DONE": "已进入验收证据池",
+        "IN PROGRESS": "当前推进中的交付项",
+        "BLOCKED": "等待阻塞解除",
+        "TODO": "待排期处理"
+      };
+      return copy[status] || "状态待确认";
+    }
+
+    function evidenceTags(task) {
+      const evidence = task.evidence;
+      const tags = [];
+      if (task.status === "TODO") tags.push("待补证据");
+      if (evidence.includes("测试")) tags.push("测试");
+      if (evidence.includes("类型检查")) tags.push("类型");
+      if (evidence.includes("构建")) tags.push("构建");
+      if (evidence.includes("浏览器")) tags.push("浏览器");
+      if (evidence.includes("阻塞")) tags.push("阻塞");
+      if (evidence.includes("通过")) tags.push("已验证");
+      return [...new Set(tags)].slice(0, 4);
+    }
+
+    function renderPhases() {
+      const currentIndex = Math.max(
+        0,
+        phaseOrder.findIndex(([key]) => key === projectProgress.phase)
+      );
+
+      document.querySelector("#phase-track").innerHTML = phaseOrder.map(([key, label], index) => {
+        const phaseClass = index < currentIndex
+          ? "is-complete"
+          : index === currentIndex
+            ? "is-current"
+            : "";
+        const marker = index < currentIndex ? "OK" : String(index + 1).padStart(2, "0");
+
+        return `
+          <div class="phase ${phaseClass}">
+            <span class="phase-marker">${marker}</span>
+            <span class="phase-name">${label}</span>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function renderTasks() {
+      const tasks = activeFilter === "ALL"
+        ? projectProgress.tasks
+        : projectProgress.tasks.filter((task) => task.status === activeFilter);
+      const list = document.querySelector("#task-list");
+
+      if (tasks.length === 0) {
+        list.innerHTML = `<div class="empty-task-list">当前筛选条件下没有任务。</div>`;
+        return;
+      }
+
+      list.innerHTML = tasks.map((task) => {
+        const stateClass = statusClass(task.status);
+        const evidence = escapeHtml(task.evidence);
+        const tags = evidenceTags(task);
+        return `
+        <article class="task-card ${stateClass}" aria-label="${escapeHtml(task.id)} ${escapeHtml(task.title)}">
+          <div class="task-id-cell">
+            <span class="task-id-badge" title="${escapeHtml(task.id)}">${escapeHtml(task.id)}</span>
+          </div>
+          <div class="task-main">
+            <span class="task-stage">${escapeHtml(taskStageLabel(task.id))}</span>
+            <h3 class="task-title">${escapeHtml(task.title)}</h3>
+            <p class="task-meta">${escapeHtml(taskMetaCopy(task.status))}</p>
+          </div>
+          <div class="task-status-cell">
+            <span class="status ${stateClass}">${escapeHtml(statusLabels[task.status] || task.status)}</span>
+            <span class="task-status-copy">${escapeHtml(taskStatusCopy(task.status))}</span>
+          </div>
+          <div class="task-evidence">
+            <div class="evidence-head">
+              <strong>证据摘要</strong>
+              <div class="evidence-tags">${tags.map((tag) => `<span class="evidence-tag">${escapeHtml(tag)}</span>`).join("")}</div>
+            </div>
+            <p title="${evidence}">${evidence}</p>
+          </div>
+        </article>
+        `;
+      }).join("");
+    }
+
+    function renderFilters() {
+      const filters = [
+        ["ALL", "全部"],
+        ["TODO", "待开始"],
+        ["IN PROGRESS", "进行中"],
+        ["BLOCKED", "已阻塞"],
+        ["DONE", "已完成"]
+      ];
+
+      const counts = {
+        "ALL": projectProgress.tasks.length,
+        "TODO": projectProgress.tasks.filter((task) => task.status === "TODO").length,
+        "IN PROGRESS": projectProgress.tasks.filter((task) => task.status === "IN PROGRESS").length,
+        "BLOCKED": projectProgress.tasks.filter((task) => task.status === "BLOCKED").length,
+        "DONE": projectProgress.tasks.filter((task) => task.status === "DONE").length
+      };
+
+      document.querySelector("#filters").innerHTML = filters.map(([value, label]) => `
+        <button class="filter ${value === activeFilter ? "is-selected" : ""}" type="button" data-filter="${value}" aria-pressed="${value === activeFilter ? "true" : "false"}">
+          <span>${label}</span>
+          <span class="filter-count">${counts[value]}</span>
+        </button>
+      `).join("");
+
+      document.querySelectorAll("[data-filter]").forEach((button) => {
+        button.addEventListener("click", () => {
+          activeFilter = button.dataset.filter;
+          renderFilters();
+          renderTasks();
+        });
+      });
+    }
+
+    function renderInfoList(selector, items, emptyText) {
+      const element = document.querySelector(selector);
+      element.innerHTML = items.length
+        ? items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")
+        : `<li>${escapeHtml(emptyText)}</li>`;
+    }
+
+    function renderDashboard() {
+      const total = projectProgress.tasks.length;
+      const done = projectProgress.tasks.filter((task) => task.status === "DONE").length;
+      const inProgress = projectProgress.tasks.filter((task) => task.status === "IN PROGRESS").length;
+      const blocked = projectProgress.tasks.filter((task) => task.status === "BLOCKED").length;
+      const percent = total === 0 ? 0 : Math.round((done / total) * 100);
+
+      document.title = `${projectProgress.projectName} - 项目进度`;
+      document.querySelector("#project-name").textContent = projectProgress.projectName;
+      document.querySelector("#project-goal").textContent = projectProgress.goal;
+      document.querySelector("#updated-at").textContent = `更新于 ${projectProgress.updatedAt}`;
+      const focusTask = projectProgress.tasks.find((task) => task.status === "IN PROGRESS")
+        || projectProgress.tasks.find((task) => task.status === "TODO")
+        || projectProgress.tasks.at(-1);
+      const nextTask = projectProgress.tasks.find((task) => task.status === "TODO");
+
+      document.querySelector("#focus-title").textContent = focusTask
+        ? focusTask.title
+        : "所有任务均已验收";
+      const focusEvidence = focusTask
+        ? focusTask.evidence
+        : "项目已满足全部确认的验收标准。";
+      document.querySelector("#focus-evidence").textContent = focusEvidence;
+      document.querySelector("#focus-evidence").setAttribute("title", focusEvidence);
+      document.querySelector("#focus-status").className = `status ${statusClass(focusTask?.status || "DONE")}`;
+      document.querySelector("#focus-status").textContent = statusLabels[focusTask?.status || "DONE"];
+      document.querySelector("#next-action").textContent = nextTask
+        ? `下一步：${nextTask.title}`
+        : "下一步：完成交付复盘";
+      document.querySelector("#progress-fill").style.setProperty("--progress-ratio", String(percent / 100));
+      document.querySelector("#progress-track").setAttribute("aria-valuenow", String(percent));
+      document.querySelector("#progress-count").textContent = `${done} / ${total} (${percent}%)`;
+      document.querySelector("#progress-description").textContent = total === 0
+        ? "等待确认任务范围"
+        : "仅计入已通过验收的任务";
+      document.querySelector("#done-count").textContent = done;
+      document.querySelector("#active-count").textContent = inProgress;
+      document.querySelector("#blocked-count").textContent = blocked;
+      document.querySelector("#task-summary").textContent =
+        `共 ${total} 项，已验收 ${done} 项，进行中 ${inProgress} 项，阻塞 ${blocked} 项。`;
+
+      const phaseLabels = {
+        planning: "规划阶段",
+        implementation: "开发阶段",
+        verification: "验证阶段",
+        complete: "已完成"
+      };
+      document.querySelector("#sidebar-brand-name").textContent = projectProgress.brandName || "Progress Board";
+      document.querySelector("#sidebar-brand-mark").textContent = projectInitials(projectProgress.brandName || projectProgress.projectName);
+      document.querySelector("#sidebar-project-name").textContent = projectProgress.projectName;
+      document.querySelector("#sidebar-phase").textContent = phaseLabels[projectProgress.phase] || projectProgress.phase;
+      document.querySelector("#sidebar-task-total").textContent = `${total} 项任务`;
+      document.querySelector("#sidebar-progress-fill").style.setProperty("--sidebar-ratio", String(percent / 100));
+      document.querySelector("#sidebar-progress-label").textContent = `${done} / ${total} 已验收`;
+      document.querySelector("#sidebar-progress-percent").textContent = `${percent}%`;
+      document.querySelector("#sidebar-sync").textContent = `同步于 ${projectProgress.updatedAt}`;
+
+      renderPhases();
+      renderFilters();
+      renderTasks();
+      renderInfoList("#blocker-list", projectProgress.blockers, "当前没有阻塞项。");
+      renderInfoList("#scope-list", projectProgress.scopeChanges, "范围没有变化。");
+    }
+
+    renderDashboard();
+  </script>
+</body>
+</html>
+
+
+
+
+

@@ -2,7 +2,7 @@
  * 文件职责：深色模式组合式函数。
  * - 状态持久化到 localStorage（key: aicook_dark_mode，值 'light' | 'dark' | 'auto'）；
  * - 通过切换 document.documentElement.classList 的 'dark' 类生效（配合 Element Plus dark css-vars）；
- * - 默认跟随系统 prefers-color-scheme（auto 模式下监听系统变化）。
+ * - 默认使用浅色主题；仅用户显式选择 auto 时跟随系统 prefers-color-scheme。
  */
 import { ref, watchEffect, type Ref } from 'vue'
 
@@ -23,7 +23,7 @@ const prefersDark =
 
 /**
  * 从 localStorage 读取持久化的模式值。
- * @returns 持久化的模式；无值或非法值时返回 'auto'（默认跟随系统）
+ * @returns 持久化的模式；无值或非法值时返回 'light'（匹配产品的浅色厨房视觉）
  */
 function readStoredMode(): DarkModeValue {
   try {
@@ -32,7 +32,7 @@ function readStoredMode(): DarkModeValue {
   } catch {
     // localStorage 不可用（隐私模式等），静默降级为 auto
   }
-  return 'auto'
+  return 'light'
 }
 
 /**

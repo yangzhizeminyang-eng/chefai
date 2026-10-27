@@ -26,6 +26,7 @@ from app.api.v1.deps import (
     resolve_user,
 )
 from app.core.db import get_db
+from app.core.recipe_covers import resolve_recipe_cover_url
 from app.models import Ingredient, IngredientAlias, Recipe, RecipeFeedback, RecipeIngredient, RecipeStep
 from app.schemas.recipes import NutritionOut, NutritionTotalOut, RecipeIngredientItem, RecipeStepItem
 
@@ -179,6 +180,7 @@ def search_recipes(
             "difficulty": difficulty_label(recipe.difficulty),
             "time_minutes": recipe.time_minutes,
             "calories_kcal": recipe.calories_kcal,
+            "cover_image_url": resolve_recipe_cover_url(recipe.title, recipe.cover_image_url),
         }
         for recipe in rows
     ]
@@ -261,6 +263,7 @@ def get_recipe_detail(
     # 小贴士文本拆行（DB tips 为 Text；空值安全）
     tips_list = [seg.strip() for seg in (recipe.tips or "").replace("；", "\n").splitlines() if seg.strip()]
 
+    cover_image_url = resolve_recipe_cover_url(recipe.title, recipe.cover_image_url)
     return {
         "id": int(recipe.id),
         "title": recipe.title,
@@ -281,8 +284,8 @@ def get_recipe_detail(
         "tips": tips_list,
         "source_label": recipe.source_label,
         # 封面成品图与来源标注（RL-19：详情页来源行；无图两者为 None）
-        "cover_image_url": recipe.cover_image_url,
-        "cover_image_source": "HowToCook 语料配图（Unlicense 公有领域）" if recipe.cover_image_url else None,
+        "cover_image_url": cover_image_url,
+        "cover_image_source": "HowToCook 语料配图（Unlicense 公有领域）" if cover_image_url else None,
         "ingredients": [i.model_dump() for i in all_items],
     }
 

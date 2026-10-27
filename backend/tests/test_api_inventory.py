@@ -24,14 +24,17 @@ from app.api.v1 import inventory as inventory_api
 from app.api.v1.router import api_router
 from app.core.db import SessionLocal
 from app.models import User
+from tests.conftest import ensure_router_registered
 
 # 并行开发约定：router.py 由集成步骤统一注册；未注册时此处补注册。
 # 守卫用进程级标记（懒加载路由下 path 探测不可靠，且同路由重复 include 会产生
-# OpenAPI Duplicate Operation ID 告警）。
-if not getattr(api_router, "_t3_inventory_registered", False):
-    api_router.include_router(inventory_api.router)
-    api_router.include_router(inventory_api.shopping_router)
-    api_router._t3_inventory_registered = True
+# OpenAPI Duplicate Operation ID 告警）——统一走 conftest.ensure_router_registered。
+ensure_router_registered(
+    api_router,
+    (inventory_api.router, inventory_api.shopping_router),
+    flag="_t3_inventory_registered",
+    probe_paths=("/v1/inventory", "/v1/shopping-list"),
+)
 
 
 def _headers(anon: str) -> dict:

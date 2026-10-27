@@ -20,7 +20,7 @@
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus } from '@element-plus/icons-vue'
+import { Plus, Refrigerator } from '@element-plus/icons-vue'
 import {
   getIngredients,
   postDeductConfirm,
@@ -546,10 +546,16 @@ onMounted(() => {
           <el-skeleton :rows="6" animated />
         </div>
 
-        <el-empty
-          v-else-if="sortedItems.length === 0"
-          description="冰箱空空的，把买回来的食材记进来，推荐与临期提醒才有依据"
-        />
+        <div v-else-if="sortedItems.length === 0" class="inv-empty" role="status">
+          <el-icon class="inv-empty__icon" aria-hidden="true"><Refrigerator /></el-icon>
+          <div class="inv-empty__copy">
+            <h2>冰箱还没开始记录</h2>
+            <p>把手边的食材记下来，菜谱推荐和到期提醒就有依据了。</p>
+            <el-button type="primary" :icon="Plus" @click="openItemDialog(null)">
+              添加第一个食材
+            </el-button>
+          </div>
+        </div>
 
         <div v-else class="inv-list">
           <div
@@ -788,10 +794,23 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.inventory-page {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
+}
+
 .tab-toolbar {
   display: flex;
   gap: 10px;
   margin-bottom: 16px;
+}
+
+:deep(.tab-toolbar .el-button) {
+  min-height: 40px;
+  border-radius: 10px;
 }
 
 .tab-badge {
@@ -805,7 +824,55 @@ onMounted(() => {
 
 /* ── TXT-D07 固定说明条（常驻） ── */
 .inv-notice {
+  --el-alert-bg-color: var(--color-warning-bg);
+  color: var(--text-main);
   margin-bottom: 14px;
+}
+
+.inv-notice :deep(.el-alert__icon) {
+  color: var(--color-warning);
+}
+
+.inv-empty {
+  display: flex;
+  align-items: center;
+  gap: clamp(24px, 5vw, 64px);
+  max-width: 760px;
+  min-height: 250px;
+  margin: 28px auto 12px;
+  padding: 28px clamp(12px, 4vw, 44px);
+}
+
+.inv-empty__icon {
+  flex: 0 0 auto;
+  color: var(--accent-deep);
+  font-size: 84px;
+  stroke-width: 1.2;
+}
+
+.inv-empty__copy {
+  max-width: 440px;
+}
+
+.inv-empty__copy h2 {
+  margin: 0;
+  color: var(--text-main);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.inv-empty__copy p {
+  margin: 8px 0 18px;
+  color: var(--color-info);
+  font-size: var(--font-md);
+  line-height: 1.7;
+}
+
+.inv-empty__copy :deep(.el-button) {
+  min-height: 40px;
+  padding-inline: 18px;
+  border-radius: 10px;
 }
 
 /* ── 编辑弹窗到期日固定提示（TXT-D07） ── */
@@ -927,5 +994,38 @@ onMounted(() => {
   margin: 4px 0 0 24px;
   font-size: var(--font-sm);
   color: var(--color-info);
+}
+
+@media (max-width: 560px) {
+  .tab-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .inv-empty {
+    min-height: auto;
+    margin: 24px 0 8px;
+    padding: 20px 0 28px;
+    align-items: flex-start;
+    gap: 18px;
+  }
+
+  .inv-empty__icon {
+    font-size: 56px;
+  }
+
+  .inv-empty__copy h2 {
+    font-size: 18px;
+  }
+
+  .inv-empty__copy p {
+    font-size: var(--font-sm);
+  }
+}
+
+@media (max-width: 380px) {
+  .inv-empty {
+    flex-direction: column;
+    gap: 12px;
+  }
 }
 </style>

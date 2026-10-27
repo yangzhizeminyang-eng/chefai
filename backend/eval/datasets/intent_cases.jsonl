@@ -23,3 +23,9 @@
 {"id": "it-022", "text": "铁锅开锅需要注意什么", "expected_intent": "free_qa"}
 {"id": "it-023", "text": "隔水炖和直接炖哪个更好", "expected_intent": "free_qa"}
 {"id": "it-024", "text": "", "expected_intent": "smalltalk_or_out_of_scope"}
+{"id": "it-025", "text": "家里就剩鸡蛋和西红柿能做啥", "expected_intent": "recommend_by_ingredients"}
+{"id": "it-026", "text": "西红柿炒鸡蛋的做法是什么", "expected_intent": "search_recipe"}
+{"id": "it-027", "text": "帮我看看明天吃什么菜好", "expected_intent": "recommend_by_ingredients"}
+{"id": "it-028", "text": "肥肠怎么处理干净", "expected_intent": "free_qa"}
+{"id": "it-029", "text": "牛奶过期了还能做什么", "expected_intent": "recommend_by_ingredients"}
+{"id": "it-030", "text": "拍照识别一下这是什么菜", "expected_intent": "free_qa"}

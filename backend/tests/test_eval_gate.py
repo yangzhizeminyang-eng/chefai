@@ -302,7 +302,8 @@ class TestEvalGate:
         assert gate["actual"]["intent_accuracy"] == 0.5
         assert gate["thresholds"]["intent_accuracy"] == 0.8
         assert gate["statuses"]["intent_accuracy"] == "fail"
-        assert "it-013" in gate["failed_case_ids"]
+        # 失败用例 ID 动态取自后半段切分（不硬编码具体 ID，避免数据集扩充时断言失效）
+        assert sorted(fail_ids)[0] in gate["failed_case_ids"]
         assert set(gate["failed_case_ids"]) == fail_ids
 
     def test_gate_case_error_exit_1(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

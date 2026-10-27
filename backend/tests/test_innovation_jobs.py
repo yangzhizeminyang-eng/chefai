@@ -28,19 +28,23 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.api.v1 import innovation as innovation_api
 from app.api.v1.router import api_router
 from app.core.db import SessionLocal
 from app.models import RemoteConfig, User
 from app.schemas.innovation import DISCLAIMER_TEXT
+from tests.conftest import ensure_router_registered
 
 # 并行开发约定：router.py 已统一注册；未注册时此处补注册（进程级标记守卫，
-# 避免 OpenAPI Duplicate Operation ID 告警；注册后本守卫自动跳过）。
-if not getattr(api_router, "_t7_innovation_registered", False):
-    api_router.include_router(innovation_api.router)
-    api_router._t7_innovation_registered = True
+# 避免 OpenAPI Duplicate Operation ID 告警；注册后本守卫自动跳过）——
+# 统一走 conftest.ensure_router_registered。
+ensure_router_registered(
+    api_router,
+    (innovation_api.router,),
+    flag="_t7_innovation_registered",
+)
 
 # 轮询终态超时（秒）：受控函数最长 sleep 0.2s，5s 超时已留足余量
 _JOB_POLL_TIMEOUT = 5.0
@@ -77,10 +81,12 @@ def _anon() -> str:
 
 
 def _delete_user(anon: str) -> None:
-    """按匿名 ID 删除用户行（级联清理自建数据）（函数）。
+    """按匿名 ID 删除用户及其自建数据（级联清理）（函数）。
 
     说明：
-        job store 记录仅持 user_db_id 整数（无外键），用户删除不影响残留记录。
+        job store 记录仅持 user_db_id 整数（无外键），用户删除不影响残留记录；
+        因此先按 user_db_id 显式删除该用户的 innovation_job 行（测试自建数据
+        不向开发库遗留孤儿 job），再删除用户行。
 
     参数：
         anon：匿名会话 ID。
@@ -94,6 +100,10 @@ def _delete_user(anon: str) -> None:
     with SessionLocal() as db:
         user = db.execute(select(User).where(User.anonymous_id == anon)).scalar_one_or_none()
         if user is not None:
+            db.execute(
+                text("DELETE FROM innovation_job WHERE user_id = :uid"),
+                {"uid": int(user.id)},
+            )
             db.delete(user)
             db.commit()
 
@@ -186,6 +196,48 @@ def anon_id() -> str:
     value = _anon()
     yield value
     _delete_user(value)
+
+
+def test_no_job_rows_left_after_teardown(client: TestClient, anon_id: str) -> None:
+    """teardown 清理后该用户的 innovation_job 行必须零残留（测试）。
+
+    说明：
+        job store 的 user_id 无外键（注销后行保留供审计是业务语义），但测试
+        自建数据的清理责任在测试 teardown：_delete_user 应先删该用户的 job
+        行再删用户行，避免测试向开发库遗留孤儿 job 记录。
+        同时断言写穿透真实落库（终态后 DB 行存在且 status 一致）——回归
+        datetime.UTC 误用导致写穿透静默失效的缺陷（tz 参数抛 AttributeError
+        仅告警，job 永不入库，重启恢复/DB fallback 实际不可用）。
+
+    参数：
+        client：TestClient fixture。
+        anon_id：唯一匿名身份 fixture。
+
+    异常：
+        写穿透未落库或残留 job 行存在时断言失败。
+    """
+    from app.models import InnovationJob
+
+    job_id = _submit_job(client, anon_id)["job_id"]
+    terminal = _poll_terminal(client, job_id, anon_id)
+
+    with SessionLocal() as db:
+        user = db.execute(select(User).where(User.anonymous_id == anon_id)).scalar_one()
+        user_db_id = int(user.id)
+        row = db.execute(
+            select(InnovationJob).where(InnovationJob.job_id == job_id)
+        ).scalar_one_or_none()
+
+    assert row is not None, f"终态 {terminal['status']} 后写穿透必须已落库（job_id={job_id}）"
+    assert row.status == terminal["status"], f"落库状态应与轮询终态一致：{row.status} != {terminal['status']}"
+
+    _delete_user(anon_id)
+
+    with SessionLocal() as db:
+        remaining = db.execute(
+            select(InnovationJob.id).where(InnovationJob.user_id == user_db_id)
+        ).scalars().all()
+    assert remaining == [], f"teardown 后应无残留 job 行，实际 {len(remaining)} 条"
 
 
 # ---------------------------------------------------------------------------
