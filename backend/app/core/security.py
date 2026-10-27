@@ -30,7 +30,7 @@ from app.core.db import get_db
 from app.models import AdminUser, OperationLog
 
 # JWT 密钥：环境变量 ADMIN_JWT_SECRET，缺省仅供本地开发/测试使用（生产必须配置）
-_ADMIN_JWT_SECRET = os.environ.get("ADMIN_JWT_SECRET", "aicook-admin-dev-secret-change-me")
+_ADMIN_JWT_SECRET = os.environ.get("ADMIN_JWT_SECRET", "aicook_dev_only_jwt_secret")
 
 # 签名算法（HS256 对称密钥，阶段一单服务部署够用）
 JWT_ALGORITHM = "HS256"

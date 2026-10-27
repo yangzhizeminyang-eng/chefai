@@ -41,6 +41,9 @@ venv/
 
 # ---------- 助手/个人工作记录 ----------
 .workbuddy/
+.dsh-acl-report/
+.ppt-export/
+.tmp/
 
 # ---------- 生图审计与临时产物（保留本地，不入库） ----------
 artifacts/_*

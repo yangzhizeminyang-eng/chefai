@@ -13,7 +13,7 @@ import os
 import re
 from pathlib import Path
 
-DISHES = Path(r"D:/Code_Work/AI_Cook/backend/data/HowToCook/dishes")
+DISHES = Path(__file__).resolve().parents[2] / "backend" / "data" / "HowToCook" / "dishes"
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 REF_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 

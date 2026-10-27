@@ -30,7 +30,7 @@ backend/
 Python 3.13（项目 `.venv` 已就绪；全新环境按以下步骤）：
 
 ```powershell
-cd d:\Code_Work\AI_Cook\backend
+cd backend
 python -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 ```
@@ -185,7 +185,7 @@ Windows 下也可以直接双击 `scripts\start.bat` 一键启动；启动失败
 
 > 完整契约见 `http://127.0.0.1:8000/docs`（OpenAPI）。鉴权两种口径：
 > - **用户侧 `/v1/**`**：`X-Anonymous-Id` 请求头携带匿名会话 ID（`/v1/auth/anonymous` 签发）；缺失时多数端点自动 upsert 匿名用户兜底（演示友好，正式接入应显式携带）。
-> - **后台 `/admin/v1/**`**：`POST /admin/v1/auth/login`（username/password）换 JWT，后续请求 `Authorization: Bearer <access_token>`；内置账号 `admin`，密码取环境变量 `ADMIN_PASSWORD`（缺省 `Admin@123456`，**演示密钥，上线前务必改密**）；JWT 密钥取 `ADMIN_JWT_SECRET`（缺省仅限本地开发）。
+> - **后台 `/admin/v1/**`**：`POST /admin/v1/auth/login`（username/password）换 JWT，后续请求 `Authorization: Bearer <access_token>`；内置账号 `admin`，密码取环境变量 `ADMIN_PASSWORD`（缺省为内置演示口令，**上线前务必改密**）；JWT 密钥取 `ADMIN_JWT_SECRET`（缺省仅限本地开发）。
 
 ### 11.1 用户侧 /v1（X-Anonymous-Id）
 
@@ -293,7 +293,7 @@ Windows 下也可以直接双击 `scripts\start.bat` 一键启动；启动失败
 文件：根目录 `docker-compose.yml`（db + api + web + redis）+ `backend/Dockerfile` + 根级 `Dockerfile.web`（单镜像 nginx 托管两套前端）+ `nginx/nginx.conf`。
 
 ```powershell
-# 在项目根目录（d:\Code_Work\AI_Cook）执行：
+# 在项目根目录执行：
 powershell -ExecutionPolicy Bypass -File scripts\manage.ps1 -Action docker -DockerCmd build  # 构建双镜像
 powershell -ExecutionPolicy Bypass -File scripts\manage.ps1 -Action docker -DockerCmd up     # 拉起并等待 /v1/healthz 就绪
 docker compose exec api python -m app.seed                                                   # 首次启动：幂等种子（食材/菜谱/风控/管理员）
@@ -301,7 +301,7 @@ powershell -ExecutionPolicy Bypass -File scripts\manage.ps1 -Action smoke       
 powershell -ExecutionPolicy Bypass -File scripts\manage.ps1 -Action docker -DockerCmd down   # 停止（保留 pgdata/uploads 卷）
 ```
 
-- 访问：用户端 `http://localhost/`（web-stage1）、管理后台 `http://localhost/admin/`（admin-web，`admin/Admin@123456`）、API `http://localhost/v1/healthz`（同时发布 8000）。宿主机 80 被占用时以 `WEB_PORT=8080` 拉起，地址变为 `http://localhost:8080/`。
+- 访问：用户端 `http://localhost/`（web-stage1）、管理后台 `http://localhost/admin/`（admin-web，账号 `admin`，口令取 `ADMIN_PASSWORD`）、API `http://localhost/v1/healthz`（同时发布 8000）。宿主机 80 被占用时以 `WEB_PORT=8080` 拉起，地址变为 `http://localhost:8080/`。
 - 服务拓扑：nginx(80) 反代 `/v1` `/api` `/admin/v1` → api:8000；api 启动即 `alembic upgrade head`（失败即退出）后 uvicorn；db 为 `pgvector/pgvector:pg16`（自动建库 aicook，不发布宿主 5432 以避免与本机开发库冲突）；redis 预留（进程内缓存，不强依赖）。
 - 配置注入：api 经 `env_file: backend/.env` 透传 LLM 配置，`environment` 覆盖 `DB_HOST=db`；`ADMIN_PASSWORD`/`ADMIN_JWT_SECRET` 生产部署必须更换强值。
 - 镜像源：基础镜像走 `docker.m.daocloud.io` 加速前缀、pip 走阿里云镜像（当前网络直连 Docker Hub / PyPI 官方源不可用或极慢）；网络环境允许时删除前缀即可切回官方源。

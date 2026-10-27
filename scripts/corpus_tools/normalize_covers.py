@@ -17,12 +17,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import tempfile
 from pathlib import Path
 
 from PIL import Image
 
-DISHES = Path(r"D:/Code_Work/AI_Cook/backend/data/HowToCook/dishes")
-MANIFEST = Path(r"/tmp/htc_manifest.json")
+DISHES = Path(__file__).resolve().parents[2] / "backend" / "data" / "HowToCook" / "dishes"
+MANIFEST = Path(tempfile.gettempdir()) / "htc_manifest.json"
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 MAX_EDGE = 1536
 JPEG_QUALITY = 85

@@ -17,11 +17,12 @@ import argparse
 import json
 import os
 import re
+import tempfile
 from pathlib import Path
 
-DISHES = Path(r"D:/Code_Work/AI_Cook/backend/data/HowToCook/dishes")
-README = Path(r"D:/Code_Work/AI_Cook/backend/data/HowToCook/README.md")
-MANIFEST = Path(r"/tmp/htc_manifest.json")
+DISHES = Path(__file__).resolve().parents[2] / "backend" / "data" / "HowToCook" / "dishes"
+README = Path(__file__).resolve().parents[2] / "backend" / "data" / "HowToCook" / "README.md"
+MANIFEST = Path(tempfile.gettempdir()) / "htc_manifest.json"
 
 # 需要补 "../" 的链接前缀黑名单（外链/锚点不处理）
 SKIP_PREFIX = ("http://", "https://", "#", "mailto:")

@@ -5,7 +5,7 @@
       默认全开，05-V1.1 §4.4）+ 排序权重 rank.weights（7 因子，合计 1.00），
       按 config_key upsert（60s 内生效语义，spec D6）；
     - admin_user：内置管理员 admin（passlib pbkdf2_sha256 加盐哈希），
-      密码来自环境变量 ADMIN_PASSWORD（缺省 Admin@123456）。
+      密码来自环境变量 ADMIN_PASSWORD（缺省 aicook_dev_admin）。
 """
 
 import os
@@ -45,7 +45,7 @@ REMOTE_CONFIGS: list[tuple[str, object]] = [
 
 # 内置管理员账号（仅本地 PoC 演示用；密码可由环境变量 ADMIN_PASSWORD 覆盖）
 ADMIN_USERNAME = "admin"
-ADMIN_DEFAULT_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Admin@123456")
+ADMIN_DEFAULT_PASSWORD = os.environ.get("ADMIN_PASSWORD", "aicook_dev_admin")
 ADMIN_ROLE = "super_admin"
 
 

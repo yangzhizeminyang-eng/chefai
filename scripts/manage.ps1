@@ -1725,10 +1725,11 @@ switch ($Action) {
             $fail++
         }
 
-        # ⑪ 后台链路：admin 登录（ADMIN_PASSWORD 缺省 Admin@123456）→ dashboard/cost 200
+        # ⑪ 后台链路：admin 登录（口令取 ADMIN_PASSWORD，缺省 aicook_dev_admin）→ dashboard/cost 200
         Write-Info "⑪ 后台链路（/admin/v1/auth/login → dashboard/cost）..."
+        $adminPwd = if ($env:ADMIN_PASSWORD) { $env:ADMIN_PASSWORD } else { 'aicook_dev_admin' }
         $login11 = Invoke-JsonPost -Url ("{0}/auth/login" -f $AdmUrl) `
-            -Body '{"username":"admin","password":"Admin@123456"}'
+            -Body (@{ username = 'admin'; password = $adminPwd } | ConvertTo-Json -Compress)
         $token11 = ''
         if ($login11.StatusCode -eq 200 -and $login11.Body) { $token11 = [string]$login11.Body.access_token }
         $admOk11 = $false
@@ -1978,7 +1979,7 @@ switch ($Action) {
                 Write-Ok "容器栈已就绪"
                 Write-Host "==========================================================" -ForegroundColor Cyan
                 Write-Host "  用户端   : http://localhost/               （web-stage1）" -ForegroundColor Cyan
-                Write-Host "  管理后台 : http://localhost/admin/         （admin，Admin@123456）" -ForegroundColor Cyan
+                Write-Host "  管理后台 : http://localhost/admin/         （admin，口令见 ADMIN_PASSWORD）" -ForegroundColor Cyan
                 Write-Host "  后端 API : http://127.0.0.1:8000/v1/healthz" -ForegroundColor Cyan
                 Write-Host "  首次启动 : docker compose exec api python -m app.seed  （幂等种子数据）" -ForegroundColor Cyan
                 Write-Host "==========================================================" -ForegroundColor Cyan

@@ -11,7 +11,7 @@
 #   3) 冒烟验证：powershell -ExecutionPolicy Bypass -File scripts\manage.ps1 -Action smoke
 #   4) 访问地址（默认 80，若宿主机 80 被占用则以 WEB_PORT=8080 up，地址相应变为 :8080）：
 #      用户端   http://localhost/          （web-stage1 dist）
-#      管理后台 http://localhost/admin/    （admin-web dist，默认账号 admin / Admin@123456）
+#      管理后台 http://localhost/admin/    （admin-web dist，账号 admin，口令由 ADMIN_PASSWORD 配置）
 #      后端 API http://localhost/v1/healthz（亦发布 8000 直连 http://127.0.0.1:8000）
 #   5) 停止：docker compose down（数据保留在命名卷 pgdata / uploads，down 不删卷）
 #
@@ -33,7 +33,7 @@ services:
     container_name: aicook-db
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: "123456"
+      POSTGRES_PASSWORD: "${DB_PASSWORD:-aicook_dev_only}"
       POSTGRES_DB: aicook          # 首次启动自动建库，满足 api 内 alembic upgrade head 前置条件
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -57,11 +57,11 @@ services:
       DB_HOST: db
       DB_PORT: "5432"
       DB_USER: postgres
-      DB_PASSWORD: "123456"
+      DB_PASSWORD: "${DB_PASSWORD:-aicook_dev_only}"
       DB_NAME: aicook
-      # 后台默认管理员密码与 JWT 密钥（生产部署必须更换为强值）
-      ADMIN_PASSWORD: "Admin@123456"
-      ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET:-aicook-admin-dev-secret-change-me}
+      # 以下缺省值仅供本地开发；生产由 docker-compose.prod.yml 强制要求环境变量
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-aicook_dev_admin}"
+      ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET:-aicook_dev_only_jwt_secret}
     volumes:
       - uploads:/app/uploads       # 模块 D 识别图片落盘目录（backend/uploads）
     ports:

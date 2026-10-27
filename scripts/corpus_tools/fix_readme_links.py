@@ -14,8 +14,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-README = Path(r"D:/Code_Work/AI_Cook/backend/data/HowToCook/README.md")
-DISHES = Path(r"D:/Code_Work/AI_Cook/backend/data/HowToCook/dishes")
+README = Path(__file__).resolve().parents[2] / "backend" / "data" / "HowToCook" / "README.md"
+DISHES = Path(__file__).resolve().parents[2] / "backend" / "data" / "HowToCook" / "dishes"
 
 LINK_RE = re.compile(r"\(dishes/([^/()]+)/([^/()]+)\.md\)")
 

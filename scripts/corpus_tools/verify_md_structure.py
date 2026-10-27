@@ -17,10 +17,11 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
 from pathlib import Path
 
-DISHES = Path(r"D:/Code_Work/AI_Cook/backend/data/HowToCook/dishes")
-MANIFEST = Path(r"/tmp/htc_manifest.json")
+DISHES = Path(__file__).resolve().parents[2] / "backend" / "data" / "HowToCook" / "dishes"
+MANIFEST = Path(tempfile.gettempdir()) / "htc_manifest.json"
 
 # 与 corpus_howtocook.RE_IMAGE_LINE 保持一致的剥离规则
 RE_IMAGE_LINE = re.compile(r"!\[[^\]]*\]\([^)]*\)")

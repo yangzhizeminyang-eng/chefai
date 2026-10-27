@@ -23,13 +23,14 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import tempfile
 from pathlib import Path
 
 from PIL import Image
 
-DISHES = Path(r"D:/Code_Work/AI_Cook/backend/data/HowToCook/dishes")
-STAGING = Path(r"D:/Code_Work/AI_Cook/.tmp/corpus_covers")
-MANIFEST = Path(r"/tmp/htc_manifest.json")
+DISHES = Path(__file__).resolve().parents[2] / "backend" / "data" / "HowToCook" / "dishes"
+STAGING = Path(__file__).resolve().parents[2] / ".tmp" / "corpus_covers"
+MANIFEST = Path(tempfile.gettempdir()) / "htc_manifest.json"
 
 PREFIX = "写实菜品成品摄影"
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif")

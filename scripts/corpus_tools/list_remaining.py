@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from pathlib import Path
 
-DISHES = Path(r"D:/Code_Work/AI_Cook/backend/data/HowToCook/dishes")
-MANIFEST = Path(r"/tmp/htc_manifest.json")
+DISHES = Path(__file__).resolve().parents[2] / "backend" / "data" / "HowToCook" / "dishes"
+MANIFEST = Path(tempfile.gettempdir()) / "htc_manifest.json"
 
 
 def main() -> None:
@@ -28,7 +29,7 @@ def main() -> None:
         print(f"{idx}\t{item['dish']}")
 
     # 便于后续脚本按序号取用
-    out = Path(r"/tmp/htc_remaining.json")
+    out = Path(tempfile.gettempdir()) / "htc_remaining.json"
     out.write_text(json.dumps(remaining, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"\n已写出 {out}")
 
