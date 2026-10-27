@@ -35,6 +35,21 @@ __pycache__/
 .ruff_cache/
 .coverage
 
+# ---------- 本地虚拟环境（backend/.venv 等） ----------
+.venv/
+venv/
+
+# ---------- 助手/个人工作记录 ----------
+.workbuddy/
+
+# ---------- 生图审计与临时产物（保留本地，不入库） ----------
+artifacts/_*
+artifacts/covers_gen/
+artifacts/covers_redo/
+artifacts/*.json
+artifacts/*.jpg
+artifacts/full-chain-*.png
+
 # ---------- Node（仅阻止新增） ----------
 node_modules/
 dist/

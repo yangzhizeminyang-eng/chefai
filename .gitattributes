@@ -1,0 +1,2 @@
+/scripts/deploy.sh text eol=lf
+/backend/docker-entrypoint.sh text eol=lf
