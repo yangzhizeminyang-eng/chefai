@@ -116,7 +116,7 @@ async function onEnter(): Promise<void> {
   background-image:
     linear-gradient(270deg, rgba(245, 240, 232, 0.04) 12%, rgba(245, 240, 232, 0.94) 100%),
     linear-gradient(180deg, rgba(245, 240, 232, 0.08), rgba(245, 240, 232, 0.52)),
-    url('/images/login-prep-scene.png');
+    url('/images/login-prep-scene.webp');
   background-size: cover;
   background-position: 88% 8%;
   mask-image: linear-gradient(135deg, transparent 0%, #000 43%);

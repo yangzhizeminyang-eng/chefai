@@ -275,26 +275,39 @@ function redirectAfterAuth(): void {
         >
           <img
             class="login-visual__image"
-            src="/images/login-prep-scene.png"
+            src="/images/login-prep-scene.webp"
             alt="一双手在木砧板上整理香葱，旁边摆着香菜、辣椒与八角"
+            width="1024"
+            height="1024"
+            decoding="async"
+            fetchpriority="high"
           />
           <img
             class="login-visual__micro-image login-visual__micro-image--salt"
-            src="/images/login-prep-scene.png"
+            src="/images/login-prep-scene.webp"
             alt=""
             aria-hidden="true"
+            width="1024"
+            height="1024"
+            decoding="async"
           />
           <img
             class="login-visual__micro-image login-visual__micro-image--scallion"
-            src="/images/login-prep-scene.png"
+            src="/images/login-prep-scene.webp"
             alt=""
             aria-hidden="true"
+            width="1024"
+            height="1024"
+            decoding="async"
           />
           <img
             class="login-visual__micro-image login-visual__micro-image--chili"
-            src="/images/login-prep-scene.png"
+            src="/images/login-prep-scene.webp"
             alt=""
             aria-hidden="true"
+            width="1024"
+            height="1024"
+            decoding="async"
           />
           <span
             class="login-visual__micro-zone login-visual__micro-zone--salt"
